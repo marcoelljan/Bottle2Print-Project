@@ -1,5 +1,6 @@
 import { Router } from "express";
 import fs from "fs";
+import path from "path";
 import { exec } from "child_process";
 import pdfParse from "pdf-parse";
 import { db } from "../db";
@@ -38,14 +39,48 @@ router.post("/api/print", upload.single("document"), (req, res) => {
   }
 
   const filePath = req.file.path;
-  exec(`lp "${filePath}"`, (error, stdout, stderr) => {
-    fs.unlink(filePath, () => {});
-    if (error) return res.status(500).json({ error: stderr || error.message });
+  const isPdf = req.file.mimetype === "application/pdf";
 
-    db.prepare("UPDATE users SET credits = credits - ? WHERE rfid = ?").run(pages, rfid);
-    db.prepare(`INSERT INTO transactions (rfid, type, credits) VALUES (?, 'print', ?)`).run(rfid, pages);
+  function sendToPrinter(pathToPrint: string, cleanupPaths: string[]) {
+    exec(`lp "${pathToPrint}"`, (error, stdout, stderr) => {
+      cleanupPaths.forEach(p => fs.unlink(p, () => {}));
+      if (error) return res.status(500).json({ error: stderr || error.message });
 
-    res.json({ success: true, output: stdout.trim() });
+      db.prepare("UPDATE users SET credits = credits - ? WHERE rfid = ?").run(pages, rfid);
+      db.prepare(`INSERT INTO transactions (rfid, type, credits) VALUES (?, 'print', ?)`).run(rfid, pages);
+
+      res.json({ success: true, output: stdout.trim() });
+    });
+  }
+
+  if (isPdf) {
+    // Already a PDF — print directly, no conversion needed.
+    sendToPrinter(filePath, [filePath]);
+    return;
+  }
+
+  // Non-PDF (docx, pptx, jpg, png, etc.) — convert to PDF first using
+  // headless LibreOffice, then print the resulting PDF.
+  const outDir = path.dirname(filePath);
+  const convertCmd = `soffice --headless --convert-to pdf --outdir "${outDir}" "${filePath}"`;
+
+  exec(convertCmd, (convError) => {
+    if (convError) {
+      fs.unlink(filePath, () => {});
+      return res.status(500).json({ error: "Failed to convert document for printing." });
+    }
+
+    const convertedPath = path.join(
+      outDir,
+      path.basename(filePath, path.extname(filePath)) + ".pdf"
+    );
+
+    if (!fs.existsSync(convertedPath)) {
+      fs.unlink(filePath, () => {});
+      return res.status(500).json({ error: "Conversion produced no output file." });
+    }
+
+    sendToPrinter(convertedPath, [filePath, convertedPath]);
   });
 });
 

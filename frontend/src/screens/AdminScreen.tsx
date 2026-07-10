@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import BackButton from "../components/BackButton";
-
+import { API, WS_URL } from "../config";
 interface Props { onBack: () => void; }
-type Tab = "logs" | "users" | "transactions";
+type Tab = "logs" | "users" | "transactions" | "feedback";
 
-const API = "http://localhost:4000";
-const WS_URL = "ws://localhost:4000";
+
 
 interface User {
   rfid: string; name: string; studentId: string;
@@ -15,6 +14,10 @@ interface Transaction {
   id: number; rfid: string; type: string; size?: string;
   height_mm?: number; weight_g?: number; credits: number; created_at: string;
 }
+interface Feedback {
+  id: number; rfid: string | null; context: string;
+  rating: number; comment: string; created_at: string;
+}
 
 export default function AdminScreen({ onBack }: Props) {
   const [verified, setVerified]     = useState(false);
@@ -23,6 +26,7 @@ export default function AdminScreen({ onBack }: Props) {
   const [tab, setTab]               = useState<Tab>("logs");
   const [users, setUsers]           = useState<User[]>([]);
   const [txns, setTxns]             = useState<Transaction[]>([]);
+  const [feedback, setFeedback]     = useState<Feedback[]>([]);
   const [loading, setLoading]       = useState(false);
   const [addCredits, setAddCredits] = useState<{ rfid: string; name: string } | null>(null);
   const [creditAmount, setCreditAmount] = useState("");
@@ -106,6 +110,10 @@ return () => {
       if (tab === "transactions" || tab === "logs") {
         const r = await fetch(`${API}/api/admin/transactions`);
         setTxns(await r.json());
+      }
+      if (tab === "feedback") {
+        const r = await fetch(`${API}/api/admin/feedback`);
+        setFeedback(await r.json());
       }
     } catch {}
     setLoading(false);
@@ -202,7 +210,7 @@ return () => {
 
       {/* tabs */}
       <div style={tabBar}>
-        {([["logs", "📋 Activity Logs"], ["users", "👥 Manage Users"], ["transactions", "📊 Transactions"]] as [Tab, string][]).map(([t, label]) => (
+        {([["logs", "📋 Activity Logs"], ["users", "👥 Manage Users"], ["transactions", "📊 Transactions"], ["feedback", "💬 Feedback"]] as [Tab, string][]).map(([t, label]) => (
           <button key={t} onClick={() => setTab(t)} style={{
             ...tabBtn,
             color: tab === t ? "#f0a500" : "#666",
@@ -315,6 +323,71 @@ return () => {
                       <td style={td}>{t.size ?? "—"}</td>
                       <td style={{ ...td, color: t.type === "print" ? "#e74c3c" : "#2ecc71", fontWeight: 700 }}>
                         {t.type === "print" ? `-${t.credits}` : `+${t.credits}`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* FEEDBACK TAB */}
+        {!loading && tab === "feedback" && (
+          <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+              {[
+                {
+                  label: "Total feedback",
+                  val: feedback.length,
+                  color: "#fff",
+                },
+                {
+                  label: "Average rating",
+                  val: feedback.length
+                    ? (feedback.reduce((a, f) => a + f.rating, 0) / feedback.length).toFixed(1)
+                    : "—",
+                  color: "#f0a500",
+                },
+                {
+                  label: "With comments",
+                  val: feedback.filter(f => f.comment && f.comment.trim().length > 0).length,
+                  color: "#3498db",
+                },
+              ].map(s => (
+                <div key={s.label} style={statCard}>
+                  <div style={{ fontSize: 11, color: "#555", marginBottom: 4 }}>{s.label}</div>
+                  <div style={{ fontSize: 28, fontWeight: 800, color: s.color }}>{s.val}</div>
+                </div>
+              ))}
+            </div>
+            <div style={tableWrap}>
+              <table style={table}>
+                <thead>
+                  <tr>{["Time", "Context", "Rating", "Comment", "RFID"].map(h => <th key={h} style={th}>{h}</th>)}</tr>
+                </thead>
+                <tbody>
+                  {feedback.length === 0 && (
+                    <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "#555" }}>No feedback yet</td></tr>
+                  )}
+                  {feedback.map(f => (
+                    <tr key={f.id} style={{ borderBottom: "1px solid #2a2a2a" }}>
+                      <td style={td}>{new Date(f.created_at).toLocaleString()}</td>
+                      <td style={td}>
+                        <span style={{
+                          padding: "2px 8px", borderRadius: 20, fontSize: 11,
+                          background: f.context === "deposit" ? "#1a3a2a" : f.context === "print" ? "#1a2a3a" : "#2a2a2a",
+                          color: f.context === "deposit" ? "#2ecc71" : f.context === "print" ? "#3498db" : "#aaa",
+                        }}>
+                          {f.context}
+                        </span>
+                      </td>
+                      <td style={{ ...td, color: "#f0a500", fontWeight: 700, letterSpacing: 1 }}>
+                        {"★".repeat(f.rating)}{"☆".repeat(5 - f.rating)}
+                      </td>
+                      <td style={td}>{f.comment ? f.comment : <span style={{ color: "#444" }}>—</span>}</td>
+                      <td style={{ ...td, fontFamily: "monospace", fontSize: 11, color: "#666" }}>
+                        {f.rfid ?? <span style={{ color: "#444" }}>anon</span>}
                       </td>
                     </tr>
                   ))}

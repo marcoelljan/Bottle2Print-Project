@@ -26,7 +26,10 @@ router.delete("/api/admin/user/:rfid", (req, res) => {
   res.json({ success: true });
 });
 
-const ADMIN_RFID = "C9137114"; // replace with your actual card value
+const ADMIN_RFID = process.env.ADMIN_RFID || "";
+if (!ADMIN_RFID) {
+  console.warn("⚠️  ADMIN_RFID not set in .env — admin panel will reject all cards.");
+}
 
 // verify if a tapped card is admin
 router.post("/api/admin/verify", (req, res) => {

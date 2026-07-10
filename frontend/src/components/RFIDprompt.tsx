@@ -1,11 +1,9 @@
 import { useEffect, useState } from "react";
+import { API, WS_URL } from "../config";
 
 interface Props {
   onIdentified: (user: { rfid: string; name: string; studentId: string; credits: number }) => void;
 }
-
-const WS_URL = "ws://localhost:4000";
-const API = "http://localhost:4000";
 
 export default function RFIDprompt({ onIdentified }: Props) {
   const [pulse, setPulse] = useState(false);

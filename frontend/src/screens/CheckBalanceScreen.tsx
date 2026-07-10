@@ -1,13 +1,10 @@
 import { useState, useEffect } from "react";
 import BackButton from "../components/BackButton";
 import RFIDprompt from "../components/RFIDprompt";
-
+import { API } from "../config";
 
 interface Props { onBack: () => void; }
 interface User { rfid: string; name: string; studentId: string; credits: number; }
-
-
-const API = "http://localhost:4000";
 
 
 export default function CheckBalanceScreen({ onBack }: Props) {
@@ -16,13 +13,13 @@ export default function CheckBalanceScreen({ onBack }: Props) {
 
 
   useEffect(() => {
-    fetch("http://localhost:4000/api/mode", {
+    fetch(`${API}/api/mode`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode: "balance" }),
     });
     return () => {
-      fetch("http://localhost:4000/api/mode", {
+      fetch(`${API}/api/mode`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode: "idle" }),

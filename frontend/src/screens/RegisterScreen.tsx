@@ -1,13 +1,11 @@
 import { useEffect, useState } from "react";
 import BackButton from "../components/BackButton";
+import { API, WS_URL } from "../config";
 
 interface Props { onBack: () => void; }
 
 type Step = "tap" | "form" | "saving" | "success" | "error" | "already";
 
-const WS_URL = "ws://localhost:4000";
-//const WS_URL = `ws://${window.location.host}/ws`;//
-const API    = "http://localhost:4000";
 
 export default function RegisterScreen({ onBack }: Props) {
   const [step, setStep]         = useState<Step>("tap");
@@ -22,67 +20,72 @@ export default function RegisterScreen({ onBack }: Props) {
     return () => clearInterval(t);
   }, []);
    
-   useEffect(() => {
-    fetch("http://localhost:4000/api/mode", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "register" }),
-    });
-    return () => {
-      fetch("http://localhost:4000/api/mode", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "idle" }),
-      });
-    };
-  }, []);
-
-  
-
   useEffect(() => {
   if (step !== "tap") return;
 
-  let handled = false; // ← prevent double-firing
-  
-  const ws = new WebSocket(WS_URL);
+  let cancelled = false;
+  let ws: WebSocket | null = null;
+  let handled = false;
 
-  ws.onclose = () => {};
-  ws.onerror = () => {};
-
-  ws.onmessage = async (e) => {
-  try {
-    const msg = JSON.parse(e.data);
-    if (handled || msg.type !== "state" || !msg.session?.rfid || msg.session.sessionId === 0) return;
-
-    if (msg.session.step === "already_registered") {
-      handled = true;
-      ws.close();
-      setRfid(msg.session.rfid);
-      setStep("already");
-      return;
+  (async () => {
+    try {
+      // Wait for the mode switch (and the session reset it triggers)
+      // to fully complete on the backend BEFORE opening the socket.
+      await fetch(`${API}/api/mode`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "register" }),
+      });
+    } catch {
+      // even if this fails, still try to proceed
     }
 
-    if (msg.session.step === "identified") {
-      handled = true;
-      ws.close();
-      setRfid(msg.session.rfid);
-      setName(
-        msg.session.userName && msg.session.userName !== "User"
-          ? msg.session.userName : ""
-      );
-      setStep("form");
-      return;
-    }
-  } catch {}
-};
+    if (cancelled) return;
+
+    ws = new WebSocket(WS_URL);
+    ws.onclose = () => {};
+    ws.onerror = () => {};
+
+    ws.onmessage = async (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (handled || msg.type !== "state" || !msg.session?.rfid || msg.session.sessionId === 0) return;
+
+        if (msg.session.step === "already_registered") {
+          handled = true;
+          ws?.close();
+          setRfid(msg.session.rfid);
+          setStep("already");
+          return;
+        }
+
+        if (msg.session.step === "identified") {
+          handled = true;
+          ws?.close();
+          setRfid(msg.session.rfid);
+          setName(
+            msg.session.userName && msg.session.userName !== "User"
+              ? msg.session.userName : ""
+          );
+          setStep("form");
+          return;
+        }
+      } catch {}
+    };
+  })();
 
   return () => {
-    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+    cancelled = true;
+    fetch(`${API}/api/mode`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "idle" }),
+    });
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
       ws.close();
     }
   };
 }, [step]);
-
   const handleSave = async () => {
     if (!name.trim() || !studentId.trim()) return;
     setStep("saving");

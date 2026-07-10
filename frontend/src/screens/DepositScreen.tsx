@@ -2,6 +2,7 @@ import { useEffect, useState, useRef } from "react";
 import BackButton from "../components/BackButton";
 import RFIDprompt from "../components/RFIDprompt";
 import FeedBackModal from "../components/FeedbackModal";
+import { API, WS_URL } from "../config";
 
 interface Props { onBack: () => void; }
 interface User { rfid: string; name: string; studentId: string; credits: number; }
@@ -21,8 +22,7 @@ interface Session {
   result: "accepted" | "rejected" | null;
   errorMsg: string | null;
 }
-//const WS_URL = `ws://${window.location.host}/ws`;//
-const WS_URL = "ws://localhost:4000";
+
 
 const STEP_ICONS: Record<string, string> = {
   ir: "📡", capacitive: "🔎", tof: "📏", loadcell: "⚖️",
@@ -40,14 +40,14 @@ export default function DepositScreen({ onBack }: Props) {
 
   const step = session?.step ?? "idle";
 
-  useEffect(() => {
-  fetch("http://localhost:4000/api/mode", {
+ useEffect(() => {
+  fetch(`${API}/api/mode`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ mode: "deposit" }),
   });
   return () => {
-    fetch("http://localhost:4000/api/mode", {
+    fetch(`${API}/api/mode`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode: "idle" }),

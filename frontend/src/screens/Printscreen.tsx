@@ -2,15 +2,12 @@ import { useState, useRef, useEffect } from "react";
 import BackButton from "../components/BackButton";
 import RFIDprompt from "../components/RFIDprompt";
 import FeedBackModal from "../components/FeedbackModal";
-
+import { API } from "../config";
 
 interface Props { onBack: () => void; }
 interface User { rfid: string; name: string; studentId: string; credits: number; }
 
 type Step = "rfid" | "upload" | "confirm" | "printing" | "success" | "error";
-
-const API = "http://localhost:4000";
-
 
 export default function PrintScreen({ onBack }: Props) {
   const [step, setStep] = useState<Step>("rfid");
@@ -27,13 +24,13 @@ export default function PrintScreen({ onBack }: Props) {
 
 
   useEffect(() => {
-    fetch("http://localhost:4000/api/mode", {
+    fetch(`${API}/api/mode`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode: "print" }),
     });
     return () => {
-      fetch("http://localhost:4000/api/mode", {
+      fetch(`${API}/api/mode`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode: "idle" }),

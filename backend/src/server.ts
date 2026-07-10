@@ -1,3 +1,5 @@
+import dotenv from "dotenv";
+dotenv.config();
 import express from "express";
 import cors from "cors";
 import { createServer } from "http";
@@ -5,13 +7,12 @@ import { WebSocketServer, WebSocket } from "ws";
 import { SerialPort } from "serialport";
 import { ReadlineParser } from "@serialport/parser-readline";
 import { db } from "./db";
-import { upload } from "./upload";
 import userRoutes from "./routes/user";
 import printRoutes from "./routes/print";
 import adminRoutes from "./routes/admin";
 import feedbackRoutes from "./routes/feedback";
 
-const PORT = 4000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT) : 4000;
 const ARDUINO_PORT = process.env.ARDUINO_PORT || "/dev/tty.usbmodem14101";
 const BAUD_RATE = 9600;
 
@@ -39,14 +40,14 @@ interface SessionState {
   rfid:        string | null;
   userName:    string | null;
   credits:     number;
- step: "idle" | "gate_open" | "identified" | "already_registered" | "unregistered" | "ir" | "capacitive" | "tof" | "loadcell" | "result";
+  step: "idle" | "gate_open" | "identified" | "already_registered" | "unregistered" | "ir" | "capacitive" | "tof" | "loadcell" | "result";
   steps:       ValidationStep[];
   heightMm:    number | null;
   weightG:     number | null;
   size:        string | null;
   result:      "accepted" | "rejected" | null;
   errorMsg:    string | null;
-  timestamp:   number; // ← NEW: tracks when session was last updated
+  timestamp:   number;
   sessionId:   number;
 }
 
@@ -67,7 +68,24 @@ let session: SessionState = {
   timestamp: 0, sessionId: 0,
 };
 
-function resetSession() {
+// The sensor states where a bottle is actively being validated.
+// We must never silently wipe rfid/session data while one of these is active,
+// or in-flight serial events (like LOADCELL:WEIGHT) will crash trying to
+// write a null rfid to the transactions table.
+const SENSOR_IN_PROGRESS_STEPS = ["ir", "capacitive", "tof", "loadcell"];
+
+// CHANGE 1: resetSession now takes a `force` flag.
+// - force=false (default): used by internal/automatic timeouts. Will NOT
+//   reset if a bottle validation is actively in progress.
+// - force=true: used when the kiosk operator explicitly changes screens/mode.
+//   Always resets, guaranteeing every screen starts from a clean session.
+function resetSession(force = false) {
+  if (!force && SENSOR_IN_PROGRESS_STEPS.includes(session.step)) {
+    // A bottle is mid-validation (IR/CAP/TOF/LOADCELL) — don't clobber it.
+    console.log(`resetSession skipped: validation in progress (step=${session.step})`);
+    return;
+  }
+
   session = {
     rfid: null, userName: null, credits: 0,
     step: "idle", steps: freshSteps(),
@@ -91,12 +109,13 @@ app.use(express.json());
 type KioskMode = "deposit" | "register" | "balance" | "print" | "admin" | "idle";
 let kioskMode: KioskMode = "idle";
 
+// CHANGE 2: every mode switch — not just switching to "idle" — now force-resets
+// the session. This guarantees a screen never inherits stale state from a
+// previous tap (this was the cause of Register skipping the RFID prompt).
 app.post("/api/mode", (req, res) => {
   kioskMode = req.body.mode as KioskMode;
   console.log("Kiosk mode:", kioskMode);
-  if (kioskMode === "idle") {
-    resetSession();
-  }
+  resetSession(true);
   res.json({ success: true, mode: kioskMode });
 });
 
@@ -110,13 +129,11 @@ const httpServer = createServer(app);
 const wss = new WebSocketServer({ server: httpServer });
 
 function broadcastState() {
-  // ← NEW: always include fresh timestamp when broadcasting
   const data = JSON.stringify({ type: "state", session: { ...session, timestamp: Date.now() } });
   wss.clients.forEach(c => { if (c.readyState === WebSocket.OPEN) c.send(data); });
 }
 
 wss.on("connection", ws => {
-  // ← NEW: send timestamp:0 on initial connect so frontend ignores it as stale
   ws.send(JSON.stringify({ type: "state", session: { ...session, timestamp: 0 } }));
 });
 
@@ -126,7 +143,6 @@ const parser = serial.pipe(new ReadlineParser({ delimiter: "\r\n" }));
 
 serial.on("open", () => {
   console.log(`Serial open: ${ARDUINO_PORT}`);
-  // give Arduino 2 seconds to initialize then send a reset command
   setTimeout(() => {
     serial.write("RESET\n");
     console.log("Sent RESET to Arduino");
@@ -142,97 +158,117 @@ parser.on("data", (raw: string) => {
   const line = raw.trim();
   console.log("Arduino →", line);
 
+  if (line === "READY") {
+    console.log("✅ Arduino boot sequence complete and ready for commands.");
+  }
+  if (line === "RESET:OK") {
+    console.log("✅ Arduino acknowledged RESET command.");
+  }
+
+  if (line === "RFID:TIMEOUT") {
+    console.log("Arduino reported internal RFID timeout (no OPEN_GATE sent) — ignoring, not a real tap.");
+    return;
+  }
+
  if (line.startsWith("RFID:")) {
-  const rfid = line.split(":")[1];
-  const newSessionId = Date.now();
-  // reset previous session
-  session.rfid      = null;
-  session.userName  = null;
-  session.credits   = 0;
-  session.step      = "idle";
-  session.steps     = freshSteps();
-  session.result    = null;
-  session.errorMsg  = null;
-  session.timestamp = 0;
-  session.sessionId = 0;
-
-  const user = db.prepare("SELECT * FROM users WHERE rfid = ?").get(rfid) as any;
-
- if (kioskMode === "register") {
-  // a card is fully registered only if it has a non-empty studentId
-  const isFullyRegistered = !!(
-    user &&
-    user.studentId !== null &&
-    user.studentId !== undefined &&
-    String(user.studentId).trim().length > 0
-  );
-
-  session.rfid      = rfid;
-  session.userName  = user?.name ?? null;
-  session.credits   = user?.credits ?? 0;
-  session.steps     = freshSteps();
-  session.result    = null;
-  session.errorMsg  = null;
-  session.timestamp = Date.now();
-  session.sessionId = newSessionId;
-  session.step      = isFullyRegistered ? "already_registered" : "identified";
-  broadcastState();
-  setTimeout(resetSession, 5000);
-  return;  
-}
-// admin mode — don't check studentId, just identify and let AdminScreen verify
-  if (kioskMode === "admin") {
-    session.rfid      = rfid;
-    session.userName  = user?.name ?? null;
+    const rfid = line.split(":")[1];
+    const newSessionId = Date.now();
+    session.rfid      = null;
+    session.userName  = null;
     session.credits   = 0;
+    session.step      = "idle";
+    session.steps     = freshSteps();
+    session.result    = null;
+    session.errorMsg  = null;
+    session.timestamp = 0;
+    session.sessionId = 0;
+
+    const user = db.prepare("SELECT * FROM users WHERE rfid = ?").get(rfid) as any;
+
+    if (kioskMode === "register") {
+      const isFullyRegistered = !!(
+        user &&
+        user.studentId !== null &&
+        user.studentId !== undefined &&
+        String(user.studentId).trim().length > 0
+      );
+
+      session.rfid      = rfid;
+      session.userName  = user?.name ?? null;
+      session.credits   = user?.credits ?? 0;
+      session.steps     = freshSteps();
+      session.result    = null;
+      session.errorMsg  = null;
+      session.timestamp = Date.now();
+      session.sessionId = newSessionId;
+      session.step      = isFullyRegistered ? "already_registered" : "identified";
+      broadcastState();
+
+      // CHANGE 3: removed the blanket 5s auto-reset after tapping in register
+      // mode. It was wiping session.rfid out from under the person while they
+      // were still filling out the name/studentId form. The register screen
+      // itself already resets the session on unmount (via /api/mode: idle),
+      // so we don't need a server-side timer racing against the form here.
+      // We keep a short auto-reset ONLY for the "already registered" dead-end,
+      // since there's no form to fill out there.
+      if (isFullyRegistered) {
+        setTimeout(() => resetSession(), 3000);
+      }
+      return;
+    }
+
+    if (kioskMode === "admin") {
+      session.rfid      = rfid;
+      session.userName  = user?.name ?? null;
+      session.credits   = 0;
+      session.steps     = freshSteps();
+      session.result    = null;
+      session.errorMsg  = null;
+      session.timestamp = Date.now();
+      session.sessionId = newSessionId;
+      session.step      = "identified";
+      broadcastState();
+      setTimeout(() => resetSession(), 3000);
+      return;
+    }
+
+    if (!user || !user.studentId || user.studentId.trim() === "") {
+      session.rfid      = rfid;
+      session.step      = "unregistered";
+      session.timestamp = Date.now();
+      session.sessionId = newSessionId;
+      broadcastState();
+      sendToArduino("IGNORE");
+      setTimeout(() => resetSession(), 3000);
+      return;
+    }
+
+    session.rfid      = rfid;
+    session.userName  = user.name;
+    session.credits   = user.credits;
     session.steps     = freshSteps();
     session.result    = null;
     session.errorMsg  = null;
     session.timestamp = Date.now();
-    session.sessionId = newSessionId; // ← assign
-    session.step      = "identified"; // always identified in admin mode
-    broadcastState();
-    setTimeout(resetSession, 5000); // ← 10 seconds for admin to verify
-    return;
-  }
-  // all other modes — reject if not registered
-  if (!user || !user.studentId || user.studentId.trim() === "") {
-    session.rfid      = rfid;
-    session.step      = "unregistered"; // ← new step
-    session.timestamp = Date.now();
     session.sessionId = newSessionId;
+
+    if (kioskMode === "deposit") {
+      session.step = "gate_open";
+      sendToArduino("OPEN_GATE");
+    } else {
+      session.step = "identified";
+    }
+
     broadcastState();
-    sendToArduino("IGNORE");
-    setTimeout(resetSession, 2000); // ← reset after 2 seconds
     return;
   }
 
-  // registered user — proceed normally
-  session.rfid      = rfid;
-  session.userName  = user.name;
-  session.credits   = user.credits;
-  session.steps     = freshSteps();
-  session.result    = null;
-  session.errorMsg  = null;
-  session.timestamp = Date.now();
-  session.sessionId = newSessionId;
-
-  if (kioskMode === "deposit") {
-    session.step = "gate_open";
-    sendToArduino("OPEN_GATE");
-  } else {
-    session.step = "identified";
-  }
-
-  broadcastState();
-  return;
-}
   // Timeout — no bottle inserted
   if (line === "TIMEOUT") {
     session.step     = "idle";
     session.errorMsg = "No bottle inserted. Gate closed.";
     broadcastState();
-    setTimeout(resetSession, 4000);
+    setTimeout(() => resetSession(), 3000);
     return;
   }
 
@@ -265,7 +301,7 @@ parser.on("data", (raw: string) => {
     session.errorMsg = "Capacitive sensor found no bottle. Try again.";
     broadcastState();
     sendToArduino("REJECT");
-    setTimeout(resetSession, 5000);
+    setTimeout(() => resetSession(), 3000);
     return;
   }
 
@@ -280,7 +316,7 @@ parser.on("data", (raw: string) => {
       session.errorMsg = `Invalid bottle size (height ${heightMm}mm). Only PET bottles accepted.`;
       broadcastState();
       sendToArduino("REJECT");
-      setTimeout(resetSession, 5000);
+      setTimeout(() => resetSession(), 5000);
     } else {
       setStep("tof", "pass", `Height: ${heightMm}mm`);
       session.step = "loadcell";
@@ -296,12 +332,22 @@ parser.on("data", (raw: string) => {
     session.errorMsg = "Height sensor timed out. Try again.";
     broadcastState();
     sendToArduino("REJECT");
-    setTimeout(resetSession, 5000);
+    setTimeout(() => resetSession(), 5000);
     return;
   }
 
   // Load cell weight
   if (line.startsWith("LOADCELL:WEIGHT:")) {
+    // CHANGE 4 (defensive backstop): if session.rfid somehow got wiped out
+    // from under us (e.g. an unexpected mode switch mid-validation), don't
+    // crash the server trying to insert a null rfid — just log and bail.
+    if (!session.rfid) {
+      console.warn("LOADCELL:WEIGHT received but session.rfid is null — ignoring reading, resetting.");
+      sendToArduino("REJECT");
+      resetSession(true);
+      return;
+    }
+
     const weightG = parseFloat(line.split(":")[2]);
     session.weightG = weightG;
     const match = classifyBottle(session.heightMm!, weightG);
@@ -313,7 +359,7 @@ parser.on("data", (raw: string) => {
       session.errorMsg = `Size mismatch — height and weight don't match a valid bottle type.`;
       broadcastState();
       sendToArduino("REJECT");
-      setTimeout(resetSession, 5000);
+      setTimeout(() => resetSession(), 5000);
     } else {
       setStep("loadcell", "pass", `Weight: ${weightG}g — ${match.label}`);
       session.size   = match.label;
@@ -331,7 +377,7 @@ parser.on("data", (raw: string) => {
 
       broadcastState();
       sendToArduino("ACCEPT");
-      setTimeout(resetSession, 6000);
+      setTimeout(() => resetSession(), 6000);
     }
     return;
   }

@@ -1,12 +1,11 @@
 import { useState } from "react";
+import { API } from "../config";
 
 interface Props {
   context: "print" | "deposit" | "general";
   rfid?: string | null;
   onClose: () => void;
 }
-
-const API = "http://localhost:4000";
 
 export default function FeedbackModal({ context, rfid, onClose }: Props) {
   const [rating, setRating] = useState(0);
