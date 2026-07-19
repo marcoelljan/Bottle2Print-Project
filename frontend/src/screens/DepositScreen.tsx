@@ -97,7 +97,7 @@ export default function DepositScreen({ onBack }: Props) {
       <div style={body}>
 
         {/* tap card first if not yet identified */}
-       {!user && (step === "idle" || step === "unregistered") && <RFIDprompt onIdentified={handleIdentified} />}
+       {!user && (step === "idle" || step === "unregistered") && !session?.errorMsg && <RFIDprompt onIdentified={handleIdentified} />}
         {/* gate open — insert bottle */}
         {user && step === "gate_open" && (
           <div style={{ textAlign: "center" }}>

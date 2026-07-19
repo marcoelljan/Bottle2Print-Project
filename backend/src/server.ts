@@ -268,7 +268,7 @@ parser.on("data", (raw: string) => {
     session.step     = "idle";
     session.errorMsg = "No bottle inserted. Gate closed.";
     broadcastState();
-    setTimeout(() => resetSession(), 3000);
+    setTimeout(() => resetSession(), 2000);
     return;
   }
 
