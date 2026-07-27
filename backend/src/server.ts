@@ -1,3 +1,4 @@
+import path from "path";
 import dotenv from "dotenv";
 dotenv.config();
 import express from "express";
@@ -382,5 +383,11 @@ parser.on("data", (raw: string) => {
 
 // ── REST ──────────────────────────────────────────────────────────────────────
 app.get("/api/session", (_req, res) => res.json(session));
+
+// Static files serving setup
+app.use(express.static(path.join(__dirname, "../../frontend/dist")));
+app.get(/^(?!\/api).*/, (_req, res) => {
+  res.sendFile(path.join(__dirname, "../../frontend/dist/index.html"));
+});
 
 httpServer.listen(PORT, () => console.log(`Backend on http://localhost:${PORT}`));
