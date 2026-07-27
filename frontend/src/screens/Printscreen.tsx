@@ -2,26 +2,25 @@ import { useState, useRef, useEffect } from "react";
 import BackButton from "../components/BackButton";
 import RFIDprompt from "../components/RFIDprompt";
 import FeedBackModal from "../components/FeedbackModal";
-import { API } from "../config";
+import { API, WS_URL } from "../config";
 
 interface Props { onBack: () => void; }
 interface User { rfid: string; name: string; studentId: string; credits: number; }
 
-type Step = "rfid" | "upload" | "confirm" | "printing" | "success" | "error";
+type Step = "rfid" | "qr" | "confirm" | "printing" | "success" | "error";
 
 export default function PrintScreen({ onBack }: Props) {
   const [step, setStep] = useState<Step>("rfid");
   const [user, setUser] = useState<User | null>(null);
-  const [file, setFile] = useState<File | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [qrImage, setQrImage] = useState<string | null>(null);
+  const [fileName, setFileName] = useState<string | null>(null);
   const [pageCount, setPageCount] = useState<number | null>(null);
-  const [counting, setCounting] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [showNoCredit, setShowNoCredit] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
   const [, setJobOutput] = useState("");
-  const fileRef = useRef<HTMLInputElement>(null);
-  
-
+  const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
     fetch(`${API}/api/mode`, {
@@ -38,54 +37,58 @@ export default function PrintScreen({ onBack }: Props) {
     };
   }, []);
 
-  const handleIdentified = (u: User) => {
-    setUser(u);
-    setStep("upload");
-  };
-
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    if (!f) return;
-    setFile(f);
-    setPageCount(null);
-
-    if (f.type === "application/pdf") {
-      setCounting(true);
+  // WebSocket listener — waits for the phone's upload to arrive
+  useEffect(() => {
+    const ws = new WebSocket(WS_URL);
+    wsRef.current = ws;
+    ws.onmessage = (e) => {
       try {
-        const form = new FormData();
-        form.append("file", f);
-        const res = await fetch(`${API}/api/count-pages`, { method: "POST", body: form });
-        const data = await res.json();
-        setPageCount(data.pages ?? 1);
-      } catch {
-        setPageCount(1);
-      }
-      setCounting(false);
-    } else {
-      setPageCount(1);
+        const msg = JSON.parse(e.data);
+        if (msg.type === "qr-upload" && msg.sessionId === sessionId) {
+          setFileName(msg.fileName);
+          setPageCount(msg.pageCount ?? 1);
+          setStep("confirm");
+        }
+      } catch {}
+    };
+    return () => ws.close();
+  }, [sessionId]);
+
+  const handleIdentified = async (u: User) => {
+    setUser(u);
+    try {
+      const res = await fetch(`${API}/api/print/qr-session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rfid: u.rfid }),
+      });
+      const data = await res.json();
+      setSessionId(data.sessionId);
+      setQrImage(data.qrImage);
+      setStep("qr");
+    } catch {
+      setErrorMsg("Could not reach backend to generate QR code.");
+      setStep("error");
     }
   };
 
-  const handleConfirm = () => {
+  const creditCost = pageCount ?? 1;
+  const hasEnough = user && pageCount !== null && user.credits >= creditCost;
+
+  const handleConfirmClick = () => {
     if (!user || pageCount === null) return;
     if (user.credits < pageCount) {
       setShowNoCredit(true);
       return;
     }
-    setStep("confirm");
+    handlePrint();
   };
 
   const handlePrint = async () => {
-    if (!file || !user || pageCount === null) return;
+    if (!sessionId) return;
     setStep("printing");
-
-    const form = new FormData();
-    form.append("document", file);
-    form.append("rfid", user.rfid);
-    form.append("pages", String(pageCount));
-
     try {
-      const res = await fetch(`${API}/api/print`, { method: "POST", body: form });
+      const res = await fetch(`${API}/api/print/qr-confirm/${sessionId}`, { method: "POST" });
       const data = await res.json();
       if (data.success) {
         setJobOutput(data.output ?? "");
@@ -101,10 +104,6 @@ export default function PrintScreen({ onBack }: Props) {
     }
   };
 
-  const isPdf = file?.type === "application/pdf";
-  const creditCost = pageCount ?? 1;
-  const hasEnough = user && pageCount !== null && user.credits >= creditCost;
-
   return (
     <div style={fullScreen}>
       <BackButton onBack={onBack} />
@@ -113,7 +112,7 @@ export default function PrintScreen({ onBack }: Props) {
         <span style={{ fontSize: 22 }}>🖨️</span>
         <div>
           <div style={headerTitle}>Print</div>
-          <div style={headerSub}>Upload & print a document</div>
+          <div style={headerSub}>Scan the QR code to send your file</div>
         </div>
       </div>
 
@@ -122,8 +121,8 @@ export default function PrintScreen({ onBack }: Props) {
         {/* STEP 1 — RFID */}
         {step === "rfid" && <RFIDprompt onIdentified={handleIdentified} />}
 
-        {/* STEP 2 — Upload */}
-        {step === "upload" && (
+        {/* STEP 2 — QR code, waiting for phone upload */}
+        {step === "qr" && (
           <div style={card}>
             <div style={userBadge}>
               <span style={{ fontSize: 20 }}>👤</span>
@@ -135,53 +134,24 @@ export default function PrintScreen({ onBack }: Props) {
 
             <div style={divider} />
 
-            <p style={label}>Select a file to print</p>
-            <p style={{ fontSize: 12, color: "#555", marginBottom: 16 }}>
-              Supported: PDF, Word, PowerPoint, Images
-            </p>
-
-            <div
-              onClick={() => fileRef.current?.click()}
-              style={{
-                border: "2px dashed #3a3a3a", borderRadius: 12,
-                padding: "32px 24px", textAlign: "center", cursor: "pointer",
-                background: "#1e1e1e", marginBottom: 16,
-                transition: "border-color 0.2s",
-              }}
-              onMouseEnter={e => (e.currentTarget as HTMLDivElement).style.borderColor = "#f0a500"}
-              onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.borderColor = "#3a3a3a"}
-            >
-              <div style={{ fontSize: 32, marginBottom: 8 }}>📄</div>
-              {file
-                ? <div style={{ color: "#f0a500", fontWeight: 600, fontSize: 14 }}>{file.name}</div>
-                : <div style={{ color: "#666", fontSize: 14 }}>Tap to choose file</div>
-              }
-              {counting && <div style={{ color: "#aaa", fontSize: 12, marginTop: 8 }}>Counting pages...</div>}
-              {file && pageCount !== null && (
-                <div style={{ marginTop: 10 }}>
-                  <span style={pill}>
-                    {isPdf ? `${pageCount} page${pageCount > 1 ? "s" : ""}` : "1 page (non-PDF)"}
-                  </span>
-                  <span style={{ ...pill, marginLeft: 8, background: hasEnough ? "#1a3a2a" : "#3a1a1a", color: hasEnough ? "#2ecc71" : "#e74c3c", borderColor: hasEnough ? "#2ecc71" : "#e74c3c" }}>
-                    {creditCost} credit{creditCost > 1 ? "s" : ""} will be deducted
-                  </span>
+            <div style={{ textAlign: "center" }}>
+              <p style={label}>Scan this code with your phone</p>
+              <p style={{ fontSize: 12, color: "#555", marginBottom: 16 }}>
+                Connect to the kiosk Wi-Fi if prompted, then upload your file
+              </p>
+              {qrImage && (
+                <div style={{ background: "#fff", padding: 16, borderRadius: 12, display: "inline-block" }}>
+                  <img src={qrImage} alt="QR code" style={{ width: 220, height: 220, display: "block" }} />
                 </div>
               )}
+              <p style={{ fontSize: 12, color: "#666", marginTop: 16 }}>
+                Waiting for upload...
+              </p>
             </div>
-
-            <input ref={fileRef} type="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.jpg,.jpeg,.png" style={{ display: "none" }} onChange={handleFileChange} />
-
-            <button
-              onClick={handleConfirm}
-              disabled={!file || counting || pageCount === null}
-              style={primaryBtn(!!file && !counting && pageCount !== null)}
-            >
-              Continue
-            </button>
           </div>
         )}
 
-        {/* STEP 3 — Confirm */}
+        {/* STEP 3 — Confirm (after phone upload arrives) */}
         {step === "confirm" && (
           <div style={card}>
             <div style={{ textAlign: "center", marginBottom: 24 }}>
@@ -191,7 +161,7 @@ export default function PrintScreen({ onBack }: Props) {
 
             <div style={infoRow}>
               <span style={infoLabel}>File</span>
-              <span style={infoVal}>{file?.name}</span>
+              <span style={infoVal}>{fileName}</span>
             </div>
             <div style={infoRow}>
               <span style={infoLabel}>Pages</span>
@@ -205,10 +175,15 @@ export default function PrintScreen({ onBack }: Props) {
               <span style={infoLabel}>Credits after print</span>
               <span style={{ ...infoVal, color: "#f0a500", fontWeight: 700 }}>{(user?.credits ?? 0) - creditCost}</span>
             </div>
+            {!hasEnough && (
+              <div style={{ fontSize: 12, color: "#e74c3c", marginTop: 8 }}>
+                Not enough credits for this job.
+              </div>
+            )}
 
             <div style={{ display: "flex", gap: 12, marginTop: 24 }}>
-              <button onClick={() => setStep("upload")} style={ghostBtn}>Cancel</button>
-              <button onClick={handlePrint} style={primaryBtn(true)}>Print now</button>
+              <button onClick={() => setStep("qr")} style={ghostBtn}>Back</button>
+              <button onClick={handleConfirmClick} style={primaryBtn(true)}>Print now</button>
             </div>
           </div>
         )}
@@ -240,7 +215,7 @@ export default function PrintScreen({ onBack }: Props) {
             <div style={{ fontSize: 64, marginBottom: 16 }}>❌</div>
             <div style={{ fontSize: 20, color: "#e74c3c", fontWeight: 700, marginBottom: 8 }}>Print failed</div>
             <div style={{ fontSize: 14, color: "#aaa", marginBottom: 24 }}>{errorMsg}</div>
-            <button onClick={() => setStep("upload")} style={primaryBtn(true)}>Try again</button>
+            <button onClick={() => setStep("qr")} style={primaryBtn(true)}>Try again</button>
           </div>
         )}
       </div>
@@ -301,10 +276,6 @@ const userBadge: React.CSSProperties = {
 };
 const divider: React.CSSProperties = { height: 1, background: "#333", margin: "16px 0" };
 const label: React.CSSProperties = { fontSize: 14, fontWeight: 600, marginBottom: 6, color: "#ccc" };
-const pill: React.CSSProperties = {
-  display: "inline-block", fontSize: 11, padding: "3px 10px",
-  border: "1px solid #555", borderRadius: 20, color: "#aaa", background: "#1a1a1a",
-};
 const infoRow: React.CSSProperties = {
   display: "flex", justifyContent: "space-between",
   borderBottom: "1px solid #2a2a2a", padding: "10px 0",

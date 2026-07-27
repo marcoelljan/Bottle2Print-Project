@@ -26,23 +26,23 @@ export default function RegisterScreen({ onBack }: Props) {
   let cancelled = false;
   let ws: WebSocket | null = null;
   let handled = false;
+  let shouldClose = false;
 
   (async () => {
     try {
-      // Wait for the mode switch (and the session reset it triggers)
-      // to fully complete on the backend BEFORE opening the socket.
       await fetch(`${API}/api/mode`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode: "register" }),
       });
-    } catch {
-      // even if this fails, still try to proceed
-    }
+    } catch {}
 
     if (cancelled) return;
 
     ws = new WebSocket(WS_URL);
+    ws.onopen = () => {
+      if (shouldClose) ws?.close();
+    };
     ws.onclose = () => {};
     ws.onerror = () => {};
 
@@ -81,8 +81,12 @@ export default function RegisterScreen({ onBack }: Props) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode: "idle" }),
     });
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-      ws.close();
+    if (ws) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      } else if (ws.readyState === WebSocket.CONNECTING) {
+        shouldClose = true;
+      }
     }
   };
 }, [step]);

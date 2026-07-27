@@ -16,59 +16,65 @@ export default function RFIDprompt({ onIdentified }: Props) {
   }, []);
 
  useEffect(() => {
-  
   const ws = new WebSocket(WS_URL);
+  let shouldClose = false;
 
+  ws.onopen = () => {
+    if (shouldClose) ws.close();
+  };
   ws.onclose = () => {};
   ws.onerror = () => {};
 
   ws.onmessage = async (e) => {
-  try {
-    const data = JSON.parse(e.data);
-    if (data.type === "state" && data.session?.sessionId > 0) {
+    try {
+      const data = JSON.parse(e.data);
+      if (data.type === "state" && data.session?.sessionId > 0) {
 
-      if (data.session.step === "unregistered") {
-        setStatus("error");
-        setMsg("Card not registered. Please register first.");
-        setTimeout(() => {
-          setStatus("waiting");
-          setMsg("");
-        }, 3000);
-        return;
-      }
-
-      if (data.session?.rfid && data.session.step === "identified") {
-        setStatus("found");
-        setMsg(`Welcome, ${data.session.userName}`);
-        try {
-          const res = await fetch(`${API}/api/user/${data.session.rfid}`);
-          const user = await res.json();
+        if (data.session.step === "unregistered") {
+          setStatus("error");
+          setMsg("Card not registered. Please register first.");
           setTimeout(() => {
-            onIdentified({
-              rfid:      user.rfid,
-              name:      user.name,
-              studentId: user.studentId ?? "",
-              credits:   user.credits,
-            });
-          }, 800);
-        } catch {
-          setTimeout(() => {
-            onIdentified({
-              rfid:      data.session.rfid,
-              name:      data.session.userName,
-              studentId: "",
-              credits:   data.session.credits,
-            });
-          }, 800);
+            setStatus("waiting");
+            setMsg("");
+          }, 3000);
+          return;
         }
-        ws.close();
+
+        if (data.session?.rfid && data.session.step === "identified") {
+          setStatus("found");
+          setMsg(`Welcome, ${data.session.userName}`);
+          try {
+            const res = await fetch(`${API}/api/user/${data.session.rfid}`);
+            const user = await res.json();
+            setTimeout(() => {
+              onIdentified({
+                rfid:      user.rfid,
+                name:      user.name,
+                studentId: user.studentId ?? "",
+                credits:   user.credits,
+              });
+            }, 800);
+          } catch {
+            setTimeout(() => {
+              onIdentified({
+                rfid:      data.session.rfid,
+                name:      data.session.userName,
+                studentId: "",
+                credits:   data.session.credits,
+              });
+            }, 800);
+          }
+          ws.close();
+        }
       }
-    }
-  } catch {}
-};
+    } catch {}
+  };
+
   return () => {
-    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+    if (ws.readyState === WebSocket.OPEN) {
       ws.close();
+    } else if (ws.readyState === WebSocket.CONNECTING) {
+      shouldClose = true;
     }
   };
 }, [onIdentified]);

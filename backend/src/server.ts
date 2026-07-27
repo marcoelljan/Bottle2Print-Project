@@ -11,6 +11,7 @@ import userRoutes from "./routes/user";
 import printRoutes from "./routes/print";
 import adminRoutes from "./routes/admin";
 import feedbackRoutes from "./routes/feedback";
+import { setWss } from "./wsHub";
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 4000;
 const ARDUINO_PORT = process.env.ARDUINO_PORT || "/dev/tty.usbmodem14101";
@@ -19,10 +20,10 @@ const BAUD_RATE = 9600;
 // ── Size classification ───────────────────────────────────────────────────────
 interface SizeSpec { label: string; minHeight: number; maxHeight: number; minWeight: number; maxWeight: number; }
 const SIZE_SPECS: SizeSpec[] = [
-  { label: "Small",  minHeight: 80,  maxHeight: 150, minWeight: 0,  maxWeight: 0 },
-  { label: "Medium", minHeight: 151, maxHeight: 220, minWeight: 0, maxWeight: 0},
-  { label: "Large",  minHeight: 221, maxHeight: 280, minWeight: 0, maxWeight: 0 },
-  { label: "XL",     minHeight: 281, maxHeight: 320, minWeight: 0, maxWeight: 0 },
+  { label: "Small",  minHeight: 351,  maxHeight: 999, minWeight: 8,  maxWeight: 24},
+  { label: "Medium", minHeight: 351, maxHeight: 999, minWeight: 25 , maxWeight: 28},
+  { label: "Large",  minHeight: 351, maxHeight: 999, minWeight: 29, maxWeight: 47},
+  { label: "XL",     minHeight: 351, maxHeight: 999, minWeight: 48, maxWeight: 54 },
 ];
 
 function classifyBottle(heightMm: number, weightG: number): SizeSpec | null {
@@ -127,6 +128,7 @@ app.use(feedbackRoutes);
 
 const httpServer = createServer(app);
 const wss = new WebSocketServer({ server: httpServer });
+setWss(wss);
 
 function broadcastState() {
   const data = JSON.stringify({ type: "state", session: { ...session, timestamp: Date.now() } });
@@ -170,7 +172,7 @@ parser.on("data", (raw: string) => {
     return;
   }
 
- if (line.startsWith("RFID:")) {
+  if (line.startsWith("RFID:")) {
     const rfid = line.split(":")[1];
     const newSessionId = Date.now();
     session.rfid      = null;
@@ -204,13 +206,6 @@ parser.on("data", (raw: string) => {
       session.step      = isFullyRegistered ? "already_registered" : "identified";
       broadcastState();
 
-      // CHANGE 3: removed the blanket 5s auto-reset after tapping in register
-      // mode. It was wiping session.rfid out from under the person while they
-      // were still filling out the name/studentId form. The register screen
-      // itself already resets the session on unmount (via /api/mode: idle),
-      // so we don't need a server-side timer racing against the form here.
-      // We keep a short auto-reset ONLY for the "already registered" dead-end,
-      // since there's no form to fill out there.
       if (isFullyRegistered) {
         setTimeout(() => resetSession(), 3000);
       }
@@ -265,6 +260,7 @@ parser.on("data", (raw: string) => {
 
   // Timeout — no bottle inserted
   if (line === "TIMEOUT") {
+    if (session.step === "result") return; // ← GUARD ADDED
     session.step     = "idle";
     session.errorMsg = "No bottle inserted. Gate closed.";
     broadcastState();
@@ -274,10 +270,12 @@ parser.on("data", (raw: string) => {
 
   // IR detected
   if (line === "IR:DETECTED") {
+    if (session.step === "result") return; // ← GUARD ADDED
     session.step = "ir";
     setStep("ir", "running");
     broadcastState();
     setTimeout(() => {
+      if (session.step === "result") return; // ← GUARD ADDED (inside the delayed callback too)
       setStep("ir", "pass", "Bottle insertion confirmed");
       session.step = "capacitive";
       setStep("capacitive", "running");
@@ -288,6 +286,7 @@ parser.on("data", (raw: string) => {
 
   // Capacitive
   if (line === "CAP:PASS") {
+    if (session.step === "result") return; // ← GUARD ADDED
     setStep("capacitive", "pass", "Physical presence confirmed");
     session.step = "tof";
     setStep("tof", "running");
@@ -295,6 +294,7 @@ parser.on("data", (raw: string) => {
     return;
   }
   if (line === "CAP:FAIL") {
+    if (session.step === "result") return; // ← GUARD ADDED
     setStep("capacitive", "fail", "No bottle detected at sensor");
     session.step     = "result";
     session.result   = "rejected";
@@ -307,6 +307,7 @@ parser.on("data", (raw: string) => {
 
   // ToF height
   if (line.startsWith("TOF:HEIGHT:")) {
+    if (session.step === "result") return; // ← GUARD ADDED
     const heightMm = parseFloat(line.split(":")[2]);
     session.heightMm = heightMm;
     if (heightMm < 80 || heightMm > 320) {
@@ -326,6 +327,7 @@ parser.on("data", (raw: string) => {
     return;
   }
   if (line === "TOF:FAIL:TIMEOUT") {
+    if (session.step === "result") return; // ← GUARD ADDED
     setStep("tof", "fail", "Sensor timeout");
     session.step     = "result";
     session.result   = "rejected";
@@ -338,13 +340,8 @@ parser.on("data", (raw: string) => {
 
   // Load cell weight
   if (line.startsWith("LOADCELL:WEIGHT:")) {
-    // CHANGE 4 (defensive backstop): if session.rfid somehow got wiped out
-    // from under us (e.g. an unexpected mode switch mid-validation), don't
-    // crash the server trying to insert a null rfid — just log and bail.
-    if (!session.rfid) {
-      console.warn("LOADCELL:WEIGHT received but session.rfid is null — ignoring reading, resetting.");
-      sendToArduino("REJECT");
-      resetSession(true);
+    if (!session.rfid || session.step === "result") { // ← GUARD ADDED (step check)
+      console.warn("LOADCELL:WEIGHT ignored — no active session or result already set.");
       return;
     }
 
@@ -377,7 +374,7 @@ parser.on("data", (raw: string) => {
 
       broadcastState();
       sendToArduino("ACCEPT");
-      setTimeout(() => resetSession(), 6000);
+      setTimeout(() => resetSession(), 4000); 
     }
     return;
   }

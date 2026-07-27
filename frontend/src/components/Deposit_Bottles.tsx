@@ -35,16 +35,30 @@ export default function DepositFlow() {
   const [session, setSession] = useState<Session | null>(null);
   const [connected, setConnected] = useState(false);
 
-  useEffect(() => {
-    const ws = new WebSocket(WS_URL);
-    ws.onopen  = () => setConnected(true);
-    ws.onclose = () => setConnected(false);
-    ws.onmessage = (e) => {
+ useEffect(() => {
+  const ws = new WebSocket(WS_URL);
+  let shouldClose = false;
+
+  ws.onopen  = () => {
+    setConnected(true);
+    if (shouldClose) ws.close();
+  };
+  ws.onclose = () => setConnected(false);
+  ws.onmessage = (e) => {
+    try {
       const msg = JSON.parse(e.data);
       if (msg.type === "state") setSession(msg.session);
-    };
-    return () => ws.close();
-  }, []);
+    } catch {}
+  };
+
+  return () => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.close();
+    } else if (ws.readyState === WebSocket.CONNECTING) {
+      shouldClose = true;
+    }
+  };
+}, []);
 
   const step = session?.step ?? "idle";
 

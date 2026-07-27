@@ -60,42 +60,50 @@ export default function AdminScreen({ onBack }: Props) {
 useEffect(() => {
   if (verified) return;
   const ws = new WebSocket(WS_URL);
- ws.onmessage = async (e) => {
-  try {
-    const msg = JSON.parse(e.data);
-    if (
-      msg.type === "state" &&
-      msg.session?.rfid &&
-      msg.session.step === "identified" &&
-      msg.session.sessionId > 0  // ← sessionId instead of timestamp
-    ) {
-      const tappedRfid = msg.session.rfid;
-      ws.close();
-      const res = await fetch(`${API}/api/admin/verify`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rfid: tappedRfid }),
-      });
-      if (res.ok) {
-        setVerified(true);
-        setVerifyError("");
-      } else {
-        setVerifyError("Access denied. Not an admin card.");
-        setTimeout(() => {
-          setVerifyError("");
-          setRetryKey(k => k + 1);
-        }, 3000);
-      }
-    }
-  } catch {}
-};
-return () => {
-  if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-    ws.close();
-  }
-};
-}, [verified, retryKey]); // retryKey forces a fresh WebSocket on each retry
+  let shouldClose = false;
 
+  ws.onopen = () => {
+    if (shouldClose) ws.close();
+  };
+
+  ws.onmessage = async (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (
+        msg.type === "state" &&
+        msg.session?.rfid &&
+        msg.session.step === "identified" &&
+        msg.session.sessionId > 0
+      ) {
+        const tappedRfid = msg.session.rfid;
+        ws.close();
+        const res = await fetch(`${API}/api/admin/verify`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rfid: tappedRfid }),
+        });
+        if (res.ok) {
+          setVerified(true);
+          setVerifyError("");
+        } else {
+          setVerifyError("Access denied. Not an admin card.");
+          setTimeout(() => {
+            setVerifyError("");
+            setRetryKey(k => k + 1);
+          }, 3000);
+        }
+      }
+    } catch {}
+  };
+
+  return () => {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.close();
+    } else if (ws.readyState === WebSocket.CONNECTING) {
+      shouldClose = true;
+    }
+  };
+}, [verified, retryKey]);
   useEffect(() => {
     if (verified) fetchData();
   }, [verified, tab]);
