@@ -9,6 +9,22 @@ interface User { rfid: string; name: string; studentId: string; credits: number;
 
 type Step = "rfid" | "qr" | "confirm" | "printing" | "success" | "error";
 
+// Mirrors the backend's parsePageRange logic — used only to compute
+// a live, client-side cost preview before the user hits Print.
+function countSelectedPages(range: string, total: number): number | null {
+  if (range === "all" || range.trim() === "") return total;
+  const pages = new Set<number>();
+  for (const part of range.split(",").map(p => p.trim()).filter(Boolean)) {
+    const m = part.match(/^(\d+)(?:-(\d+))?$/);
+    if (!m) return null;
+    const start = parseInt(m[1]);
+    const end = m[2] ? parseInt(m[2]) : start;
+    if (start < 1 || end < start || end > total) return null;
+    for (let i = start; i <= end; i++) pages.add(i);
+  }
+  return pages.size || null;
+}
+
 export default function PrintScreen({ onBack }: Props) {
   const [step, setStep] = useState<Step>("rfid");
   const [user, setUser] = useState<User | null>(null);
@@ -16,6 +32,9 @@ export default function PrintScreen({ onBack }: Props) {
   const [qrImage, setQrImage] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [pageCount, setPageCount] = useState<number | null>(null);
+  const [colorMode, setColorMode] = useState<"bw" | "color">("bw");
+  const [pageRange, setPageRange] = useState<"all" | string>("all");
+  const [customRange, setCustomRange] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
   const [showNoCredit, setShowNoCredit] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
@@ -47,6 +66,9 @@ export default function PrintScreen({ onBack }: Props) {
         if (msg.type === "qr-upload" && msg.sessionId === sessionId) {
           setFileName(msg.fileName);
           setPageCount(msg.pageCount ?? 1);
+          setColorMode("bw");
+          setPageRange("all");
+          setCustomRange("");
           setStep("confirm");
         }
       } catch {}
@@ -72,12 +94,17 @@ export default function PrintScreen({ onBack }: Props) {
     }
   };
 
-  const creditCost = pageCount ?? 1;
-  const hasEnough = user && pageCount !== null && user.credits >= creditCost;
+  // NEW — cost now depends on how many pages are actually selected, not the total
+  const activeRange = pageRange === "all" ? "all" : customRange;
+  const selectedPageCount = countSelectedPages(activeRange, pageCount ?? 1);
+  const rangeIsValid = selectedPageCount !== null;
+  const creditsPerPage = colorMode === "color" ? 8 : 3;
+  const creditCost = (selectedPageCount ?? 0) * creditsPerPage;
+  const hasEnough = user && rangeIsValid && user.credits >= creditCost;
 
   const handleConfirmClick = () => {
-    if (!user || pageCount === null) return;
-    if (user.credits < pageCount) {
+    if (!user || pageCount === null || !rangeIsValid) return;
+    if (user.credits < creditCost) {
       setShowNoCredit(true);
       return;
     }
@@ -88,7 +115,14 @@ export default function PrintScreen({ onBack }: Props) {
     if (!sessionId) return;
     setStep("printing");
     try {
-      const res = await fetch(`${API}/api/print/qr-confirm/${sessionId}`, { method: "POST" });
+      const res = await fetch(`${API}/api/print/qr-confirm/${sessionId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          colorMode,
+          pageRange: pageRange === "all" ? "all" : customRange,
+        }),
+      });
       const data = await res.json();
       if (data.success) {
         setJobOutput(data.output ?? "");
@@ -167,6 +201,88 @@ export default function PrintScreen({ onBack }: Props) {
               <span style={infoLabel}>Pages</span>
               <span style={infoVal}>{pageCount}</span>
             </div>
+
+            <div style={{ ...infoRow, alignItems: "center" }}>
+              <span style={infoLabel}>Print type</span>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={() => setColorMode("bw")}
+                  style={{
+                    padding: "6px 14px", borderRadius: 8, fontSize: 12, fontWeight: 700,
+                    border: colorMode === "bw" ? "1.5px solid #f0a500" : "1px solid #3a3a3a",
+                    background: colorMode === "bw" ? "#2a2410" : "transparent",
+                    color: colorMode === "bw" ? "#f0a500" : "#888",
+                    cursor: "pointer",
+                  }}
+                >
+                  B&W · 3/pg
+                </button>
+                <button
+                  onClick={() => setColorMode("color")}
+                  style={{
+                    padding: "6px 14px", borderRadius: 8, fontSize: 12, fontWeight: 700,
+                    border: colorMode === "color" ? "1.5px solid #f0a500" : "1px solid #3a3a3a",
+                    background: colorMode === "color" ? "#2a2410" : "transparent",
+                    color: colorMode === "color" ? "#f0a500" : "#888",
+                    cursor: "pointer",
+                  }}
+                >
+                  Color · 8/pg
+                </button>
+              </div>
+            </div>
+
+            {/* NEW — page range picker */}
+            <div style={{ ...infoRow, flexDirection: "column", alignItems: "stretch", gap: 10 }}>
+              <span style={infoLabel}>What to print</span>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={() => setPageRange("all")}
+                  style={{
+                    padding: "6px 14px", borderRadius: 8, fontSize: 12, fontWeight: 700,
+                    border: pageRange === "all" ? "1.5px solid #f0a500" : "1px solid #3a3a3a",
+                    background: pageRange === "all" ? "#2a2410" : "transparent",
+                    color: pageRange === "all" ? "#f0a500" : "#888",
+                    cursor: "pointer",
+                  }}
+                >
+                  All {pageCount} pages
+                </button>
+                <button
+                  onClick={() => setPageRange("custom")}
+                  style={{
+                    padding: "6px 14px", borderRadius: 8, fontSize: 12, fontWeight: 700,
+                    border: pageRange !== "all" ? "1.5px solid #f0a500" : "1px solid #3a3a3a",
+                    background: pageRange !== "all" ? "#2a2410" : "transparent",
+                    color: pageRange !== "all" ? "#f0a500" : "#888",
+                    cursor: "pointer",
+                  }}
+                >
+                  Custom range
+                </button>
+              </div>
+
+              {pageRange !== "all" && (
+                <div>
+                  <input
+                    value={customRange}
+                    onChange={e => setCustomRange(e.target.value)}
+                    placeholder={`e.g. 1-3,5 (out of ${pageCount})`}
+                    style={{
+                      width: "100%", padding: "8px 10px", background: "#1e1e1e",
+                      border: `1px solid ${customRange && !rangeIsValid ? "#e74c3c" : "#3a3a3a"}`,
+                      borderRadius: 6, color: "#fff", fontSize: 13, outline: "none",
+                    }}
+                  />
+                  {customRange && !rangeIsValid && (
+                    <div style={{ fontSize: 11, color: "#e74c3c", marginTop: 4 }}>
+                      Invalid range — this document has {pageCount} page(s).
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
             <div style={infoRow}>
               <span style={infoLabel}>Credits to deduct</span>
               <span style={{ ...infoVal, color: "#e74c3c", fontWeight: 700 }}>{creditCost}</span>

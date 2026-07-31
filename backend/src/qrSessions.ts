@@ -2,6 +2,7 @@ interface QrSession {
   rfid: string;
   status: "waiting" | "uploaded";
   filePath?: string;
+  pdfPath?: string;
   fileName?: string;
   pageCount?: number;
   createdAt: number;

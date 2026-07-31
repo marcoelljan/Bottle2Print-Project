@@ -21,10 +21,10 @@ const BAUD_RATE = 9600;
 // ── Size classification ───────────────────────────────────────────────────────
 interface SizeSpec { label: string; minHeight: number; maxHeight: number; minWeight: number; maxWeight: number; }
 const SIZE_SPECS: SizeSpec[] = [
-  { label: "Small",  minHeight: 351,  maxHeight: 999, minWeight: 8,  maxWeight: 24},
-  { label: "Medium", minHeight: 351, maxHeight: 999, minWeight: 25 , maxWeight: 28},
-  { label: "Large",  minHeight: 351, maxHeight: 999, minWeight: 29, maxWeight: 47},
-  { label: "XL",     minHeight: 351, maxHeight: 999, minWeight: 48, maxWeight: 54 },
+  { label: "Small",  minHeight: 351,  maxHeight: 999, minWeight: 14,  maxWeight: 19},
+  { label: "Medium", minHeight: 351, maxHeight: 999, minWeight: 14, maxWeight: 19},
+  { label: "Large",  minHeight: 351, maxHeight: 999, minWeight: 18, maxWeight: 25},
+  { label: "XL",     minHeight: 351, maxHeight: 999, minWeight: 48, maxWeight: 57 },
 ];
 
 function classifyBottle(heightMm: number, weightG: number): SizeSpec | null {
