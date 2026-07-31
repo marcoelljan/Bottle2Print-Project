@@ -2,7 +2,7 @@ import { Router } from "express";
 import fs from "fs";
 import path from "path";
 import { exec } from "child_process";
-import pdfParse from "pdf-parse";
+import { PDFParse } from "pdf-parse";
 import QRCode from "qrcode";
 import { db } from "../db";
 import { upload } from "../upload";
@@ -12,82 +12,10 @@ import { broadcast } from "../wsHub";
 const router = Router();
 const PI_IP = process.env.PI_IP || "localhost";
 
-// ── existing routes (unchanged) ────────────────────────────────────────────
-
-router.post("/api/count-pages", upload.single("file"), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: "No file." });
-  try {
-    if (req.file.mimetype === "application/pdf") {
-      const buf = fs.readFileSync(req.file.path);
-      const data = await (pdfParse as any).default(buf);
-      fs.unlink(req.file.path, () => {});
-      return res.json({ pages: data.numpages });
-    }
-    fs.unlink(req.file.path, () => {});
-    return res.json({ pages: 1 });
-  } catch {
-    fs.unlink(req.file.path, () => {});
-    return res.json({ pages: 1 });
-  }
-});
-
-router.post("/api/print", upload.single("document"), (req, res) => {
-  const rfid  = req.body.rfid as string;
-  const pages = parseInt(req.body.pages ?? "1");
-
-  if (!rfid || !req.file) return res.status(400).json({ error: "Missing rfid or file." });
-
-  const user = db.prepare("SELECT * FROM users WHERE rfid = ?").get(rfid) as any;
-  if (!user) { fs.unlink(req.file.path, () => {}); return res.status(404).json({ error: "User not found." }); }
-  if (user.credits < pages) {
-    fs.unlink(req.file.path, () => {});
-    return res.status(403).json({ error: "Not enough credits." });
-  }
-
-  const filePath = req.file.path;
-  const isPdf = req.file.mimetype === "application/pdf";
-
-  function sendToPrinter(pathToPrint: string, cleanupPaths: string[]) {
-    exec(`lp "${pathToPrint}"`, (error, stdout, stderr) => {
-      cleanupPaths.forEach(p => fs.unlink(p, () => {}));
-      if (error) return res.status(500).json({ error: stderr || error.message });
-
-      db.prepare("UPDATE users SET credits = credits - ? WHERE rfid = ?").run(pages, rfid);
-      db.prepare(`INSERT INTO transactions (rfid, type, credits) VALUES (?, 'print', ?)`).run(rfid, pages);
-
-      res.json({ success: true, output: stdout.trim() });
-    });
-  }
-
-  if (isPdf) {
-    sendToPrinter(filePath, [filePath]);
-    return;
-  }
-
-  const outDir = path.dirname(filePath);
-  const convertCmd = `soffice --headless --convert-to pdf --outdir "${outDir}" "${filePath}"`;
-
-  exec(convertCmd, (convError) => {
-    if (convError) {
-      fs.unlink(filePath, () => {});
-      return res.status(500).json({ error: "Failed to convert document for printing." });
-    }
-
-    const convertedPath = path.join(
-      outDir,
-      path.basename(filePath, path.extname(filePath)) + ".pdf"
-    );
-
-    if (!fs.existsSync(convertedPath)) {
-      fs.unlink(filePath, () => {});
-      return res.status(500).json({ error: "Conversion produced no output file." });
-    }
-
-    sendToPrinter(convertedPath, [filePath, convertedPath]);
-  });
-});
-
-// ── NEW: QR code print flow ────────────────────────────────────────────────
+// ── shared PDF helper ───────────────────────────────────────────────────────
+// pdf-parse@2.x is a class-based API (PDFParse), not the old callable default
+// export from 1.x. Always destroy() the parser to release pdf.js resources —
+// this runs on every print job on the kiosk, so leaked resources compound.
 
 async function ensurePdf(
   filePath: string,
@@ -96,8 +24,13 @@ async function ensurePdf(
 ): Promise<{ pdfPath: string; pageCount: number }> {
   if (mimetype === "application/pdf") {
     const buf = fs.readFileSync(filePath);
-    const data = await (pdfParse as any).default(buf);
-    return { pdfPath: filePath, pageCount: data.numpages };
+    const parser = new PDFParse({ data: buf });
+    try {
+      const result = await parser.getText();
+      return { pdfPath: filePath, pageCount: result.pages.length };
+    } finally {
+      await parser.destroy();
+    }
   }
 
   await new Promise<void>((resolve, reject) => {
@@ -112,8 +45,13 @@ async function ensurePdf(
   }
 
   const buf = fs.readFileSync(convertedPath);
-  const data = await (pdfParse as any).default(buf);
-  return { pdfPath: convertedPath, pageCount: data.numpages };
+  const parser = new PDFParse({ data: buf });
+  try {
+    const result = await parser.getText();
+    return { pdfPath: convertedPath, pageCount: result.pages.length };
+  } finally {
+    await parser.destroy();
+  }
 }
 
 function parsePageRange(range: string, totalPages: number): number[] | null {
@@ -132,6 +70,73 @@ function parsePageRange(range: string, totalPages: number): number[] | null {
 
   return pages.size > 0 ? Array.from(pages).sort((a, b) => a - b) : null;
 }
+
+// ── page count preview (used by the kiosk before a print is confirmed) ─────
+
+router.post("/api/count-pages", upload.single("file"), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "No file." });
+  try {
+    const outDir = path.dirname(req.file.path);
+    const { pdfPath, pageCount } = await ensurePdf(req.file.path, req.file.mimetype, outDir);
+    if (pdfPath !== req.file.path) fs.unlink(pdfPath, () => {});
+    fs.unlink(req.file.path, () => {});
+    return res.json({ pages: pageCount });
+  } catch {
+    fs.unlink(req.file.path, () => {});
+    // A real parse failure is reported as an error, not masked as "1 page" —
+    // silently defaulting here would let a broken file look like a valid
+    // 1-page document on the cost preview screen.
+    return res.status(422).json({ error: "Could not read this file. Try a different format." });
+  }
+});
+
+// ── direct print (kiosk-initiated, non-QR flow) ─────────────────────────────
+// Page count is derived server-side from the actual file, never trusted from
+// the client. This mirrors what the QR flow already does in qr-confirm below,
+// so both paths agree on where the "how many pages, how many credits" number
+// comes from.
+
+router.post("/api/print", upload.single("document"), async (req, res) => {
+  const rfid = req.body.rfid as string;
+
+  if (!rfid || !req.file) return res.status(400).json({ error: "Missing rfid or file." });
+
+  const user = db.prepare("SELECT * FROM users WHERE rfid = ?").get(rfid) as any;
+  if (!user) {
+    fs.unlink(req.file.path, () => {});
+    return res.status(404).json({ error: "User not found." });
+  }
+
+  let pdfPath: string;
+  let pageCount: number;
+  try {
+    const outDir = path.dirname(req.file.path);
+    ({ pdfPath, pageCount } = await ensurePdf(req.file.path, req.file.mimetype, outDir));
+  } catch {
+    fs.unlink(req.file.path, () => {});
+    return res.status(500).json({ error: "Could not process this file. Try a different format." });
+  }
+
+  if (user.credits < pageCount) {
+    if (req.file.path !== pdfPath) fs.unlink(req.file.path, () => {});
+    fs.unlink(pdfPath, () => {});
+    return res.status(403).json({ error: "Not enough credits." });
+  }
+
+  const cleanupPaths = req.file.path !== pdfPath ? [req.file.path, pdfPath] : [pdfPath];
+
+  exec(`lp "${pdfPath}"`, (error, stdout, stderr) => {
+    cleanupPaths.forEach(p => fs.unlink(p, () => {}));
+    if (error) return res.status(500).json({ error: stderr || error.message });
+
+    db.prepare("UPDATE users SET credits = credits - ? WHERE rfid = ?").run(pageCount, rfid);
+    db.prepare(`INSERT INTO transactions (rfid, type, credits) VALUES (?, 'print', ?)`).run(rfid, pageCount);
+
+    res.json({ success: true, output: stdout.trim(), pagesPrinted: pageCount, creditsCharged: pageCount });
+  });
+});
+
+// ── QR code print flow ───────────────────────────────────────────────────────
 
 // 1. Kiosk calls this right after RFID tap to create a session + QR code
 router.post("/api/print/qr-session", async (req, res) => {
@@ -223,7 +228,6 @@ router.get("/upload/:sessionId", (req, res) => {
 });
 
 // 3. Phone uploads the file here
-// 3. Phone uploads the file here
 router.post("/api/print/qr-upload/:sessionId", upload.single("file"), async (req, res) => {
   const session = getSession(req.params.sessionId);
   if (!session) return res.status(404).json({ error: "Session expired." });
@@ -263,6 +267,7 @@ router.post("/api/print/qr-upload/:sessionId", upload.single("file"), async (req
     res.status(500).json({ error: "Could not process this file. Try a different format." });
   }
 });
+
 // 4. Kiosk confirms the print — uses the already-uploaded, already-converted PDF
 router.post("/api/print/qr-confirm/:sessionId", (req, res) => {
   const session = getSession(req.params.sessionId);
