@@ -54,7 +54,7 @@ export default function CheckBalanceScreen({ onBack }: Props) {
         {!user
           ? <RFIDprompt onIdentified={handleIdentified} />
           : (
-            <div style={{ width: "100%", maxWidth: 580, display: "flex", flexDirection: "column", gap: 16 }}>
+            <div style={scrollWrap}>
 
               {/* profile card */}
               <div style={profileCard}>
@@ -130,6 +130,11 @@ const headerTitle: React.CSSProperties = { fontWeight: 700, fontSize: 15, color:
 const headerSub: React.CSSProperties = { fontSize: 11, color: "#555" };
 const body: React.CSSProperties = {
   flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 24,
+  overflow: "hidden",
+};
+const scrollWrap: React.CSSProperties = {
+  width: "100%", maxWidth: 580, maxHeight: 520, overflowY: "auto",
+  display: "flex", flexDirection: "column", gap: 16,
 };
 const profileCard: React.CSSProperties = {
   background: "#242424", border: "1px solid #333", borderRadius: 14,

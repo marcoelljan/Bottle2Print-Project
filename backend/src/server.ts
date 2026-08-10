@@ -127,6 +127,14 @@ app.use(printRoutes);
 app.use(adminRoutes);
 app.use(feedbackRoutes);
 
+// Serve the built frontend
+const frontendDist = path.join(__dirname, "..", "..", "frontend", "dist");
+app.use(express.static(frontendDist));
+app.get(/^(?!\/api|\/upload).*/, (_req, res) => {
+  res.sendFile(path.join(frontendDist, "index.html"));
+});
+
+
 const httpServer = createServer(app);
 const wss = new WebSocketServer({ server: httpServer });
 setWss(wss);

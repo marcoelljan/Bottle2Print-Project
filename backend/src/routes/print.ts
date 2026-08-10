@@ -268,6 +268,16 @@ router.post("/api/print/qr-upload/:sessionId", upload.single("file"), async (req
   }
 });
 
+// 3.5. Serve the uploaded PDF back to the kiosk for an in-browser preview
+router.get("/api/print/preview/:sessionId", (req, res) => {
+  const session = getSession(req.params.sessionId);
+  if (!session || !session.pdfPath) {
+    return res.status(404).send("No file found for this session.");
+  }
+  res.setHeader("Content-Type", "application/pdf");
+  res.sendFile(path.resolve(session.pdfPath));
+});
+
 // 4. Kiosk confirms the print — uses the already-uploaded, already-converted PDF
 router.post("/api/print/qr-confirm/:sessionId", (req, res) => {
   const session = getSession(req.params.sessionId);

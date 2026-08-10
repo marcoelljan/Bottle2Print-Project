@@ -9,8 +9,6 @@ interface User { rfid: string; name: string; studentId: string; credits: number;
 
 type Step = "rfid" | "qr" | "confirm" | "printing" | "success" | "error";
 
-// Mirrors the backend's parsePageRange logic — used only to compute
-// a live, client-side cost preview before the user hits Print.
 function countSelectedPages(range: string, total: number): number | null {
   if (range === "all" || range.trim() === "") return total;
   const pages = new Set<number>();
@@ -56,7 +54,6 @@ export default function PrintScreen({ onBack }: Props) {
     };
   }, []);
 
-  // WebSocket listener — waits for the phone's upload to arrive
   useEffect(() => {
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
@@ -94,7 +91,6 @@ export default function PrintScreen({ onBack }: Props) {
     }
   };
 
-  // NEW — cost now depends on how many pages are actually selected, not the total
   const activeRange = pageRange === "all" ? "all" : customRange;
   const selectedPageCount = countSelectedPages(activeRange, pageCount ?? 1);
   const rangeIsValid = selectedPageCount !== null;
@@ -152,10 +148,9 @@ export default function PrintScreen({ onBack }: Props) {
 
       <div style={body}>
 
-        {/* STEP 1 — RFID */}
-        {step === "rfid" && <RFIDprompt onIdentified={handleIdentified} />}
+       {step === "rfid" && <RFIDprompt onIdentified={handleIdentified} />}
 
-        {/* STEP 2 — QR code, waiting for phone upload */}
+
         {step === "qr" && (
           <div style={card}>
             <div style={userBadge}>
@@ -185,13 +180,26 @@ export default function PrintScreen({ onBack }: Props) {
           </div>
         )}
 
-        {/* STEP 3 — Confirm (after phone upload arrives) */}
         {step === "confirm" && (
           <div style={card}>
-            <div style={{ textAlign: "center", marginBottom: 24 }}>
-              <div style={{ fontSize: 48, marginBottom: 12 }}>📋</div>
+            <div style={{ textAlign: "center", marginBottom: 20 }}>
+              <div style={{ fontSize: 40, marginBottom: 8 }}>📋</div>
               <div style={{ fontSize: 18, fontWeight: 700 }}>Confirm print job</div>
             </div>
+
+            {sessionId && (
+              <div style={{
+                width: "100%", height: 180, marginBottom: 16,
+                background: "#fff", borderRadius: 10, overflow: "hidden",
+                border: "1px solid #333", flexShrink: 0,
+              }}>
+                <iframe
+                  src={`${API}/api/print/preview/${sessionId}`}
+                  title="Print preview"
+                  style={{ width: "100%", height: "100%", border: "none" }}
+                />
+              </div>
+            )}
 
             <div style={infoRow}>
               <span style={infoLabel}>File</span>
@@ -232,7 +240,6 @@ export default function PrintScreen({ onBack }: Props) {
               </div>
             </div>
 
-            {/* NEW — page range picker */}
             <div style={{ ...infoRow, flexDirection: "column", alignItems: "stretch", gap: 10 }}>
               <span style={infoLabel}>What to print</span>
               <div style={{ display: "flex", gap: 8 }}>
@@ -297,14 +304,13 @@ export default function PrintScreen({ onBack }: Props) {
               </div>
             )}
 
-            <div style={{ display: "flex", gap: 12, marginTop: 24 }}>
+            <div style={{ display: "flex", gap: 12, marginTop: 20 }}>
               <button onClick={() => setStep("qr")} style={ghostBtn}>Back</button>
               <button onClick={handleConfirmClick} style={primaryBtn(true)}>Print now</button>
             </div>
           </div>
         )}
 
-        {/* STEP 4 — Printing */}
         {step === "printing" && (
           <div style={{ textAlign: "center" }}>
             <div style={{ fontSize: 56, marginBottom: 16, animation: "pulse 1s infinite" }}>🖨️</div>
@@ -313,7 +319,6 @@ export default function PrintScreen({ onBack }: Props) {
           </div>
         )}
 
-        {/* STEP 5 — Success */}
         {step === "success" && (
           <div style={{ textAlign: "center" }}>
             <div style={{ fontSize: 64, marginBottom: 16 }}>✅</div>
@@ -325,7 +330,6 @@ export default function PrintScreen({ onBack }: Props) {
           </div>
         )}
 
-        {/* STEP error */}
         {step === "error" && (
           <div style={{ textAlign: "center" }}>
             <div style={{ fontSize: 64, marginBottom: 16 }}>❌</div>
@@ -336,7 +340,6 @@ export default function PrintScreen({ onBack }: Props) {
         )}
       </div>
 
-      {/* Not enough credits popup */}
       {showNoCredit && (
         <div style={overlay}>
           <div style={modal}>
@@ -367,7 +370,6 @@ export default function PrintScreen({ onBack }: Props) {
   );
 }
 
-// ── shared styles ─────────────────────────────────────────────────────────────
 const fullScreen: React.CSSProperties = {
   width: 1024, height: 600, background: "#1a1a1a",
   display: "flex", flexDirection: "column", position: "relative",
@@ -381,10 +383,12 @@ const headerTitle: React.CSSProperties = { fontWeight: 700, fontSize: 15, color:
 const headerSub: React.CSSProperties = { fontSize: 11, color: "#555" };
 const body: React.CSSProperties = {
   flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 24,
+  overflow: "hidden",
 };
 const card: React.CSSProperties = {
   background: "#242424", border: "1px solid #333", borderRadius: 14,
-  padding: "28px 32px", width: "100%", maxWidth: 520,
+  padding: "24px 28px", width: "100%", maxWidth: 520,
+  maxHeight: 520, overflowY: "auto",
 };
 const userBadge: React.CSSProperties = {
   display: "flex", alignItems: "center", gap: 12,
