@@ -3,8 +3,14 @@ import BackButton from "../components/BackButton";
 import RFIDprompt from "../components/RFIDprompt";
 import FeedBackModal from "../components/FeedbackModal";
 import { API, WS_URL } from "../config";
+import type { Screen } from "../App";
+import {
+  RecyclingIcon,
+  CreditCardIcon,
+  CreditCardOffIcon,
+} from "../components/KioskIcons";
 
-interface Props { onBack: () => void; }
+interface Props { onBack: () => void; onNavigate: (s: Screen) => void; }
 interface User { rfid: string; name: string; studentId: string; credits: number; }
 
 type StepStatus = "pending" | "running" | "pass" | "fail";
@@ -31,12 +37,15 @@ const STATUS_COLOR: Record<StepStatus, string> = {
   pending: "#3a3a3a", running: "#f0a500", pass: "#2ecc71", fail: "#e74c3c",
 };
 
-export default function DepositScreen({ onBack }: Props) {
+export default function DepositScreen({ onBack, onNavigate }: Props) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [connected, setConnected] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
+  const [guestMode, setGuestMode] = useState(false);
+  const [showRfidPrompt, setShowRfidPrompt] = useState(false);
   const feedbackShownRef = useRef(false);
+  
 
   const step = session?.step ?? "idle";
 
@@ -88,6 +97,20 @@ export default function DepositScreen({ onBack }: Props) {
 
   const handleIdentified = (u: User) => setUser(u);
 
+  const handleGuestStart = async () => {
+    try {
+      await fetch(`${API}/api/deposit/guest-start`, { method: "POST" });
+      setGuestMode(true);
+      setUser({ rfid: "GUEST", name: "Guest", studentId: "", credits: 0 });
+    } catch {
+      // optional: show an error state here
+    }
+  };
+
+  const handleDoneDepositing = () => {
+    onNavigate("print");
+  };
+
   const inValidation = ["ir", "capacitive", "tof", "loadcell"].includes(step);
 
   return (
@@ -95,7 +118,7 @@ export default function DepositScreen({ onBack }: Props) {
       <BackButton onBack={onBack} />
 
       <div style={headerBar}>
-        <span style={{ fontSize: 22 }}>♻️</span>
+        <span style={{ fontSize: 22, display: "flex", alignItems: "center" }}><RecyclingIcon size={24} color="#f0a500" /></span>
         <div>
           <div style={headerTitle}>Deposit Bottles</div>
           <div style={headerSub}>Earn print credits</div>
@@ -109,17 +132,51 @@ export default function DepositScreen({ onBack }: Props) {
       <div style={body}>
 
         {/* tap card first if not yet identified */}
-       {!user && (step === "idle" || step === "unregistered") && !session?.errorMsg && <RFIDprompt onIdentified={handleIdentified} />}
+       {!user && !guestMode && !showRfidPrompt && (step === "idle" || step === "unregistered") && !session?.errorMsg && (
+          <div style={{ textAlign: "center", width: "100%", maxWidth: 760 }}>
+            <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 18 }}>How would you like to deposit?</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, maxWidth: 640, margin: "0 auto" }}>
+              <button onClick={() => setShowRfidPrompt(true)} style={choiceTileStyle}>
+                <div style={tileIconWrap}>
+                  <CreditCardIcon size={28} color="#f0a500" />
+                </div>
+                <div style={{ textAlign: "left" }}>
+                  <div style={tileLabel}>Tap RFID Card</div>
+                  <div style={tileSub}>Use your registered card</div>
+                </div>
+              </button>
+
+              <button onClick={handleGuestStart} style={choiceTileStyle}>
+                <div style={tileIconWrap}>
+                  <CreditCardOffIcon size={28} color="#f0a500" />
+                </div>
+                <div style={{ textAlign: "left" }}>
+                  <div style={tileLabel}>Continue as Guest</div>
+                  <div style={tileSub}>No RFID card needed</div>
+                </div>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {!user && showRfidPrompt && (step === "idle" || step === "unregistered") && !session?.errorMsg && (
+          <RFIDprompt onIdentified={handleIdentified} />
+        )}
         {/* gate open — insert bottle */}
         {user && step === "gate_open" && (
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 64, marginBottom: 16 }}>🚪</div>
+            <div style={{ fontSize: 64, marginBottom: 16 }}></div>
             <div style={{ fontSize: 22, color: "#f0a500", fontWeight: 700 }}>Gate open</div>
             <div style={{ fontSize: 15, color: "#ccc", marginTop: 8 }}>
               Welcome, <strong>{session?.userName ?? user.name}</strong>
             </div>
             <div style={{ fontSize: 14, color: "#aaa", marginTop: 6 }}>Insert your bottle now</div>
             <div style={{ fontSize: 12, color: "#444", marginTop: 6 }}>Gate closes automatically after 10 seconds</div>
+            {guestMode && (session?.credits ?? 0) > 0 && (
+              <button onClick={handleDoneDepositing} style={{ ...backBtn, marginTop: 20, maxWidth: 260 }}>
+                Done — Go to Print ({session?.credits} credits)
+              </button>
+            )}
           </div>
         )}
 
@@ -225,4 +282,38 @@ const backBtn: React.CSSProperties = {
   width: "100%", padding: "12px", borderRadius: 10,
   background: "#f0a500", color: "#000", fontWeight: 700,
   fontSize: 15, border: "none", cursor: "pointer",
+};
+const choiceTileStyle: React.CSSProperties = {
+  background: "#242424",
+  border: "1px solid #333",
+  borderRadius: 14,
+  padding: "20px 22px",
+  display: "flex",
+  alignItems: "center",
+  gap: 18,
+  cursor: "pointer",
+  textAlign: "left",
+  minHeight: 120,
+  boxShadow: "none",
+};
+const tileIconWrap: React.CSSProperties = {
+  width: 52,
+  height: 52,
+  borderRadius: 12,
+  background: "#1a1a1a",
+  border: "1px solid #3a3a3a",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  flexShrink: 0,
+};
+const tileLabel: React.CSSProperties = {
+  fontSize: 18,
+  fontWeight: 700,
+  color: "#fff",
+  marginBottom: 4,
+};
+const tileSub: React.CSSProperties = {
+  fontSize: 12,
+  color: "#666",
 };

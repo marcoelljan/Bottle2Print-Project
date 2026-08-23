@@ -87,8 +87,7 @@ export default function DepositFlow() {
       {/* GATE OPEN — waiting for bottle */}
       {step === "gate_open" && (
         <div style={{ textAlign: "center" }}>
-          <div style={{ fontSize: 64, marginBottom: 16 }}>🚪</div>
-          <h2 style={{ fontSize: 24, color: "#f0a500" }}>Gate open</h2>
+          <h2 style={{ fontSize: 24, color: "#f0a500", marginBottom: 8 }}>Gate open</h2>
           <p style={{ color: "#ccc", fontSize: 16, marginBottom: 8 }}>
             Welcome, <strong>{session?.userName}</strong>
           </p>

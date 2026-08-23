@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import BackButton from "../components/BackButton";
 import { API, WS_URL } from "../config";
+import { AccountCircleIcon, CreditCardIcon } from "../components/KioskIcons";
 
 interface Props { onBack: () => void; }
 
@@ -117,7 +118,7 @@ export default function RegisterScreen({ onBack }: Props) {
       <BackButton onBack={onBack} />
 
       <div style={headerBar}>
-        <span style={{ fontSize: 22 }}>👤</span>
+        <span style={{ fontSize: 22, display: "flex", alignItems: "center" }}><AccountCircleIcon size={22} color="#f0a500" /></span>
         <div>
           <div style={headerTitle}>Register RFID</div>
           <div style={headerSub}>Link a new card to your account</div>
@@ -133,11 +134,11 @@ export default function RegisterScreen({ onBack }: Props) {
               width: 100, height: 100, borderRadius: "50%",
               border: `3px solid #f0a500`,
               display: "flex", alignItems: "center", justifyContent: "center",
-              fontSize: 44, opacity: pulse ? 1 : 0.4,
+              opacity: pulse ? 1 : 0.4,
               transition: "opacity 0.4s",
               boxShadow: pulse ? "0 0 24px #f0a50055" : "none",
             }}>
-              💳
+              <CreditCardIcon size={42} color="#f0a500" />
             </div>
             <div>
               <div style={{ fontSize: 18, color: "#f0a500", fontWeight: 600 }}>Tap your RFID card</div>

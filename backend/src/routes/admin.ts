@@ -1,7 +1,83 @@
 import { Router } from "express";
+import bcrypt from "bcrypt";
+import crypto from "crypto";
 import { db } from "../db";
 
 const router = Router();
+
+// ── simple in-memory session store (fine for a single-admin kiosk) ─────────
+const activeSessions = new Set<string>();
+const SESSION_TTL_MS = 8 * 60 * 60 * 1000; // 8 hours
+
+function issueToken(): string {
+  const token = crypto.randomBytes(32).toString("hex");
+  activeSessions.add(token);
+  setTimeout(() => activeSessions.delete(token), SESSION_TTL_MS);
+  return token;
+}
+
+function requireAuth(req: any, res: any, next: any) {
+  const auth = req.headers.authorization;
+  const token = auth?.startsWith("Bearer ") ? auth.slice(7) : null;
+  if (!token || !activeSessions.has(token)) {
+    return res.status(401).json({ error: "Not authenticated." });
+  }
+  next();
+}
+
+// ── basic login rate limiting (per-process, resets on restart) ─────────────
+let failedAttempts = 0;
+let lockoutUntil = 0;
+
+// ── password login (primary path — used for remote/Tailscale access) ───────
+const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || "";
+if (!ADMIN_PASSWORD_HASH) {
+  console.warn("⚠️  ADMIN_PASSWORD_HASH not set in .env — password login will reject everything.");
+}
+
+router.post("/api/admin/login", async (req, res) => {
+  if (Date.now() < lockoutUntil) {
+    return res.status(429).json({ error: "Too many failed attempts. Try again later." });
+  }
+
+  const { password } = req.body;
+  if (!password || !ADMIN_PASSWORD_HASH) {
+    return res.status(400).json({ error: "Missing password or server not configured." });
+  }
+
+  const match = await bcrypt.compare(password, ADMIN_PASSWORD_HASH);
+  if (!match) {
+    failedAttempts++;
+    if (failedAttempts >= 5) {
+      lockoutUntil = Date.now() + 5 * 60 * 1000; // 5 min lockout
+      failedAttempts = 0;
+    }
+    return res.status(403).json({ error: "Incorrect password." });
+  }
+
+  failedAttempts = 0;
+  const token = issueToken();
+  res.json({ success: true, token });
+});
+
+// ── RFID tap login (kept for on-site convenience at the physical kiosk) ─────
+const ADMIN_RFID = process.env.ADMIN_RFID || "";
+if (!ADMIN_RFID) {
+  console.warn("⚠️  ADMIN_RFID not set in .env — RFID admin login will reject all cards.");
+}
+
+router.post("/api/admin/verify", (req, res) => {
+  const { rfid } = req.body;
+  if (!rfid) return res.status(400).json({ error: "No RFID provided." });
+  if (!ADMIN_RFID || rfid.toUpperCase() !== ADMIN_RFID.toUpperCase()) {
+    return res.status(403).json({ error: "Not an admin card." });
+  }
+  const token = issueToken();
+  res.json({ success: true, token });
+});
+
+// ── everything below this line requires a valid session token ──────────────
+router.use(requireAuth);
 
 router.get("/api/admin/users", (_req, res) => {
   res.json(db.prepare("SELECT * FROM users ORDER BY created_at DESC").all());
@@ -23,21 +99,6 @@ router.post("/api/admin/user/:rfid/reset-credits", (req, res) => {
 router.delete("/api/admin/user/:rfid", (req, res) => {
   db.prepare("DELETE FROM users WHERE rfid = ?").run(req.params.rfid);
   db.prepare("DELETE FROM transactions WHERE rfid = ?").run(req.params.rfid);
-  res.json({ success: true });
-});
-
-const ADMIN_RFID = process.env.ADMIN_RFID || "";
-if (!ADMIN_RFID) {
-  console.warn("⚠️  ADMIN_RFID not set in .env — admin panel will reject all cards.");
-}
-
-// verify if a tapped card is admin
-router.post("/api/admin/verify", (req, res) => {
-  const { rfid } = req.body;
-  if (!rfid) return res.status(400).json({ error: "No RFID provided." });
-  if (rfid.toUpperCase() !== ADMIN_RFID.toUpperCase()) {
-    return res.status(403).json({ error: "Not an admin card." });
-  }
   res.json({ success: true });
 });
 

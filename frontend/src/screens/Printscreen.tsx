@@ -3,11 +3,35 @@ import BackButton from "../components/BackButton";
 import RFIDprompt from "../components/RFIDprompt";
 import FeedBackModal from "../components/FeedbackModal";
 import { API, WS_URL } from "../config";
+import {
+  PrintIcon,
+  CreditCardIcon,
+  CreditCardOffIcon,
+  AccountCircleIcon,
+} from "../components/KioskIcons";
 
 interface Props { onBack: () => void; }
 interface User { rfid: string; name: string; studentId: string; credits: number; }
 
-type Step = "rfid" | "qr" | "confirm" | "printing" | "success" | "error";
+type Step = "choice" | "rfid" | "qr" | "confirm" | "guest-deposit" | "printing" | "success" | "error";
+
+type SensorStepStatus = "pending" | "running" | "pass" | "fail";
+interface SensorStep { id: string; label: string; status: SensorStepStatus; detail?: string; }
+interface KioskSession {
+  rfid: string | null;
+  step: string;
+  steps: SensorStep[];
+  credits: number;
+  result: "accepted" | "rejected" | null;
+  errorMsg: string | null;
+}
+
+const STEP_ICONS: Record<string, string> = {
+  ir: "📡", capacitive: "🔎", tof: "📏", loadcell: "⚖️",
+};
+const STATUS_COLOR: Record<SensorStepStatus, string> = {
+  pending: "#3a3a3a", running: "#f0a500", pass: "#2ecc71", fail: "#e74c3c",
+};
 
 function countSelectedPages(range: string, total: number): number | null {
   if (range === "all" || range.trim() === "") return total;
@@ -24,7 +48,7 @@ function countSelectedPages(range: string, total: number): number | null {
 }
 
 export default function PrintScreen({ onBack }: Props) {
-  const [step, setStep] = useState<Step>("rfid");
+  const [step, setStep] = useState<Step>("qr");
   const [user, setUser] = useState<User | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [qrImage, setQrImage] = useState<string | null>(null);
@@ -34,10 +58,13 @@ export default function PrintScreen({ onBack }: Props) {
   const [pageRange, setPageRange] = useState<"all" | string>("all");
   const [customRange, setCustomRange] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
-  const [showNoCredit, setShowNoCredit] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
   const [, setJobOutput] = useState("");
+  const [kioskSession, setKioskSession] = useState<KioskSession | null>(null);
+  const [invoice, setInvoice] = useState<any | null>(null);
+  const [paymentChoice, setPaymentChoice] = useState<"rfid" | "guest" | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const autoPrintFiredRef = useRef(false);
 
   useEffect(() => {
     fetch(`${API}/api/mode`, {
@@ -54,6 +81,9 @@ export default function PrintScreen({ onBack }: Props) {
     };
   }, []);
 
+  // Single persistent WS connection — handles both the qr-upload event
+  // (phone finished uploading) and ongoing kiosk session state (used to
+  // drive the guest bottle-deposit sub-flow below).
   useEffect(() => {
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
@@ -68,18 +98,104 @@ export default function PrintScreen({ onBack }: Props) {
           setCustomRange("");
           setStep("confirm");
         }
+        if (msg.type === "state") {
+          setKioskSession(msg.session);
+        }
       } catch {}
     };
     return () => ws.close();
   }, [sessionId]);
 
+  // create a QR session immediately when screen loads
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`${API}/api/print/qr-session`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        const data = await res.json();
+        setSessionId(data.sessionId);
+        setQrImage(data.qrImage);
+        setStep("qr");
+      } catch {
+        setErrorMsg("Could not reach backend to generate QR code.");
+        setStep("error");
+      }
+    })();
+  }, []);
+
   const handleIdentified = async (u: User) => {
+    // If a session already exists (QR shown first), attach the identified RFID
     setUser(u);
     try {
+      if (sessionId) {
+        await fetch(`${API}/api/print/qr-attach/${sessionId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rfid: u.rfid }),
+        });
+        // refresh user credits
+        try {
+          const r = await fetch(`${API}/api/user/${u.rfid}`);
+          const userData = await r.json();
+          setUser(userData);
+        } catch {}
+        setStep("confirm");
+        // If user tapped because we requested RFID payment, auto-print
+        if (paymentChoice === "rfid") {
+          // refresh credits then print
+          try {
+            const r = await fetch(`${API}/api/user/${u.rfid}`);
+            const userData = await r.json();
+            setUser(userData);
+          } catch {}
+          handlePrint();
+        }
+        return;
+      }
+      // fallback: create a new qr session tied to this rfid
       const res = await fetch(`${API}/api/print/qr-session`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ rfid: u.rfid }),
+      });
+      const data = await res.json();
+      setSessionId(data.sessionId);
+      setQrImage(data.qrImage);
+      setStep("qr");
+    } catch {
+      setErrorMsg("Could not reach backend to generate or attach QR session.");
+      setStep("error");
+    }
+  };
+
+  const handleGuestChoice = async () => {
+    try {
+      // attach guest to the existing session (QR shown first)
+      if (sessionId) {
+        await fetch(`${API}/api/print/qr-attach/${sessionId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rfid: "GUEST" }),
+        });
+        const statusRes = await fetch(`${API}/api/deposit/guest-status`);
+        const status = await statusRes.json();
+        const guestUser: User = { rfid: "GUEST", name: "Guest", studentId: "", credits: status.credits ?? 0 };
+        setUser(guestUser);
+        setStep("confirm");
+        return;
+      }
+      // fallback: create a guest-linked session
+      const statusRes = await fetch(`${API}/api/deposit/guest-status`);
+      const status = await statusRes.json();
+      const guestUser: User = { rfid: "GUEST", name: "Guest", studentId: "", credits: status.credits ?? 0 };
+      setUser(guestUser);
+      const res = await fetch(`${API}/api/print/qr-session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rfid: "GUEST" }),
       });
       const data = await res.json();
       setSessionId(data.sessionId);
@@ -98,14 +214,20 @@ export default function PrintScreen({ onBack }: Props) {
   const creditCost = (selectedPageCount ?? 0) * creditsPerPage;
   const hasEnough = user && rangeIsValid && user.credits >= creditCost;
 
-  const handleConfirmClick = () => {
-    if (!user || pageCount === null || !rangeIsValid) return;
-    if (user.credits < creditCost) {
-      setShowNoCredit(true);
-      return;
+  // ── Mode of Payment: RFID users with insufficient credits still see the
+  // old "not enough, go deposit" modal. Guests instead go straight into a
+  // bottle-deposit loop targeting this job's exact cost. ──────────────────
+  const startGuestDeposit = async () => {
+    autoPrintFiredRef.current = false;
+    try {
+      await fetch(`${API}/api/deposit/guest-start`, { method: "POST" });
+      setStep("guest-deposit");
+    } catch {
+      setErrorMsg("Could not start bottle deposit.");
+      setStep("error");
     }
-    handlePrint();
   };
+
 
   const handlePrint = async () => {
     if (!sessionId) return;
@@ -122,6 +244,12 @@ export default function PrintScreen({ onBack }: Props) {
       const data = await res.json();
       if (data.success) {
         setJobOutput(data.output ?? "");
+        setInvoice({
+          creditsCharged: data.creditsCharged ?? data.creditsCharged ?? creditCost,
+          pagesPrinted: data.pagesPrinted ?? selectedPageCount,
+          colorMode: data.colorMode ?? colorMode,
+          output: data.output ?? "",
+        });
         setStep("success");
         setShowFeedback(true);
       } else {
@@ -134,12 +262,32 @@ export default function PrintScreen({ onBack }: Props) {
     }
   };
 
+  // Auto-advance out of the guest deposit loop once enough credit is banked.
+  useEffect(() => {
+    if (step !== "guest-deposit" || !kioskSession) return;
+    if (autoPrintFiredRef.current) return;
+    if (kioskSession.credits >= creditCost) {
+      autoPrintFiredRef.current = true;
+      (async () => {
+        await fetch(`${API}/api/deposit/guest-stop`, { method: "POST" });
+        setUser(u => (u ? { ...u, credits: kioskSession.credits } : u));
+        handlePrint();
+      })();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kioskSession, step, creditCost]);
+
+  const cancelGuestDeposit = async () => {
+    await fetch(`${API}/api/deposit/guest-stop`, { method: "POST" });
+    setStep("confirm");
+  };
+
   return (
     <div style={fullScreen}>
       <BackButton onBack={onBack} />
 
       <div style={header}>
-        <span style={{ fontSize: 22 }}>🖨️</span>
+        <span style={{ fontSize: 22, display: "flex", alignItems: "center" }}><PrintIcon size={24} color="#f0a500" /></span>
         <div>
           <div style={headerTitle}>Print</div>
           <div style={headerSub}>Scan the QR code to send your file</div>
@@ -148,13 +296,45 @@ export default function PrintScreen({ onBack }: Props) {
 
       <div style={body}>
 
-       {step === "rfid" && <RFIDprompt onIdentified={handleIdentified} />}
+        {step === "choice" && (
+          <div style={{ textAlign: "center", width: "100%", maxWidth: 760 }}>
+            <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 18 }}>How would you like to print?</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, maxWidth: 640, margin: "0 auto" }}>
+              <button onClick={() => setStep("rfid")} style={choiceTileStyle}>
+                <div style={tileIconWrap}>
+                  <CreditCardIcon size={28} color="#f0a500" />
+                </div>
+                <div style={{ textAlign: "left" }}>
+                  <div style={tileLabel}>Tap RFID Card</div>
+                  <div style={tileSub}>Use your registered card</div>
+                </div>
+              </button>
 
+              <button onClick={handleGuestChoice} style={choiceTileStyle}>
+                <div style={tileIconWrap}>
+                  <CreditCardOffIcon size={28} color="#f0a500" />
+                </div>
+                <div style={{ textAlign: "left" }}>
+                  <div style={tileLabel}>Non-RFID User</div>
+                  <div style={tileSub}>Continue as guest</div>
+                </div>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {step === "rfid" && <RFIDprompt onIdentified={handleIdentified} />}
 
         {step === "qr" && (
           <div style={card}>
             <div style={userBadge}>
-              <span style={{ fontSize: 20 }}>👤</span>
+              <span style={{ fontSize: 20 }}>
+                {user?.rfid === "GUEST" ? (
+                  <AccountCircleIcon size={28} color="#888" />
+                ) : (
+                  <AccountCircleIcon size={28} color="#f0a500" />
+                )}
+              </span>
               <div>
                 <div style={{ fontWeight: 700, fontSize: 15 }}>{user?.name}</div>
                 <div style={{ fontSize: 12, color: "#f0a500" }}>{user?.credits} credits available</div>
@@ -295,25 +475,139 @@ export default function PrintScreen({ onBack }: Props) {
               <span style={{ ...infoVal, color: "#e74c3c", fontWeight: 700 }}>{creditCost}</span>
             </div>
             <div style={infoRow}>
-              <span style={infoLabel}>Credits after print</span>
-              <span style={{ ...infoVal, color: "#f0a500", fontWeight: 700 }}>{(user?.credits ?? 0) - creditCost}</span>
+              <span style={infoLabel}>{user?.rfid === "GUEST" ? "Guest credits" : "Credits after print"}</span>
+              <span style={{ ...infoVal, color: "#f0a500", fontWeight: 700 }}>
+                {user?.rfid === "GUEST" ? user?.credits : (user?.credits ?? 0) - creditCost}
+              </span>
             </div>
             {!hasEnough && (
               <div style={{ fontSize: 12, color: "#e74c3c", marginTop: 8 }}>
-                Not enough credits for this job.
+                {user?.rfid === "GUEST"
+                  ? `Not enough credits yet — you'll need to deposit ${creditCost - (user?.credits ?? 0)} more credit(s) worth of bottles.`
+                  : "Not enough credits for this job."}
               </div>
             )}
 
-            <div style={{ display: "flex", gap: 12, marginTop: 20 }}>
-              <button onClick={() => setStep("qr")} style={ghostBtn}>Back</button>
-              <button onClick={handleConfirmClick} style={primaryBtn(true)}>Print now</button>
+            <div style={{ display: "flex", gap: 12, marginTop: 20, flexDirection: "column" }}>
+              <div style={{ display: "flex", gap: 12 }}>
+                <button onClick={() => setStep("qr")} style={ghostBtn}>Back</button>
+                <button
+                  onClick={() => {
+                    setPaymentChoice("rfid");
+                    // If already identified and not guest, attempt to print
+                    if (user && user.rfid && user.rfid !== "GUEST") {
+                      handlePrint();
+                    } else {
+                      // prompt RFID tap
+                      setStep("rfid");
+                    }
+                  }}
+                  style={primaryBtn(true)}
+                >
+                  Pay with RFID
+                </button>
+                <button
+                  onClick={() => {
+                    setPaymentChoice("guest");
+                    // attach guest if session exists
+                    if (user && user.rfid === "GUEST") {
+                      // already guest — start deposit if needed
+                      if (user.credits < creditCost) startGuestDeposit(); else handlePrint();
+                      return;
+                    }
+                    if (sessionId) {
+                      // attach GUEST and proceed to confirm/deposit
+                      (async () => {
+                        try {
+                          await fetch(`${API}/api/print/qr-attach/${sessionId}`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ rfid: "GUEST" }),
+                          });
+                          const statusRes = await fetch(`${API}/api/deposit/guest-status`);
+                          const status = await statusRes.json();
+                          const guestUser: User = { rfid: "GUEST", name: "Guest", studentId: "", credits: status.credits ?? 0 };
+                          setUser(guestUser);
+                          if (guestUser.credits < creditCost) startGuestDeposit(); else handlePrint();
+                        } catch {
+                          setErrorMsg("Could not attach guest session.");
+                          setStep("error");
+                        }
+                      })();
+                    } else {
+                      // fallback: start guest flow
+                      handleGuestChoice();
+                    }
+                  }}
+                  style={{ ...primaryBtn(true), background: "#2ecc71", color: "#000" }}
+                >
+                  Non-RFID (Insert bottles)
+                </button>
+              </div>
             </div>
+          </div>
+        )}
+
+        {/* Mode of Payment (guest) — pay for this exact job with bottles */}
+        {step === "guest-deposit" && (
+          <div style={{ width: "100%", maxWidth: 560 }}>
+            <div style={{ textAlign: "center", marginBottom: 16 }}>
+              <div style={{ fontSize: 16, color: "#f0a500", fontWeight: 700 }}>Insert bottles to pay for this job</div>
+              <div style={{ fontSize: 13, color: "#aaa", marginTop: 4 }}>
+                Need <strong style={{ color: "#fff" }}>{creditCost}</strong> credits — you have{" "}
+                <strong style={{ color: "#2ecc71" }}>{kioskSession?.credits ?? user?.credits ?? 0}</strong>
+              </div>
+            </div>
+
+            {["ir", "capacitive", "tof", "loadcell"].includes(kioskSession?.step ?? "") && (
+              <>
+                {kioskSession?.steps.map(s => (
+                  <div key={s.id} style={{
+                    display: "flex", alignItems: "center", gap: 14,
+                    padding: "14px 18px", marginBottom: 10,
+                    background: "#242424", borderRadius: 10,
+                    border: `1.5px solid ${STATUS_COLOR[s.status]}`,
+                    transition: "border-color 0.3s",
+                  }}>
+                    <span style={{ fontSize: 22, width: 28, textAlign: "center" }}>{STEP_ICONS[s.id]}</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 14, fontWeight: 600 }}>{s.label}</div>
+                      {s.detail && <div style={{ fontSize: 11, color: "#aaa", marginTop: 2 }}>{s.detail}</div>}
+                    </div>
+                    <div style={{ fontSize: 20, width: 24, textAlign: "center" }}>
+                      {s.status === "pending" && <span style={{ color: "#444" }}>○</span>}
+                      {s.status === "running" && <span style={{ color: "#f0a500" }}>◌</span>}
+                      {s.status === "pass"    && <span style={{ color: "#2ecc71" }}>✓</span>}
+                      {s.status === "fail"    && <span style={{ color: "#e74c3c" }}>✗</span>}
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
+
+            {kioskSession?.step === "gate_open" && (
+              <div style={{ textAlign: "center", padding: "20px 0" }}>
+                <div style={{ fontSize: 15, color: "#ccc", fontWeight: 600 }}>Gate open — insert your bottle</div>
+              </div>
+            )}
+
+            {kioskSession?.step === "idle" && kioskSession?.errorMsg && (
+              <div style={{ textAlign: "center", fontSize: 13, color: "#e74c3c", padding: "12px 0" }}>
+                {kioskSession.errorMsg}
+              </div>
+            )}
+
+            <button onClick={cancelGuestDeposit} style={{ ...ghostBtn, width: "100%", marginTop: 16 }}>
+              Cancel — back to job summary
+            </button>
           </div>
         )}
 
         {step === "printing" && (
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 56, marginBottom: 16, animation: "pulse 1s infinite" }}>🖨️</div>
+            <div style={{ fontSize: 56, marginBottom: 16, animation: "pulse 1s infinite" }}>
+              <PrintIcon size={56} color="#f0a500" />
+            </div>
             <div style={{ fontSize: 20, color: "#f0a500", fontWeight: 600 }}>Sending to printer...</div>
             <div style={{ fontSize: 14, color: "#666", marginTop: 8 }}>Please wait</div>
           </div>
@@ -323,9 +617,29 @@ export default function PrintScreen({ onBack }: Props) {
           <div style={{ textAlign: "center" }}>
             <div style={{ fontSize: 64, marginBottom: 16 }}>✅</div>
             <div style={{ fontSize: 22, color: "#2ecc71", fontWeight: 700, marginBottom: 8 }}>Print job sent!</div>
-            <div style={{ fontSize: 14, color: "#aaa", marginBottom: 24 }}>
-              {creditCost} credit{creditCost > 1 ? "s" : ""} deducted — {(user?.credits ?? 0) - creditCost} remaining
-            </div>
+            {invoice ? (
+              <div style={{ fontSize: 14, color: "#aaa", marginBottom: 24, textAlign: "left", maxWidth: 480, margin: "0 auto 24px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                  <div>Pages printed</div>
+                  <div style={{ fontWeight: 700 }}>{invoice.pagesPrinted}</div>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                  <div>Color mode</div>
+                  <div style={{ fontWeight: 700, textTransform: "uppercase" }}>{invoice.colorMode}</div>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                  <div>Credits charged</div>
+                  <div style={{ fontWeight: 700, color: "#e74c3c" }}>-{invoice.creditsCharged}</div>
+                </div>
+                {invoice.output && (
+                  <div style={{ marginTop: 10, fontSize: 12, color: "#666" }}>Printer response: {invoice.output}</div>
+                )}
+              </div>
+            ) : (
+              <div style={{ fontSize: 14, color: "#aaa", marginBottom: 24 }}>
+                {creditCost} credit{creditCost > 1 ? "s" : ""} deducted
+              </div>
+            )}
             <button onClick={onBack} style={primaryBtn(true)}>Back to home</button>
           </div>
         )}
@@ -333,31 +647,14 @@ export default function PrintScreen({ onBack }: Props) {
         {step === "error" && (
           <div style={{ textAlign: "center" }}>
             <div style={{ fontSize: 64, marginBottom: 16 }}>❌</div>
-            <div style={{ fontSize: 20, color: "#e74c3c", fontWeight: 700, marginBottom: 8 }}>Print failed</div>
+            <div style={{ fontSize: 20, color: "#e74c3c", fontWeight: 700, marginBottom: 8 }}>
+              {errorMsg.startsWith("Not enough") ? "Not enough credits" : "Print failed"}
+            </div>
             <div style={{ fontSize: 14, color: "#aaa", marginBottom: 24 }}>{errorMsg}</div>
-            <button onClick={() => setStep("qr")} style={primaryBtn(true)}>Try again</button>
+            <button onClick={() => setStep("confirm")} style={primaryBtn(true)}>Back to job summary</button>
           </div>
         )}
       </div>
-
-      {showNoCredit && (
-        <div style={overlay}>
-          <div style={modal}>
-            <div style={{ fontSize: 52, marginBottom: 12 }}>⚠️</div>
-            <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 8, color: "#e74c3c" }}>Not enough credits</div>
-            <div style={{ fontSize: 14, color: "#aaa", marginBottom: 6 }}>
-              This job needs <strong style={{ color: "#fff" }}>{creditCost} credits</strong>
-            </div>
-            <div style={{ fontSize: 14, color: "#aaa", marginBottom: 24 }}>
-              You have <strong style={{ color: "#f0a500" }}>{user?.credits} credits</strong>
-            </div>
-            <div style={{ fontSize: 13, color: "#666", marginBottom: 24 }}>
-              Deposit {creditCost - (user?.credits ?? 0)} more bottle{creditCost - (user?.credits ?? 0) > 1 ? "s" : ""} to unlock this print job.
-            </div>
-            <button onClick={() => setShowNoCredit(false)} style={primaryBtn(true)}>OK</button>
-          </div>
-        </div>
-      )}
 
       {showFeedback && (
         <FeedBackModal
@@ -370,6 +667,7 @@ export default function PrintScreen({ onBack }: Props) {
   );
 }
 
+// ── shared styles ─────────────────────────────────────────────────────────────
 const fullScreen: React.CSSProperties = {
   width: 1024, height: 600, background: "#1a1a1a",
   display: "flex", flexDirection: "column", position: "relative",
@@ -413,11 +711,37 @@ const ghostBtn: React.CSSProperties = {
   fontSize: 14, background: "transparent", color: "#aaa",
   border: "1px solid #3a3a3a", cursor: "pointer",
 };
-const overlay: React.CSSProperties = {
-  position: "absolute", inset: 0, background: "rgba(0,0,0,0.75)",
-  display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100,
+const choiceTileStyle: React.CSSProperties = {
+  background: "#242424",
+  border: "1px solid #333",
+  borderRadius: 14,
+  padding: "20px 22px",
+  display: "flex",
+  alignItems: "center",
+  gap: 18,
+  cursor: "pointer",
+  textAlign: "left",
+  minHeight: 120,
+  boxShadow: "none",
 };
-const modal: React.CSSProperties = {
-  background: "#242424", border: "1px solid #444", borderRadius: 16,
-  padding: "36px 40px", textAlign: "center", maxWidth: 380, width: "100%",
+const tileIconWrap: React.CSSProperties = {
+  width: 52,
+  height: 52,
+  borderRadius: 12,
+  background: "#1a1a1a",
+  border: "1px solid #3a3a3a",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  flexShrink: 0,
+};
+const tileLabel: React.CSSProperties = {
+  fontSize: 18,
+  fontWeight: 700,
+  color: "#fff",
+  marginBottom: 4,
+};
+const tileSub: React.CSSProperties = {
+  fontSize: 12,
+  color: "#666",
 };

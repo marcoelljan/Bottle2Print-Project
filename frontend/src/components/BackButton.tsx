@@ -1,4 +1,5 @@
 
+import { ArrowBackIcon } from "./KioskIcons";
 
 interface Props {
   onBack: () => void;
@@ -30,7 +31,7 @@ export default function BackButton({ onBack }: Props) {
       onMouseLeave={(e) => (e.currentTarget.style.borderColor = "#333")}
       aria-label="Back"
     >
-      ←
+      <ArrowBackIcon size={22} color="#f0a500" />
     </button>
   );
 }

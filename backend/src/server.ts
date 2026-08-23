@@ -13,6 +13,7 @@ import printRoutes from "./routes/print";
 import adminRoutes from "./routes/admin";
 import feedbackRoutes from "./routes/feedback";
 import { setWss } from "./wsHub";
+import { isGuestActive, startGuestSession, addGuestCredit, getGuestCredits } from "./guestSession";
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 4000;
 const ARDUINO_PORT = process.env.ARDUINO_PORT || "/dev/tty.usbmodem14101";
@@ -21,11 +22,19 @@ const BAUD_RATE = 9600;
 // ── Size classification ───────────────────────────────────────────────────────
 interface SizeSpec { label: string; minHeight: number; maxHeight: number; minWeight: number; maxWeight: number; }
 const SIZE_SPECS: SizeSpec[] = [
-  { label: "Small",  minHeight: 351,  maxHeight: 999, minWeight: 14,  maxWeight: 19},
-  { label: "Medium", minHeight: 351, maxHeight: 999, minWeight: 14, maxWeight: 19},
-  { label: "Large",  minHeight: 351, maxHeight: 999, minWeight: 18, maxWeight: 25},
+  { label: "Small",  minHeight: 351, maxHeight: 999, minWeight: 14, maxWeight: 19 },
+  { label: "Medium", minHeight: 351, maxHeight: 999, minWeight: 14, maxWeight: 19 },
+  { label: "Large",  minHeight: 351, maxHeight: 999, minWeight: 18, maxWeight: 25 },
   { label: "XL",     minHeight: 351, maxHeight: 999, minWeight: 48, maxWeight: 57 },
 ];
+
+// Tiered credit values — Small=1, Medium=2, Large=3, XL=4.
+const SIZE_CREDITS: Record<string, number> = {
+  Small: 1,
+  Medium: 2,
+  Large: 3,
+  XL: 4,
+};
 
 function classifyBottle(heightMm: number, weightG: number): SizeSpec | null {
   return SIZE_SPECS.find(
@@ -70,20 +79,15 @@ let session: SessionState = {
   timestamp: 0, sessionId: 0,
 };
 
-// The sensor states where a bottle is actively being validated.
-// We must never silently wipe rfid/session data while one of these is active,
-// or in-flight serial events (like LOADCELL:WEIGHT) will crash trying to
-// write a null rfid to the transactions table.
 const SENSOR_IN_PROGRESS_STEPS = ["ir", "capacitive", "tof", "loadcell"];
 
-// CHANGE 1: resetSession now takes a `force` flag.
-// - force=false (default): used by internal/automatic timeouts. Will NOT
-//   reset if a bottle validation is actively in progress.
-// - force=true: used when the kiosk operator explicitly changes screens/mode.
-//   Always resets, guaranteeing every screen starts from a clean session.
+// Set by /api/deposit/guest-stop so an in-flight setTimeout callback
+// (continueGuestLoop) doesn't reopen the gate right after the frontend
+// has already told us the guest is done depositing.
+let guestStopRequested = false;
+
 function resetSession(force = false) {
   if (!force && SENSOR_IN_PROGRESS_STEPS.includes(session.step)) {
-    // A bottle is mid-validation (IR/CAP/TOF/LOADCELL) — don't clobber it.
     console.log(`resetSession skipped: validation in progress (step=${session.step})`);
     return;
   }
@@ -111,9 +115,6 @@ app.use(express.json());
 type KioskMode = "deposit" | "register" | "balance" | "print" | "admin" | "idle";
 let kioskMode: KioskMode = "idle";
 
-// CHANGE 2: every mode switch — not just switching to "idle" — now force-resets
-// the session. This guarantees a screen never inherits stale state from a
-// previous tap (this was the cause of Register skipping the RFID prompt).
 app.post("/api/mode", (req, res) => {
   kioskMode = req.body.mode as KioskMode;
   console.log("Kiosk mode:", kioskMode);
@@ -121,11 +122,63 @@ app.post("/api/mode", (req, res) => {
   res.json({ success: true, mode: kioskMode });
 });
 
+function continueGuestLoop() {
+  if (guestStopRequested || !isGuestActive()) {
+    guestStopRequested = false;
+    resetSession(true);
+    return;
+  }
+  session.steps    = freshSteps();
+  session.result   = null;
+  session.errorMsg = null;
+  session.heightMm = null;
+  session.weightG  = null;
+  session.size     = null;
+  session.step     = "gate_open";
+  broadcastState();
+  sendToArduino("OPEN_GATE_GUEST");
+}
+
 app.get("/api/mode", (_req, res) => res.json({ mode: kioskMode }));
 app.use(userRoutes);
 app.use(printRoutes);
 app.use(adminRoutes);
 app.use(feedbackRoutes);
+
+// Starts (or resumes) a guest bottle-deposit loop. Used both by the
+// standalone Deposit screen and by Print's "pay with bottles" step.
+app.post("/api/deposit/guest-start", (_req, res) => {
+  guestStopRequested = false;
+  startGuestSession();
+
+  session.rfid      = "GUEST";
+  session.userName  = "Guest";
+  session.credits   = getGuestCredits();
+  session.steps     = freshSteps();
+  session.result    = null;
+  session.errorMsg  = null;
+  session.timestamp = Date.now();
+  session.sessionId = Date.now();
+  session.step      = "gate_open";
+
+  sendToArduino("OPEN_GATE_GUEST");
+  broadcastState();
+  res.json({ success: true, credits: getGuestCredits() });
+});
+
+app.get("/api/deposit/guest-status", (_req, res) => {
+  res.json({ active: isGuestActive(), credits: getGuestCredits() });
+});
+
+// Called when the frontend (Deposit screen "Done" button, or Print's
+// deposit-to-pay step reaching its target) wants the gate loop to stop.
+// Does NOT end the guest session or clear banked credits — only
+// endGuestSession() (called after a successful guest print) does that.
+app.post("/api/deposit/guest-stop", (_req, res) => {
+  guestStopRequested = true;
+  resetSession(true);
+  res.json({ success: true, credits: getGuestCredits() });
+});
 
 // Serve the built frontend
 const frontendDist = path.join(__dirname, "..", "..", "frontend", "dist");
@@ -133,7 +186,6 @@ app.use(express.static(frontendDist));
 app.get(/^(?!\/api|\/upload).*/, (_req, res) => {
   res.sendFile(path.join(frontendDist, "index.html"));
 });
-
 
 const httpServer = createServer(app);
 const wss = new WebSocketServer({ server: httpServer });
@@ -269,22 +321,25 @@ parser.on("data", (raw: string) => {
 
   // Timeout — no bottle inserted
   if (line === "TIMEOUT") {
-    if (session.step === "result") return; // ← GUARD ADDED
+    if (session.step === "result") return;
     session.step     = "idle";
     session.errorMsg = "No bottle inserted. Gate closed.";
     broadcastState();
-    setTimeout(() => resetSession(), 2000);
+    setTimeout(() => {
+      if (session.rfid === "GUEST") continueGuestLoop();
+      else resetSession();
+    }, 2000);
     return;
   }
 
   // IR detected
   if (line === "IR:DETECTED") {
-    if (session.step === "result") return; // ← GUARD ADDED
+    if (session.step === "result") return;
     session.step = "ir";
     setStep("ir", "running");
     broadcastState();
     setTimeout(() => {
-      if (session.step === "result") return; // ← GUARD ADDED (inside the delayed callback too)
+      if (session.step === "result") return;
       setStep("ir", "pass", "Bottle insertion confirmed");
       session.step = "capacitive";
       setStep("capacitive", "running");
@@ -295,7 +350,7 @@ parser.on("data", (raw: string) => {
 
   // Capacitive
   if (line === "CAP:PASS") {
-    if (session.step === "result") return; // ← GUARD ADDED
+    if (session.step === "result") return;
     setStep("capacitive", "pass", "Physical presence confirmed");
     session.step = "tof";
     setStep("tof", "running");
@@ -303,20 +358,23 @@ parser.on("data", (raw: string) => {
     return;
   }
   if (line === "CAP:FAIL") {
-    if (session.step === "result") return; // ← GUARD ADDED
+    if (session.step === "result") return;
     setStep("capacitive", "fail", "No bottle detected at sensor");
     session.step     = "result";
     session.result   = "rejected";
     session.errorMsg = "Capacitive sensor found no bottle. Try again.";
     broadcastState();
     sendToArduino("REJECT");
-    setTimeout(() => resetSession(), 3000);
+    setTimeout(() => {
+      if (session.rfid === "GUEST") continueGuestLoop();
+      else resetSession();
+    }, 3000);
     return;
   }
 
   // ToF height
   if (line.startsWith("TOF:HEIGHT:")) {
-    if (session.step === "result") return; // ← GUARD ADDED
+    if (session.step === "result") return;
     const heightMm = parseFloat(line.split(":")[2]);
     session.heightMm = heightMm;
     if (heightMm < 80 || heightMm > 320) {
@@ -326,7 +384,10 @@ parser.on("data", (raw: string) => {
       session.errorMsg = `Invalid bottle size (height ${heightMm}mm). Only PET bottles accepted.`;
       broadcastState();
       sendToArduino("REJECT");
-      setTimeout(() => resetSession(), 5000);
+      setTimeout(() => {
+        if (session.rfid === "GUEST") continueGuestLoop();
+        else resetSession();
+      }, 5000);
     } else {
       setStep("tof", "pass", `Height: ${heightMm}mm`);
       session.step = "loadcell";
@@ -336,20 +397,23 @@ parser.on("data", (raw: string) => {
     return;
   }
   if (line === "TOF:FAIL:TIMEOUT") {
-    if (session.step === "result") return; // ← GUARD ADDED
+    if (session.step === "result") return;
     setStep("tof", "fail", "Sensor timeout");
     session.step     = "result";
     session.result   = "rejected";
     session.errorMsg = "Height sensor timed out. Try again.";
     broadcastState();
     sendToArduino("REJECT");
-    setTimeout(() => resetSession(), 5000);
+    setTimeout(() => {
+      if (session.rfid === "GUEST") continueGuestLoop();
+      else resetSession();
+    }, 5000);
     return;
   }
 
   // Load cell weight
   if (line.startsWith("LOADCELL:WEIGHT:")) {
-    if (!session.rfid || session.step === "result") { // ← GUARD ADDED (step check)
+    if (!session.rfid || session.step === "result") {
       console.warn("LOADCELL:WEIGHT ignored — no active session or result already set.");
       return;
     }
@@ -365,25 +429,38 @@ parser.on("data", (raw: string) => {
       session.errorMsg = `Size mismatch — height and weight don't match a valid bottle type.`;
       broadcastState();
       sendToArduino("REJECT");
-      setTimeout(() => resetSession(), 5000);
+      setTimeout(() => {
+        if (session.rfid === "GUEST") continueGuestLoop();
+        else resetSession();
+      }, 5000);
     } else {
-      setStep("loadcell", "pass", `Weight: ${weightG}g — ${match.label}`);
+      const creditsEarned = SIZE_CREDITS[match.label] ?? 1;
+
+      setStep("loadcell", "pass", `Weight: ${weightG}g — ${match.label} (+${creditsEarned})`);
       session.size   = match.label;
       session.step   = "result";
       session.result = "accepted";
 
-      db.prepare(`
-        INSERT INTO transactions (rfid, type, size, height_mm, weight_g, credits)
-        VALUES (?, 'deposit', ?, ?, ?, 1)
-      `).run(session.rfid, match.label, session.heightMm, weightG);
-      db.prepare(`UPDATE users SET credits = credits + 1 WHERE rfid = ?`).run(session.rfid);
+      if (session.rfid === "GUEST") {
+        addGuestCredit(creditsEarned);
+        session.credits = getGuestCredits();
+      } else {
+        db.prepare(`
+          INSERT INTO transactions (rfid, type, size, height_mm, weight_g, credits)
+          VALUES (?, 'deposit', ?, ?, ?, ?)
+        `).run(session.rfid, match.label, session.heightMm, weightG, creditsEarned);
+        db.prepare(`UPDATE users SET credits = credits + ? WHERE rfid = ?`).run(creditsEarned, session.rfid);
 
-      const updated = db.prepare("SELECT credits FROM users WHERE rfid = ?").get(session.rfid) as any;
-      session.credits = updated.credits;
+        const updated = db.prepare("SELECT credits FROM users WHERE rfid = ?").get(session.rfid) as any;
+        session.credits = updated.credits;
+      }
 
       broadcastState();
       sendToArduino("ACCEPT");
-      setTimeout(() => resetSession(), 4000); 
+      setTimeout(() => {
+        if (session.rfid === "GUEST") continueGuestLoop();
+        else resetSession();
+      }, 4000);
     }
     return;
   }
@@ -391,11 +468,5 @@ parser.on("data", (raw: string) => {
 
 // ── REST ──────────────────────────────────────────────────────────────────────
 app.get("/api/session", (_req, res) => res.json(session));
-
-// Static files serving setup
-app.use(express.static(path.join(__dirname, "../../frontend/dist")));
-app.get(/^(?!\/api).*/, (_req, res) => {
-  res.sendFile(path.join(__dirname, "../../frontend/dist/index.html"));
-});
 
 httpServer.listen(PORT, () => console.log(`Backend on http://localhost:${PORT}`));

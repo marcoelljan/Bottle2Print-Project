@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import BackButton from "../components/BackButton";
-import { API, WS_URL } from "../config";
+import { LockPersonIcon, PrintIcon, AccountCircleIcon, ChatIcon, RecyclingIcon } from "../components/KioskIcons";
+import { API } from "../config";
 interface Props { onBack: () => void; }
 type Tab = "logs" | "users" | "transactions" | "feedback";
 
@@ -20,9 +21,14 @@ interface Feedback {
 }
 
 export default function AdminScreen({ onBack }: Props) {
-  const [verified, setVerified]     = useState(false);
-  const [verifyError, setVerifyError] = useState("");
-  const [pulse, setPulse]           = useState(false);
+  const [token, setToken]           = useState<string | null>(null);
+  const verified = token !== null;
+
+  // password login state
+  const [pwInput, setPwInput]       = useState("");
+  const [pwError, setPwError]       = useState("");
+  const [pwLoading, setPwLoading]   = useState(false);
+
   const [tab, setTab]               = useState<Tab>("logs");
   const [users, setUsers]           = useState<User[]>([]);
   const [txns, setTxns]             = useState<Transaction[]>([]);
@@ -31,13 +37,17 @@ export default function AdminScreen({ onBack }: Props) {
   const [addCredits, setAddCredits] = useState<{ rfid: string; name: string } | null>(null);
   const [creditAmount, setCreditAmount] = useState("");
   const [creditMsg, setCreditMsg]   = useState("");
- const pulseRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // pulse animation for RFID waiting
-  useEffect(() => {
-    pulseRef.current = setInterval(() => setPulse(p => !p), 900);
-    return () => { if (pulseRef.current) clearInterval(pulseRef.current); };
-  }, []);
+  // helper — every admin fetch goes through this so the token is always attached
+  const authFetch = (path: string, options: RequestInit = {}) => {
+    return fetch(`${API}${path}`, {
+      ...options,
+      headers: {
+        ...(options.headers ?? {}),
+        Authorization: `Bearer ${token}`,
+      },
+    });
+  };
 
   // set mode to admin while on this screen
   useEffect(() => {
@@ -55,72 +65,47 @@ export default function AdminScreen({ onBack }: Props) {
     };
   }, []);
 
- const [retryKey, setRetryKey] = useState(0); 
-
-useEffect(() => {
-  if (verified) return;
-  const ws = new WebSocket(WS_URL);
-  let shouldClose = false;
-
-  ws.onopen = () => {
-    if (shouldClose) ws.close();
-  };
-
-  ws.onmessage = async (e) => {
+  const handlePasswordLogin = async () => {
+    if (!pwInput) return;
+    setPwLoading(true);
+    setPwError("");
     try {
-      const msg = JSON.parse(e.data);
-      if (
-        msg.type === "state" &&
-        msg.session?.rfid &&
-        msg.session.step === "identified" &&
-        msg.session.sessionId > 0
-      ) {
-        const tappedRfid = msg.session.rfid;
-        ws.close();
-        const res = await fetch(`${API}/api/admin/verify`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ rfid: tappedRfid }),
-        });
-        if (res.ok) {
-          setVerified(true);
-          setVerifyError("");
-        } else {
-          setVerifyError("Access denied. Not an admin card.");
-          setTimeout(() => {
-            setVerifyError("");
-            setRetryKey(k => k + 1);
-          }, 3000);
-        }
+      const res = await fetch(`${API}/api/admin/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: pwInput }),
+      });
+      const data = await res.json();
+      if (res.ok && data.token) {
+        setToken(data.token);
+        setPwInput("");
+      } else {
+        setPwError(data.error ?? "Incorrect password.");
       }
-    } catch {}
+    } catch {
+      setPwError("Could not reach backend.");
+    }
+    setPwLoading(false);
   };
 
-  return () => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.close();
-    } else if (ws.readyState === WebSocket.CONNECTING) {
-      shouldClose = true;
-    }
-  };
-}, [verified, retryKey]);
   useEffect(() => {
     if (verified) fetchData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [verified, tab]);
 
   const fetchData = async () => {
     setLoading(true);
     try {
       if (tab === "users" || tab === "logs") {
-        const r = await fetch(`${API}/api/admin/users`);
+        const r = await authFetch(`/api/admin/users`);
         setUsers(await r.json());
       }
       if (tab === "transactions" || tab === "logs") {
-        const r = await fetch(`${API}/api/admin/transactions`);
+        const r = await authFetch(`/api/admin/transactions`);
         setTxns(await r.json());
       }
       if (tab === "feedback") {
-        const r = await fetch(`${API}/api/admin/feedback`);
+        const r = await authFetch(`/api/admin/feedback`);
         setFeedback(await r.json());
       }
     } catch {}
@@ -128,12 +113,12 @@ useEffect(() => {
   };
 
   const handleResetCredits = async (rfid: string) => {
-    await fetch(`${API}/api/admin/user/${rfid}/reset-credits`, { method: "POST" });
+    await authFetch(`/api/admin/user/${rfid}/reset-credits`, { method: "POST" });
     fetchData();
   };
 
   const handleDeleteUser = async (rfid: string) => {
-    await fetch(`${API}/api/admin/user/${rfid}`, { method: "DELETE" });
+    await authFetch(`/api/admin/user/${rfid}`, { method: "DELETE" });
     fetchData();
   };
 
@@ -144,7 +129,7 @@ useEffect(() => {
       setCreditMsg("Enter a valid number.");
       return;
     }
-    const res = await fetch(`${API}/api/admin/user/${addCredits.rfid}/add-credits`, {
+    const res = await authFetch(`/api/admin/user/${addCredits.rfid}/add-credits`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ amount }),
@@ -163,39 +148,64 @@ useEffect(() => {
     }
   };
 
-  // ── RFID verification screen ───────────────────────────────────────────────
+  const handleBack = () => {
+    if (!verified) {
+      onBack();
+      return;
+    }
+    if (window.confirm("Log out of the admin panel?")) {
+      setToken(null);
+      setTab("logs");
+    }
+  };
+
+  // ── login screen ───────────────────────────────────────────────────────────
   if (!verified) {
     return (
       <div style={fullScreen}>
-        <BackButton onBack={onBack} />
+        <BackButton onBack={handleBack} />
         <div style={headerBar}>
-          <span style={{ fontSize: 22 }}>🔒</span>
+          <LockPersonIcon size={22} color="#f0a500" />
           <div>
             <div style={headerTitle}>Admin Access</div>
-            <div style={headerSub}>Tap admin RFID card to authenticate</div>
+            <div style={headerSub}>Log in with your admin password</div>
           </div>
         </div>
-        <div style={body}>
-          <div style={{ textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: 20 }}>
-            <div style={{
-              width: 100, height: 100, borderRadius: "50%",
-              border: `3px solid ${verifyError ? "#e74c3c" : "#f0a500"}`,
-              display: "flex", alignItems: "center", justifyContent: "center",
-              fontSize: 44,
-              opacity: pulse ? 1 : 0.4,
-              transition: "opacity 0.4s",
-              boxShadow: pulse ? `0 0 24px ${verifyError ? "#e74c3c55" : "#f0a50055"}` : "none",
-            }}>
-              🔒
+        <div style={loginBody}>
+          <div style={loginPanel}>
+
+            {/* password login */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{ fontSize: 13, color: "#888", fontWeight: 600 }}>Admin password</div>
+              <input
+                type="password"
+                value={pwInput}
+                onChange={e => setPwInput(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") handlePasswordLogin(); }}
+                placeholder="Enter password"
+                style={{
+                  width: "100%", padding: "12px 14px", background: "#1e1e1e",
+                  border: "1px solid #3a3a3a", borderRadius: 8, color: "#fff",
+                  fontSize: 15, outline: "none", boxSizing: "border-box",
+                }}
+              />
+              {pwError && (
+                <div style={{ fontSize: 12, color: "#e74c3c" }}>{pwError}</div>
+              )}
+              <button
+                onClick={handlePasswordLogin}
+                disabled={!pwInput || pwLoading}
+                style={{
+                  padding: "12px", borderRadius: 8, fontWeight: 700, fontSize: 14,
+                  border: "none", cursor: !pwInput || pwLoading ? "not-allowed" : "pointer",
+                  background: !pwInput || pwLoading ? "#333" : "#f0a500",
+                  color: !pwInput || pwLoading ? "#555" : "#000",
+                }}
+              >
+                {pwLoading ? "Checking..." : "Log in"}
+              </button>
             </div>
-            <div>
-              <div style={{ fontSize: 18, color: verifyError ? "#e74c3c" : "#f0a500", fontWeight: 600 }}>
-                {verifyError || "Tap your admin card"}
-              </div>
-              <div style={{ fontSize: 13, color: "#555", marginTop: 6 }}>
-                Only authorized admin cards can access this panel
-              </div>
-            </div>
+
           </div>
         </div>
       </div>
@@ -205,10 +215,10 @@ useEffect(() => {
   // ── Admin panel (after verified) ───────────────────────────────────────────
   return (
     <div style={fullScreen}>
-      <BackButton onBack={onBack} />
+      <BackButton onBack={handleBack} />
 
       <div style={headerBar}>
-        <span style={{ fontSize: 22 }}>🔒</span>
+        <LockPersonIcon size={22} color="#f0a500" />
         <div>
           <div style={headerTitle}>Admin Panel</div>
           <div style={headerSub}>Manage users, view logs and transactions</div>
@@ -218,13 +228,13 @@ useEffect(() => {
 
       {/* tabs */}
       <div style={tabBar}>
-        {([["logs", "📋 Activity Logs"], ["users", "👥 Manage Users"], ["transactions", "📊 Transactions"], ["feedback", "💬 Feedback"]] as [Tab, string][]).map(([t, label]) => (
+        {([["logs", <><PrintIcon size={15} /> Activity Logs</>], ["users", <><AccountCircleIcon size={15} /> Manage Users</>], ["transactions", <><RecyclingIcon size={15} /> Transactions</>], ["feedback", <><ChatIcon size={15} /> Feedback</>]] as [Tab, React.ReactNode][]).map(([t, label]) => (
           <button key={t} onClick={() => setTab(t)} style={{
             ...tabBtn,
             color: tab === t ? "#f0a500" : "#666",
             borderBottom: tab === t ? "2px solid #f0a500" : "2px solid transparent",
           }}>
-            {label}
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>{label}</span>
           </button>
         ))}
       </div>
@@ -446,7 +456,7 @@ useEffect(() => {
 }
 
 const fullScreen: React.CSSProperties = {
-  width: 1024, height: 600, background: "#1a1a1a",
+  width: "100%", maxWidth: 1024, minHeight: "100svh", background: "#1a1a1a",
   display: "flex", flexDirection: "column", position: "relative",
   fontFamily: "'Inter', 'Segoe UI', sans-serif", overflow: "hidden",
 };
@@ -464,6 +474,13 @@ const tabBtn: React.CSSProperties = {
 const body: React.CSSProperties = {
   flex: 1, overflow: "hidden", padding: "16px 24px",
   display: "flex", flexDirection: "column",
+};
+const loginBody: React.CSSProperties = {
+  flex: 1, display: "flex", alignItems: "center", justifyContent: "center",
+  padding: 24, boxSizing: "border-box",
+};
+const loginPanel: React.CSSProperties = {
+  width: "100%", maxWidth: 380, display: "flex", flexDirection: "column", gap: 28,
 };
 const tableWrap: React.CSSProperties = {
   flex: 1, overflow: "auto", borderRadius: 10, border: "1px solid #2a2a2a",

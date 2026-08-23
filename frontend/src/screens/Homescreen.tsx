@@ -1,22 +1,30 @@
 import { useState } from "react";
+import type { ReactNode } from "react";
 import type { Screen } from "../App";
 import FeedbackModal from "../components/FeedbackModal";
+import {
+  PrintIcon,
+  CreditCardIcon,
+  RecyclingIcon,
+  AccountCircleIcon,
+  ChatIcon,
+} from "../components/KioskIcons";
 
 interface Props { onNavigate: (s: Screen) => void; }
 
 interface Tile {
   screen: Screen;
-  icon: string;
+  icon: ReactNode;
   label: string;
   sub: string;
   color: string;
 }
 
 const TILES: Tile[] = [
-  { screen: "print",    icon: "🖨️",  label: "Print",           sub: "Upload & print a document", color: "#f0a500" },
-  { screen: "balance",  icon: "💳",  label: "Check Balance",   sub: "View your print credits",    color: "#f0a500" },
-  { screen: "deposit",  icon: "♻️",  label: "Deposit Bottles", sub: "Earn print credits",         color: "#f0a500" },
-  { screen: "register", icon: "👤",  label: "Register RFID",   sub: "Link a new card",            color: "#f0a500" },
+  { screen: "print",    icon: <PrintIcon size={22} color="#f0a500" />, label: "Print", sub: "Upload & print a document", color: "#f0a500" },
+  { screen: "balance",  icon: <CreditCardIcon size={22} color="#f0a500" />, label: "Check Balance", sub: "View your print credits", color: "#f0a500" },
+  { screen: "deposit",  icon: <RecyclingIcon size={22} color="#f0a500" />, label: "Deposit Bottles", sub: "Earn print credits", color: "#f0a500" },
+  { screen: "register", icon: <AccountCircleIcon size={22} color="#f0a500" />, label: "Register RFID", sub: "Link a new card", color: "#f0a500" },
 ];
 
 export default function HomeScreen({ onNavigate }: Props) {
@@ -93,30 +101,14 @@ export default function HomeScreen({ onNavigate }: Props) {
           ))}
         </div>
 
-        {/* admin strip */}
-        <button
-          onClick={() => onNavigate("admin" as const)}
-          style={{
-            marginTop: 16, width: "100%", maxWidth: 760,
-            background: "#1e1e1e", border: "1px solid #2a2a2a",
-            borderRadius: 10, padding: "12px 24px",
-            display: "flex", alignItems: "center", gap: 14,
-            cursor: "pointer",
-          }}
-          onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.borderColor = "#555"}
-          onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.borderColor = "#2a2a2a"}
-        >
-          <span style={{ fontSize: 18 }}>🔒</span>
-          <div style={{ textAlign: "left" }}>
-            <div style={{ fontSize: 13, color: "#aaa", fontWeight: 600 }}>Admin Access</div>
-            <div style={{ fontSize: 11, color: "#555" }}>Tap RFID card to authenticate</div>
-          </div>
-        </button>
+        {/* Admin Access tile intentionally removed from the public kiosk UI.
+            Admin is reached only via ?screen=admin (remote/Tailscale access)
+            or a hidden on-site gesture if you choose to add one later. */}
 
         <button
           onClick={() => setShowFeedback(true)}
           style={{
-            marginTop: 10, width: "100%", maxWidth: 760,
+            marginTop: 16, width: "100%", maxWidth: 760,
             background: "transparent", border: "1px solid #2a2a2a",
             borderRadius: 10, padding: "10px 24px",
             display: "flex", alignItems: "center", gap: 14,
@@ -125,7 +117,7 @@ export default function HomeScreen({ onNavigate }: Props) {
           onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.borderColor = "#555"}
           onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.borderColor = "#2a2a2a"}
         >
-          <span style={{ fontSize: 16 }}>💬</span>
+          <ChatIcon size={16} color="#f0a500" />
           <div style={{ fontSize: 12, color: "#888" }}>Leave feedback about this kiosk</div>
         </button>
 

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { API, WS_URL } from "../config";
+import { CreditCardIcon } from "./KioskIcons";
 
 interface Props {
   onIdentified: (user: { rfid: string; name: string; studentId: string; credits: number }) => void;
@@ -88,12 +89,11 @@ export default function RFIDprompt({ onIdentified }: Props) {
       width: 100, height: 100, borderRadius: "50%",
       border: `3px solid ${status === "error" ? "#e74c3c" : "#f0a500"}`,
       display: "flex", alignItems: "center", justifyContent: "center",
-      fontSize: 44,
       opacity: pulse ? 1 : 0.5,
       transition: "opacity 0.4s",
       boxShadow: pulse ? `0 0 24px ${status === "error" ? "#e74c3c55" : "#f0a50055"}` : "none",
     }}>
-      💳
+      <CreditCardIcon size={42} color={status === "error" ? "#e74c3c" : "#f0a500"} />
     </div>
     <div style={{ textAlign: "center" }}>
       <p style={{ fontSize: 18, color: status === "error" ? "#e74c3c" : "#f0a500", fontWeight: 600 }}>

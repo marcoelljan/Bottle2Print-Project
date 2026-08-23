@@ -7,6 +7,7 @@ import QRCode from "qrcode";
 import { db } from "../db";
 import { upload } from "../upload";
 import { createSession, getSession, updateSession, deleteSession } from "../qrSessions";
+import { isGuestActive, getGuestCredits, deductGuestCredits, endGuestSession } from "../guestSession";
 import { broadcast } from "../wsHub";
 
 const router = Router();
@@ -100,11 +101,18 @@ router.post("/api/print", upload.single("document"), async (req, res) => {
   const rfid = req.body.rfid as string;
 
   if (!rfid || !req.file) return res.status(400).json({ error: "Missing rfid or file." });
+  const isGuest = rfid === "GUEST";
+  let availableCredits: number;
 
-  const user = db.prepare("SELECT * FROM users WHERE rfid = ?").get(rfid) as any;
-  if (!user) {
-    fs.unlink(req.file.path, () => {});
-    return res.status(404).json({ error: "User not found." });
+  if (isGuest) {
+    availableCredits = getGuestCredits();
+  } else {
+    const user = db.prepare("SELECT * FROM users WHERE rfid = ?").get(rfid) as any;
+    if (!user) {
+      fs.unlink(req.file.path, () => {});
+      return res.status(404).json({ error: "User not found." });
+    }
+    availableCredits = user.credits;
   }
 
   let pdfPath: string;
@@ -117,37 +125,81 @@ router.post("/api/print", upload.single("document"), async (req, res) => {
     return res.status(500).json({ error: "Could not process this file. Try a different format." });
   }
 
-  if (user.credits < pageCount) {
-    if (req.file.path !== pdfPath) fs.unlink(req.file.path, () => {});
-    fs.unlink(pdfPath, () => {});
+  // Support color vs black & white pricing and optional page ranges
+  const colorMode: "bw" | "color" = req.body.colorMode === "color" ? "color" : "bw";
+  const rangeInput: string = (req.body.pageRange ?? "all").trim();
+
+  let selectedPages: number[];
+  let cupsRangeFlag = "";
+
+  const totalPages = pageCount ?? 1;
+  if (rangeInput === "all" || rangeInput === "") {
+    selectedPages = Array.from({ length: totalPages }, (_, i) => i + 1);
+  } else {
+    const parsed = parsePageRange(rangeInput, totalPages);
+    if (!parsed) {
+      const cleanupPaths = req.file.path !== pdfPath ? [req.file.path, pdfPath] : [pdfPath];
+      cleanupPaths.forEach(p => fs.unlink(p, () => {}));
+      return res.status(400).json({ error: `Invalid page range. This document has ${totalPages} page(s).` });
+    }
+    selectedPages = parsed;
+    cupsRangeFlag = `-P ${rangeInput}`;
+  }
+
+  const creditsPerPage = colorMode === "color" ? 8 : 3;
+  const totalCost = selectedPages.length * creditsPerPage;
+
+  if (availableCredits < totalCost) {
+    const cleanupPaths = req.file.path !== pdfPath ? [req.file.path, pdfPath] : [pdfPath];
+    cleanupPaths.forEach(p => fs.unlink(p, () => {}));
     return res.status(403).json({ error: "Not enough credits." });
   }
 
   const cleanupPaths = req.file.path !== pdfPath ? [req.file.path, pdfPath] : [pdfPath];
 
-  exec(`lp "${pdfPath}"`, (error, stdout, stderr) => {
+  // Color flag mapping for lp (printer-specific)
+  const cupsColorFlag = colorMode === "color" ? "RGB" : "Gray";
+  const cmd = `lp ${cupsRangeFlag} -o ColorModel=${cupsColorFlag} "${pdfPath}"`;
+
+  exec(cmd, (error, stdout, stderr) => {
     cleanupPaths.forEach(p => fs.unlink(p, () => {}));
     if (error) return res.status(500).json({ error: stderr || error.message });
 
-    db.prepare("UPDATE users SET credits = credits - ? WHERE rfid = ?").run(pageCount, rfid);
-    db.prepare(`INSERT INTO transactions (rfid, type, credits) VALUES (?, 'print', ?)`).run(rfid, pageCount);
+    if (isGuest) {
+      deductGuestCredits(totalCost);
+      endGuestSession();
+    } else {
+      db.prepare("UPDATE users SET credits = credits - ? WHERE rfid = ?").run(totalCost, rfid);
+      db.prepare(`INSERT INTO transactions (rfid, type, credits) VALUES (?, 'print', ?)`).run(rfid, totalCost);
+    }
 
-    res.json({ success: true, output: stdout.trim(), pagesPrinted: pageCount, creditsCharged: pageCount });
+    res.json({ success: true, output: stdout.trim(), pagesPrinted: selectedPages.length, creditsCharged: totalCost, colorMode });
   });
 });
 
 // ── QR code print flow ───────────────────────────────────────────────────────
 
-// 1. Kiosk calls this right after RFID tap to create a session + QR code
+// 1. Kiosk calls this to create a session + QR code. RFID may be attached later.
 router.post("/api/print/qr-session", async (req, res) => {
   const { rfid } = req.body;
-  if (!rfid) return res.status(400).json({ error: "Missing rfid." });
-
-  const sessionId = createSession(rfid);
+  // allow creating a QR session without an RFID; it can be attached later
+  const sessionId = createSession(rfid ?? "UNASSIGNED");
   const uploadUrl = `http://${PI_IP}:4000/upload/${sessionId}`;
   const qrImage = await QRCode.toDataURL(uploadUrl);
 
   res.json({ sessionId, uploadUrl, qrImage });
+});
+
+// 1.5 Attach or update the RFID for an existing QR session (used when QR is shown first)
+router.post("/api/print/qr-attach/:sessionId", async (req, res) => {
+  const { sessionId } = req.params;
+  const { rfid } = req.body;
+  if (!rfid) return res.status(400).json({ error: "Missing rfid." });
+  const s = updateSession(sessionId, { rfid });
+  if (!s) return res.status(404).json({ error: "Session not found." });
+  // notify kiosks of updated state
+  try { broadcast({ type: "state", session: s }); } catch {}
+  res.json({ success: true, session: s });
 });
 
 // 2. Simple phone-facing upload page (plain HTML, not part of the React app)
@@ -246,7 +298,9 @@ router.post("/api/print/qr-upload/:sessionId", upload.single("file"), async (req
     });
 
     const user = db.prepare("SELECT * FROM users WHERE rfid = ?").get(session.rfid) as any;
+    const userCredits = session.rfid === "GUEST" ? getGuestCredits() : (user?.credits ?? 0);
     const costs = { bw: pageCount * 3, color: pageCount * 8 };
+     
 
     broadcast({
       type: "qr-upload",

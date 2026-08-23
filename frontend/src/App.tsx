@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import HomeScreen from "./screens/Homescreen";
 import PrintScreen from "./screens/Printscreen";
 import CheckBalanceScreen from "./screens/CheckBalanceScreen";
@@ -11,6 +11,15 @@ export type Screen = "home" | "print" | "balance" | "deposit" | "register" | "ad
 export default function App() {
   const [screen, setScreen] = useState<Screen>("home");
 
+  // Allow remote/direct admin access via ?screen=admin (e.g. over Tailscale),
+  // without exposing an Admin tile anywhere in the public kiosk UI.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("screen") === "admin") {
+      setScreen("admin");
+    }
+  }, []);
+
   const go = (s: Screen) => setScreen(s);
   const home = () => setScreen("home");
 
@@ -19,7 +28,7 @@ export default function App() {
       {screen === "home"     && <HomeScreen onNavigate={go} />}
       {screen === "print"    && <PrintScreen onBack={home} />}
       {screen === "balance"  && <CheckBalanceScreen onBack={home} />}
-      {screen === "deposit"  && <DepositScreen onBack={home} />}
+      {screen === "deposit"  && <DepositScreen onBack={home} onNavigate={go} />}
       {screen === "register" && <RegisterScreen onBack={home} />}
       {screen === "admin"    && <AdminScreen onBack={home} />}
     </>

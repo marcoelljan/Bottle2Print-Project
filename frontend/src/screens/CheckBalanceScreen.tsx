@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import BackButton from "../components/BackButton";
 import RFIDprompt from "../components/RFIDprompt";
 import { API } from "../config";
+import { CreditCardIcon } from "../components/KioskIcons";
 
 interface Props { onBack: () => void; }
 interface User { rfid: string; name: string; studentId: string; credits: number; }
@@ -43,7 +44,7 @@ export default function CheckBalanceScreen({ onBack }: Props) {
       <BackButton onBack={onBack} />
 
       <div style={header}>
-        <span style={{ fontSize: 22 }}>💳</span>
+        <span style={{ fontSize: 22, display: "flex", alignItems: "center" }}><CreditCardIcon size={22} color="#f0a500" /></span>
         <div>
           <div style={headerTitle}>Check Balance</div>
           <div style={headerSub}>View your print credits</div>
