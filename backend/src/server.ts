@@ -115,6 +115,11 @@ app.use(express.json());
 type KioskMode = "deposit" | "register" | "balance" | "print" | "admin" | "idle";
 let kioskMode: KioskMode = "idle";
 
+// ── 1. SERVE STATIC FRONTEND FILES FIRST ──────────────────────────────────────
+const frontendDist = path.join(__dirname, "..", "..", "frontend", "dist");
+app.use(express.static(frontendDist));
+
+// ── 2. MOUNT API ROUTES ───────────────────────────────────────────────────────
 app.post("/api/mode", (req, res) => {
   kioskMode = req.body.mode as KioskMode;
   console.log("Kiosk mode:", kioskMode);
@@ -180,12 +185,14 @@ app.post("/api/deposit/guest-stop", (_req, res) => {
   res.json({ success: true, credits: getGuestCredits() });
 });
 
-// Serve the built frontend
-const frontendDist = path.join(__dirname, "..", "..", "frontend", "dist");
-app.use(express.static(frontendDist));
+app.get("/api/session", (_req, res) => res.json(session));
+
+// ── 3. REACT ROUTER CATCH-ALL LAST ────────────────────────────────────────────
 app.get(/^(?!\/api|\/upload).*/, (_req, res) => {
   res.sendFile(path.join(frontendDist, "index.html"));
 });
+
+// ──────────────────────────────────────────────────────────────────────────────
 
 const httpServer = createServer(app);
 const wss = new WebSocketServer({ server: httpServer });
@@ -465,8 +472,5 @@ parser.on("data", (raw: string) => {
     return;
   }
 });
-
-// ── REST ──────────────────────────────────────────────────────────────────────
-app.get("/api/session", (_req, res) => res.json(session));
 
 httpServer.listen(PORT, () => console.log(`Backend on http://localhost:${PORT}`));
