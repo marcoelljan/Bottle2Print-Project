@@ -75,9 +75,14 @@ router.post("/api/admin/check-username", (req, res) => {
 });
 
 // ── password login ──────────────────────────────────────────────────────────
+// ── password login ──────────────────────────────────────────────────────────
 router.post("/api/admin/login", async (req, res) => {
   if (Date.now() < lockoutUntil) {
-    return res.status(429).json({ error: "Too many failed attempts. Try again later." });
+    // UPDATE: Send the lockoutUntil timestamp to the frontend
+    return res.status(429).json({ 
+      error: "Too many failed attempts. Try again later.",
+      lockoutUntil 
+    });
   }
 
   const { username, password } = req.body;
@@ -91,8 +96,15 @@ router.post("/api/admin/login", async (req, res) => {
   if (!match) {
     failedAttempts++;
     if (failedAttempts >= 5) {
-      lockoutUntil = Date.now() + 5 * 60 * 1000; // 5 min lockout
+      // UPDATE: Changed from 5 * 60 * 1000 to 3 * 60 * 1000 (3 minutes)
+      lockoutUntil = Date.now() + 3 * 60 * 1000; 
       failedAttempts = 0;
+      
+      // Send the lockout timestamp immediately on the 5th fail
+      return res.status(429).json({ 
+        error: "Too many failed attempts. Try again later.",
+        lockoutUntil
+      });
     }
     return res.status(403).json({ error: "Incorrect username or password." });
   }

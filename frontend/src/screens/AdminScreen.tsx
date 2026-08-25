@@ -43,6 +43,29 @@ export default function AdminScreen({}: Props) {
   const [pwError, setPwError]       = useState("");
   const [pwLoading, setPwLoading]   = useState(false);
 
+  // Lockout timer state
+  const [lockoutUntil, setLockoutUntil] = useState<number | null>(null);
+  const [lockoutRemaining, setLockoutRemaining] = useState<number>(0);
+
+  // Countdown effect
+  useEffect(() => {
+    if (!lockoutUntil) return;
+
+    const updateTimer = () => {
+      const now = Date.now();
+      if (now >= lockoutUntil) {
+        setLockoutUntil(null);
+        setLockoutRemaining(0);
+      } else {
+        setLockoutRemaining(Math.ceil((lockoutUntil - now) / 1000));
+      }
+    };
+
+    updateTimer(); // Run immediately
+    const interval = setInterval(updateTimer, 1000);
+    return () => clearInterval(interval);
+  }, [lockoutUntil]);
+
   // forced password change state for first login
   const [forceNewPass, setForceNewPass]     = useState("");
   const [forceConfirmPass, setForceConfirmPass] = useState("");
@@ -119,7 +142,7 @@ export default function AdminScreen({}: Props) {
   };
 
   const handlePasswordLogin = async () => {
-    if (!userInput || !pwInput) return;
+    if (!userInput || !pwInput || lockoutRemaining > 0) return;
     setPwLoading(true);
     setPwError("");
     try {
@@ -129,13 +152,18 @@ export default function AdminScreen({}: Props) {
         body: JSON.stringify({ username: userInput, password: pwInput }),
       });
       const data = await res.json();
-      if (res.ok && data.token) {
+      
+      if (res.status === 429 && data.lockoutUntil) {
+        setLockoutUntil(data.lockoutUntil);
+        setPwError(""); // Clear standard error in favor of lockout message
+      } else if (res.ok && data.token) {
         setToken(data.token);
         setMyAdminId(data.adminId);
         setMyUsername(data.username);
         setMyRole(data.role);
         setPasswordChanged(data.passwordChanged);
         setPwInput("");
+        setLockoutUntil(null); // Clear lockout on success
       } else {
         setPwError(data.error ?? "Incorrect username or password.");
       }
@@ -346,8 +374,6 @@ export default function AdminScreen({}: Props) {
     }
   };
 
-  
-
   // ── login screen ───────────────────────────────────────────────────────────
   if (!verified) {
     return (
@@ -403,7 +429,11 @@ export default function AdminScreen({}: Props) {
                     <div style={{ fontSize: 13, color: "#888", fontWeight: 600 }}>Password</div>
                     <button
                       onClick={() => { setLoginStep("username"); setPwInput(""); setPwError(""); }}
-                      style={{ background: "none", border: "none", color: "#f0a500", fontSize: 12, cursor: "pointer" }}
+                      disabled={lockoutRemaining > 0}
+                      style={{ 
+                        background: "none", border: "none", color: "#f0a500", 
+                        fontSize: 12, cursor: lockoutRemaining > 0 ? "not-allowed" : "pointer" 
+                      }}
                     >
                       ← Change username
                     </button>
@@ -417,14 +447,23 @@ export default function AdminScreen({}: Props) {
                       onKeyDown={e => { if (e.key === "Enter") handlePasswordLogin(); }}
                       placeholder="Enter password"
                       autoFocus
-                      style={{ ...inputStyle, paddingRight: 45 }}
+                      disabled={lockoutRemaining > 0}
+                      style={{ 
+                        ...inputStyle, 
+                        paddingRight: 45,
+                        opacity: lockoutRemaining > 0 ? 0.5 : 1,
+                        cursor: lockoutRemaining > 0 ? "not-allowed" : "text"
+                      }}
                     />
                     <button
                       type="button"
                       onClick={() => setShowPassword(!showPassword)}
+                      disabled={lockoutRemaining > 0}
                       style={{
                         position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)",
-                        background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: 13
+                        background: "none", border: "none", color: "#888", 
+                        cursor: lockoutRemaining > 0 ? "not-allowed" : "pointer", 
+                        fontSize: 13
                       }}
                     >
                       {showPassword ? "Hide" : "Show"}
@@ -435,22 +474,29 @@ export default function AdminScreen({}: Props) {
                     💡 New admin account? Use the default password: <strong style={{ color: "#aaa" }}>DefaultPass123!</strong>
                   </div>
 
-                  {pwError && (
+                  {pwError && !lockoutRemaining && (
                     <div style={{ fontSize: 12, color: "#e74c3c" }}>{pwError}</div>
+                  )}
+
+                  {lockoutRemaining > 0 && (
+                    <div style={{ fontSize: 13, color: "#e74c3c", fontWeight: 700, textAlign: "center", marginTop: 4 }}>
+                       Locked out. Try again in {Math.floor(lockoutRemaining / 60)}:{(lockoutRemaining % 60).toString().padStart(2, '0')}
+                    </div>
                   )}
 
                   <button
                     onClick={handlePasswordLogin}
-                    disabled={!pwInput || pwLoading}
+                    disabled={!pwInput || pwLoading || lockoutRemaining > 0}
                     style={{
                       padding: "12px", borderRadius: 8, fontWeight: 700, fontSize: 14,
-                      border: "none", cursor: !pwInput || pwLoading ? "not-allowed" : "pointer",
-                      background: !pwInput || pwLoading ? "#333" : "#f0a500",
-                      color: !pwInput || pwLoading ? "#555" : "#000",
+                      border: "none", 
+                      cursor: !pwInput || pwLoading || lockoutRemaining > 0 ? "not-allowed" : "pointer",
+                      background: !pwInput || pwLoading || lockoutRemaining > 0 ? "#333" : "#f0a500",
+                      color: !pwInput || pwLoading || lockoutRemaining > 0 ? "#555" : "#000",
                       marginTop: 4,
                     }}
                   >
-                    {pwLoading ? "Checking..." : "Log in"}
+                    {lockoutRemaining > 0 ? "Locked" : pwLoading ? "Checking..." : "Log in"}
                   </button>
                 </>
               )}
@@ -542,7 +588,7 @@ export default function AdminScreen({}: Props) {
           const file = e.target.files?.[0];
           if (!file) return;
 
-          if (!window.confirm("⚠️ WARNING: Restoring a backup file will completely overwrite all current kiosk users, transactions, and settings. Proceed?")) {
+          if (!window.confirm("WARNING: Restoring a backup file will completely overwrite all current kiosk users, transactions, and settings. Proceed?")) {
             e.target.value = "";
             return;
           }
@@ -559,14 +605,14 @@ export default function AdminScreen({}: Props) {
             const data = await res.json();
 
             if (res.ok && data.success) {
-              alert("✅ System successfully restored from backup!");
+              alert(" System successfully restored from backup!");
               setShowSettingsModal(false);
               fetchData();
             } else {
-              alert(`❌ Restore failed: ${data.error ?? "Unknown error"}`);
+              alert(` Restore failed: ${data.error ?? "Unknown error"}`);
             }
           } catch {
-            alert("❌ Invalid JSON backup file format.");
+            alert(" Invalid JSON backup file format.");
           }
           e.target.value = "";
         }}
@@ -588,7 +634,7 @@ export default function AdminScreen({}: Props) {
             }} 
             style={actionBtn("#2a2a2a", "#f0a500")}
           >
-            ⚙️ Settings
+             Settings
           </button>
           <button onClick={fetchData} style={refreshBtn}>↻ Refresh</button>
         </div>
