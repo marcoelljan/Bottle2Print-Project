@@ -13,11 +13,27 @@ import { broadcast } from "../wsHub";
 const router = Router();
 const PI_IP = process.env.PI_IP || "localhost";
 
-// ── shared PDF helper ───────────────────────────────────────────────────────
-// pdf-parse@2.x is a class-based API (PDFParse), not the old callable default
-// export from 1.x. Always destroy() the parser to release pdf.js resources —
-// this runs on every print job on the kiosk, so leaked resources compound.
+// ── Paper size allow-list ──────────
+const VALID_PAPER_SIZES = ["A4", "Letter", "Long"] as const;
+type PaperSize = typeof VALID_PAPER_SIZES[number];
+const DEFAULT_PAPER_SIZE: PaperSize = "Letter";
 
+function sanitizePaperSize(input: unknown): PaperSize {
+  if (typeof input === "string" && VALID_PAPER_SIZES.includes(input as PaperSize)) {
+    return input as PaperSize;
+  }
+  return DEFAULT_PAPER_SIZE;
+}
+
+// Maps our friendly names to exact CUPS media string
+function getCupsMediaString(size: PaperSize): string {
+  if (size === "A4") return "A4";
+  if (size === "Letter") return "Letter";
+  if (size === "Long") return "Custom.8.5x13in";
+  return "Letter";
+}
+
+// ── shared PDF helper ───────────────────────────────────────────────────────
 async function ensurePdf(
   filePath: string,
   mimetype: string,
@@ -72,8 +88,7 @@ function parsePageRange(range: string, totalPages: number): number[] | null {
   return pages.size > 0 ? Array.from(pages).sort((a, b) => a - b) : null;
 }
 
-// ── page count preview (used by the kiosk before a print is confirmed) ─────
-
+// ── page count preview ──────────────────────────────────────────────────────
 router.post("/api/count-pages", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file." });
   try {
@@ -84,19 +99,11 @@ router.post("/api/count-pages", upload.single("file"), async (req, res) => {
     return res.json({ pages: pageCount });
   } catch {
     fs.unlink(req.file.path, () => {});
-    // A real parse failure is reported as an error, not masked as "1 page" —
-    // silently defaulting here would let a broken file look like a valid
-    // 1-page document on the cost preview screen.
     return res.status(422).json({ error: "Could not read this file. Try a different format." });
   }
 });
 
-// ── direct print (kiosk-initiated, non-QR flow) ─────────────────────────────
-// Page count is derived server-side from the actual file, never trusted from
-// the client. This mirrors what the QR flow already does in qr-confirm below,
-// so both paths agree on where the "how many pages, how many credits" number
-// comes from.
-
+// ── direct print ─────────────────────────────────────────────────────────────
 router.post("/api/print", upload.single("document"), async (req, res) => {
   const rfid = req.body.rfid as string;
 
@@ -125,8 +132,8 @@ router.post("/api/print", upload.single("document"), async (req, res) => {
     return res.status(500).json({ error: "Could not process this file. Try a different format." });
   }
 
-  // Support color vs black & white pricing and optional page ranges
   const colorMode: "bw" | "color" = req.body.colorMode === "color" ? "color" : "bw";
+  const paperSize = sanitizePaperSize(req.body.paperSize);
   const rangeInput: string = (req.body.pageRange ?? "all").trim();
 
   let selectedPages: number[];
@@ -157,9 +164,9 @@ router.post("/api/print", upload.single("document"), async (req, res) => {
 
   const cleanupPaths = req.file.path !== pdfPath ? [req.file.path, pdfPath] : [pdfPath];
 
-  // Color flag mapping for lp (printer-specific)
   const cupsColorFlag = colorMode === "color" ? "RGB" : "Gray";
-  const cmd = `lp ${cupsRangeFlag} -o ColorModel=${cupsColorFlag} "${pdfPath}"`;
+  const cupsMediaString = getCupsMediaString(paperSize);
+  const cmd = `lp ${cupsRangeFlag} -o ColorModel=${cupsColorFlag} -o media=${cupsMediaString} "${pdfPath}"`;
 
   exec(cmd, (error, stdout, stderr) => {
     cleanupPaths.forEach(p => fs.unlink(p, () => {}));
@@ -173,36 +180,30 @@ router.post("/api/print", upload.single("document"), async (req, res) => {
       db.prepare(`INSERT INTO transactions (rfid, type, credits) VALUES (?, 'print', ?)`).run(rfid, totalCost);
     }
 
-    res.json({ success: true, output: stdout.trim(), pagesPrinted: selectedPages.length, creditsCharged: totalCost, colorMode });
+    res.json({ success: true, output: stdout.trim(), pagesPrinted: selectedPages.length, creditsCharged: totalCost, colorMode, paperSize });
   });
 });
 
 // ── QR code print flow ───────────────────────────────────────────────────────
 
-// 1. Kiosk calls this to create a session + QR code. RFID may be attached later.
 router.post("/api/print/qr-session", async (req, res) => {
   const { rfid } = req.body;
-  // allow creating a QR session without an RFID; it can be attached later
   const sessionId = createSession(rfid ?? "UNASSIGNED");
   const uploadUrl = `http://${PI_IP}:4000/upload/${sessionId}`;
   const qrImage = await QRCode.toDataURL(uploadUrl);
-
   res.json({ sessionId, uploadUrl, qrImage });
 });
 
-// 1.5 Attach or update the RFID for an existing QR session (used when QR is shown first)
 router.post("/api/print/qr-attach/:sessionId", async (req, res) => {
   const { sessionId } = req.params;
   const { rfid } = req.body;
   if (!rfid) return res.status(400).json({ error: "Missing rfid." });
   const s = updateSession(sessionId, { rfid });
   if (!s) return res.status(404).json({ error: "Session not found." });
-  // notify kiosks of updated state
   try { broadcast({ type: "state", session: s }); } catch {}
   res.json({ success: true, session: s });
 });
 
-// 2. Simple phone-facing upload page (plain HTML, not part of the React app)
 router.get("/upload/:sessionId", (req, res) => {
   const session = getSession(req.params.sessionId);
   if (!session) {
@@ -216,61 +217,57 @@ router.get("/upload/:sessionId", (req, res) => {
       <title>Bottle2Print Upload</title>
     </head>
     <body style="font-family:sans-serif;text-align:center;padding:40px 20px;">
-      <h2>Upload your file to print</h2>
-      <input type="file" id="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.jpg,.jpeg,.png" style="margin:20px 0;"/><br/>
-      <button id="btn" style="padding:12px 24px;font-size:16px;">Upload</button>
-      <p id="status"></p>
-      <div id="summary" style="display:none; text-align:left; max-width:340px; margin:20px auto; border:1px solid #ddd; border-radius:10px; padding:16px 20px;">
-        <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
-          <span>File</span><strong id="s-file"></strong>
-        </div>
-        <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
-          <span>Pages</span><strong id="s-pages"></strong>
-        </div>
-        <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
-          <span>B&amp;W cost</span><strong id="s-bw"></strong>
-        </div>
-        <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
-          <span>Color cost</span><strong id="s-color"></strong>
-        </div>
-        <div style="display:flex; justify-content:space-between; margin-bottom:8px; border-top:1px solid #eee; padding-top:8px;">
-          <span>Your credits</span><strong id="s-credits"></strong>
-        </div>
-        <p id="s-warning" style="color:#c0392b; font-weight:bold; display:none;"></p>
+      
+      <div id="upload-section">
+        <h2>Upload your file to print</h2>
+        <input type="file" id="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.jpg,.jpeg,.png" style="margin:20px 0;"/><br/>
+        <button id="btn" style="padding:12px 24px;font-size:16px; background-color: #f0a500; border: none; border-radius: 8px; font-weight: bold; cursor: pointer;">Upload</button>
+        <p id="status" style="margin-top: 15px; color: #555;"></p>
       </div>
-      <p style="font-size:13px; color:#666;">Choose black &amp; white or color, and confirm the print, on the kiosk screen.</p>
+
+      <div id="success-section" style="display:none; margin-top: 40px;">
+        <h2 style="color: #2ecc71; margin-bottom: 10px;">✅ File uploaded successfully!</h2>
+        <p style="font-size: 16px; color: #333; line-height: 1.5; padding: 0 15px;">
+          Your file is ready. Please look at the kiosk screen to choose your payment method and continue.
+        </p>
+      </div>
+      
       <script>
         document.getElementById('btn').onclick = async () => {
           const fileInput = document.getElementById('file');
+          const btn = document.getElementById('btn');
+          const status = document.getElementById('status');
+
           if (!fileInput.files[0]) { alert('Choose a file first'); return; }
+          
           const form = new FormData();
           form.append('file', fileInput.files[0]);
-          document.getElementById('status').innerText = 'Uploading...';
+          
+          btn.innerText = 'Uploading...';
+          btn.disabled = true;
+          btn.style.opacity = '0.7';
+          status.innerText = 'Sending to kiosk...';
+          
           try {
             const res = await fetch('/api/print/qr-upload/${req.params.sessionId}', { method: 'POST', body: form });
             const data = await res.json();
+            
             if (data.success) {
-              document.getElementById('status').innerText = 'Uploaded! Confirm print type on the kiosk screen.';
-              document.getElementById('s-file').innerText = data.fileName;
-              document.getElementById('s-pages').innerText = data.pageCount;
-              document.getElementById('s-bw').innerText = data.costs.bw + ' credits';
-              document.getElementById('s-color').innerText = data.costs.color + ' credits';
-              document.getElementById('s-credits').innerText = data.userCredits;
-              document.getElementById('summary').style.display = 'block';
-
-              const warn = document.getElementById('s-warning');
-              if (data.userCredits < data.costs.bw) {
-                warn.innerText = 'Not enough credits to print, even in black & white. Deposit more bottles first.';
-                warn.style.display = 'block';
-              } else if (data.userCredits < data.costs.color) {
-                warn.innerText = 'You have enough for black & white, but not for color.';
-                warn.style.display = 'block';
-              }
+              document.getElementById('upload-section').style.display = 'none';
+              document.getElementById('success-section').style.display = 'block';
             } else {
-              document.getElementById('status').innerText = 'Error: ' + (data.error || 'upload failed');
+              status.innerText = 'Error: ' + (data.error || 'upload failed');
+              status.style.color = '#e74c3c';
+              btn.innerText = 'Upload';
+              btn.disabled = false;
+              btn.style.opacity = '1';
             }
           } catch {
-            document.getElementById('status').innerText = 'Could not reach server.';
+            status.innerText = 'Could not reach server.';
+            status.style.color = '#e74c3c';
+            btn.innerText = 'Upload';
+            btn.disabled = false;
+            btn.style.opacity = '1';
           }
         };
       </script>
@@ -279,7 +276,6 @@ router.get("/upload/:sessionId", (req, res) => {
   `);
 });
 
-// 3. Phone uploads the file here
 router.post("/api/print/qr-upload/:sessionId", upload.single("file"), async (req, res) => {
   const session = getSession(req.params.sessionId);
   if (!session) return res.status(404).json({ error: "Session expired." });
@@ -298,10 +294,8 @@ router.post("/api/print/qr-upload/:sessionId", upload.single("file"), async (req
     });
 
     const user = db.prepare("SELECT * FROM users WHERE rfid = ?").get(session.rfid) as any;
-    const userCredits = session.rfid === "GUEST" ? getGuestCredits() : (user?.credits ?? 0);
     const costs = { bw: pageCount * 3, color: pageCount * 8 };
-     
-
+      
     broadcast({
       type: "qr-upload",
       sessionId: req.params.sessionId,
@@ -322,7 +316,6 @@ router.post("/api/print/qr-upload/:sessionId", upload.single("file"), async (req
   }
 });
 
-// 3.5. Serve the uploaded PDF back to the kiosk for an in-browser preview
 router.get("/api/print/preview/:sessionId", (req, res) => {
   const session = getSession(req.params.sessionId);
   if (!session || !session.pdfPath) {
@@ -332,7 +325,7 @@ router.get("/api/print/preview/:sessionId", (req, res) => {
   res.sendFile(path.resolve(session.pdfPath));
 });
 
-// 4. Kiosk confirms the print — uses the already-uploaded, already-converted PDF
+// 4. Kiosk confirms the print
 router.post("/api/print/qr-confirm/:sessionId", (req, res) => {
   const session = getSession(req.params.sessionId);
   if (!session || !session.pdfPath) {
@@ -343,6 +336,7 @@ router.post("/api/print/qr-confirm/:sessionId", (req, res) => {
   const totalPages = pageCount ?? 1;
 
   const colorMode: "bw" | "color" = req.body.colorMode === "color" ? "color" : "bw";
+  const paperSize = sanitizePaperSize(req.body.paperSize);
   const rangeInput: string = (req.body.pageRange ?? "all").trim();
 
   let selectedPages: number[];
@@ -362,25 +356,35 @@ router.post("/api/print/qr-confirm/:sessionId", (req, res) => {
   const creditsPerPage = colorMode === "color" ? 8 : 3;
   const totalCost = selectedPages.length * creditsPerPage;
 
-  const user = db.prepare("SELECT * FROM users WHERE rfid = ?").get(rfid) as any;
-  if (!user) {
-    if (filePath) fs.unlink(filePath, () => {});
-    fs.unlink(pdfPath, () => {});
-    deleteSession(req.params.sessionId);
-    return res.status(404).json({ error: "User not found." });
-  }
-  if (user.credits < totalCost) {
-    if (filePath) fs.unlink(filePath, () => {});
-    fs.unlink(pdfPath, () => {});
-    deleteSession(req.params.sessionId);
-    return res.status(403).json({ error: "Not enough credits." });
+  const isGuest = rfid === "GUEST";
+
+  if (isGuest) {
+    const guestCredits = getGuestCredits();
+    if (guestCredits < totalCost) {
+      if (filePath) fs.unlink(filePath, () => {});
+      fs.unlink(pdfPath, () => {});
+      deleteSession(req.params.sessionId);
+      return res.status(403).json({ error: "Not enough credits." });
+    }
+  } else {
+    const user = db.prepare("SELECT * FROM users WHERE rfid = ?").get(rfid) as any;
+    if (!user) {
+      if (filePath) fs.unlink(filePath, () => {});
+      fs.unlink(pdfPath, () => {});
+      deleteSession(req.params.sessionId);
+      return res.status(404).json({ error: "User not found." });
+    }
+    if (user.credits < totalCost) {
+      if (filePath) fs.unlink(filePath, () => {});
+      fs.unlink(pdfPath, () => {});
+      deleteSession(req.params.sessionId);
+      return res.status(403).json({ error: "Not enough credits." });
+    }
   }
 
-  // Confirmed on this printer (Canon TS200 series):
-  //   ColorModel=Gray → true monochrome
-  //   ColorModel=RGB  → true color
   const cupsColorFlag = colorMode === "color" ? "RGB" : "Gray";
-  const cmd = `lp ${cupsRangeFlag} -o ColorModel=${cupsColorFlag} "${pdfPath}"`;
+  const cupsMediaString = getCupsMediaString(paperSize);
+  const cmd = `lp ${cupsRangeFlag} -o ColorModel=${cupsColorFlag} -o media=${cupsMediaString} "${pdfPath}"`;
 
   exec(cmd, (error, stdout, stderr) => {
     if (filePath && filePath !== pdfPath) fs.unlink(filePath, () => {});
@@ -389,8 +393,13 @@ router.post("/api/print/qr-confirm/:sessionId", (req, res) => {
 
     if (error) return res.status(500).json({ error: stderr || error.message });
 
-    db.prepare("UPDATE users SET credits = credits - ? WHERE rfid = ?").run(totalCost, rfid);
-    db.prepare(`INSERT INTO transactions (rfid, type, credits) VALUES (?, 'print', ?)`).run(rfid, totalCost);
+    if (isGuest) {
+      deductGuestCredits(totalCost);
+      endGuestSession();
+    } else {
+      db.prepare("UPDATE users SET credits = credits - ? WHERE rfid = ?").run(totalCost, rfid);
+      db.prepare(`INSERT INTO transactions (rfid, type, credits) VALUES (?, 'print', ?)`).run(rfid, totalCost);
+    }
 
     res.json({
       success: true,
@@ -398,6 +407,7 @@ router.post("/api/print/qr-confirm/:sessionId", (req, res) => {
       creditsCharged: totalCost,
       pagesPrinted: selectedPages.length,
       colorMode,
+      paperSize,
     });
   });
 });

@@ -14,14 +14,15 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE TABLE IF NOT EXISTS transactions (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    rfid       TEXT NOT NULL,
-    type       TEXT NOT NULL,
-    size       TEXT,
-    height_mm  REAL,
-    weight_g   REAL,
-    credits    INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    rfid          TEXT NOT NULL,
+    type          TEXT NOT NULL,
+    size          TEXT,
+    height_mm     REAL,
+    weight_g      REAL,
+    co2_saved_g   REAL DEFAULT 0,
+    credits       INTEGER NOT NULL DEFAULT 1,
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE TABLE IF NOT EXISTS feedback (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,11 +32,20 @@ db.exec(`
     comment    TEXT DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
+  CREATE TABLE IF NOT EXISTS admins (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    role          TEXT NOT NULL DEFAULT 'admin',
+    created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `);
 
-// studentId migration for pre-existing DBs
+// Safe migrations for pre-existing DBs
 try {
   db.exec(`ALTER TABLE users ADD COLUMN studentId TEXT DEFAULT '';`);
-} catch (e) {
-  // Column already exists, ignore
-}
+} catch (e) {}
+
+try {
+  db.exec(`ALTER TABLE transactions ADD COLUMN co2_saved_g REAL DEFAULT 0;`);
+} catch (e) {}

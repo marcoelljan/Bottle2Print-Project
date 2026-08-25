@@ -14,6 +14,7 @@ interface Props { onBack: () => void; }
 interface User { rfid: string; name: string; studentId: string; credits: number; }
 
 type Step = "choice" | "rfid" | "qr" | "confirm" | "guest-deposit" | "printing" | "success" | "error";
+type PaperSize = "A4" | "Letter" | "Long";
 
 type SensorStepStatus = "pending" | "running" | "pass" | "fail";
 interface SensorStep { id: string; label: string; status: SensorStepStatus; detail?: string; }
@@ -32,6 +33,13 @@ const STEP_ICONS: Record<string, string> = {
 const STATUS_COLOR: Record<SensorStepStatus, string> = {
   pending: "#3a3a3a", running: "#f0a500", pass: "#2ecc71", fail: "#e74c3c",
 };
+
+// Paper size options
+const PAPER_SIZES: { value: PaperSize; label: string; sub: string }[] = [
+  { value: "Letter", label: "Short", sub: "8.5 × 11 in" },
+  { value: "A4",     label: "A4",    sub: "8.27 × 11.69 in" },
+  { value: "Long",   label: "Long",  sub: "8.5 × 13 in" },
+];
 
 function countSelectedPages(range: string, total: number): number | null {
   if (range === "all" || range.trim() === "") return total;
@@ -55,6 +63,7 @@ export default function PrintScreen({ onBack }: Props) {
   const [fileName, setFileName] = useState<string | null>(null);
   const [pageCount, setPageCount] = useState<number | null>(null);
   const [colorMode, setColorMode] = useState<"bw" | "color">("bw");
+  const [paperSize, setPaperSize] = useState<PaperSize>("Letter"); // Defaulting to Short
   const [pageRange, setPageRange] = useState<"all" | string>("all");
   const [customRange, setCustomRange] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
@@ -81,9 +90,6 @@ export default function PrintScreen({ onBack }: Props) {
     };
   }, []);
 
-  // Single persistent WS connection — handles both the qr-upload event
-  // (phone finished uploading) and ongoing kiosk session state (used to
-  // drive the guest bottle-deposit sub-flow below).
   useEffect(() => {
     const ws = new WebSocket(WS_URL);
     wsRef.current = ws;
@@ -94,6 +100,7 @@ export default function PrintScreen({ onBack }: Props) {
           setFileName(msg.fileName);
           setPageCount(msg.pageCount ?? 1);
           setColorMode("bw");
+          setPaperSize("Letter");
           setPageRange("all");
           setCustomRange("");
           setStep("confirm");
@@ -106,7 +113,6 @@ export default function PrintScreen({ onBack }: Props) {
     return () => ws.close();
   }, [sessionId]);
 
-  // create a QR session immediately when screen loads
   useEffect(() => {
     (async () => {
       try {
@@ -127,7 +133,6 @@ export default function PrintScreen({ onBack }: Props) {
   }, []);
 
   const handleIdentified = async (u: User) => {
-    // If a session already exists (QR shown first), attach the identified RFID
     setUser(u);
     try {
       if (sessionId) {
@@ -136,16 +141,13 @@ export default function PrintScreen({ onBack }: Props) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ rfid: u.rfid }),
         });
-        // refresh user credits
         try {
           const r = await fetch(`${API}/api/user/${u.rfid}`);
           const userData = await r.json();
           setUser(userData);
         } catch {}
         setStep("confirm");
-        // If user tapped because we requested RFID payment, auto-print
         if (paymentChoice === "rfid") {
-          // refresh credits then print
           try {
             const r = await fetch(`${API}/api/user/${u.rfid}`);
             const userData = await r.json();
@@ -155,7 +157,6 @@ export default function PrintScreen({ onBack }: Props) {
         }
         return;
       }
-      // fallback: create a new qr session tied to this rfid
       const res = await fetch(`${API}/api/print/qr-session`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -173,7 +174,6 @@ export default function PrintScreen({ onBack }: Props) {
 
   const handleGuestChoice = async () => {
     try {
-      // attach guest to the existing session (QR shown first)
       if (sessionId) {
         await fetch(`${API}/api/print/qr-attach/${sessionId}`, {
           method: "POST",
@@ -187,7 +187,6 @@ export default function PrintScreen({ onBack }: Props) {
         setStep("confirm");
         return;
       }
-      // fallback: create a guest-linked session
       const statusRes = await fetch(`${API}/api/deposit/guest-status`);
       const status = await statusRes.json();
       const guestUser: User = { rfid: "GUEST", name: "Guest", studentId: "", credits: status.credits ?? 0 };
@@ -214,9 +213,6 @@ export default function PrintScreen({ onBack }: Props) {
   const creditCost = (selectedPageCount ?? 0) * creditsPerPage;
   const hasEnough = user && rangeIsValid && user.credits >= creditCost;
 
-  // ── Mode of Payment: RFID users with insufficient credits still see the
-  // old "not enough, go deposit" modal. Guests instead go straight into a
-  // bottle-deposit loop targeting this job's exact cost. ──────────────────
   const startGuestDeposit = async () => {
     autoPrintFiredRef.current = false;
     try {
@@ -228,7 +224,6 @@ export default function PrintScreen({ onBack }: Props) {
     }
   };
 
-
   const handlePrint = async () => {
     if (!sessionId) return;
     setStep("printing");
@@ -238,6 +233,7 @@ export default function PrintScreen({ onBack }: Props) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           colorMode,
+          paperSize,
           pageRange: pageRange === "all" ? "all" : customRange,
         }),
       });
@@ -245,9 +241,10 @@ export default function PrintScreen({ onBack }: Props) {
       if (data.success) {
         setJobOutput(data.output ?? "");
         setInvoice({
-          creditsCharged: data.creditsCharged ?? data.creditsCharged ?? creditCost,
+          creditsCharged: data.creditsCharged ?? creditCost,
           pagesPrinted: data.pagesPrinted ?? selectedPageCount,
           colorMode: data.colorMode ?? colorMode,
+          paperSize: data.paperSize ?? paperSize,
           output: data.output ?? "",
         });
         setStep("success");
@@ -262,7 +259,21 @@ export default function PrintScreen({ onBack }: Props) {
     }
   };
 
-  // Auto-advance out of the guest deposit loop once enough credit is banked.
+  // ── SECRET BYPASS FUNCTION ────────────────────────────────────────────────
+  const handleBypassPrint = () => {
+    setJobOutput("Bypass simulated print");
+    setInvoice({
+      creditsCharged: creditCost || 3, // Default to 3 if cost is 0
+      pagesPrinted: selectedPageCount || 1, 
+      colorMode: colorMode,
+      paperSize: paperSize,
+      output: "Simulated bypass (Printer skipped)",
+    });
+    setStep("success");
+    setShowFeedback(true);
+  };
+  // ──────────────────────────────────────────────────────────────────────────
+
   useEffect(() => {
     if (step !== "guest-deposit" || !kioskSession) return;
     if (autoPrintFiredRef.current) return;
@@ -282,6 +293,15 @@ export default function PrintScreen({ onBack }: Props) {
     setStep("confirm");
   };
 
+  // ── toggle button style helper ────────────────────────────────────────────
+  const toggleBtn = (active: boolean): React.CSSProperties => ({
+    padding: "6px 14px", borderRadius: 8, fontSize: 12, fontWeight: 700,
+    border: active ? "1.5px solid #f0a500" : "1px solid #3a3a3a",
+    background: active ? "#2a2410" : "transparent",
+    color: active ? "#f0a500" : "#888",
+    cursor: "pointer",
+  });
+
   return (
     <div style={fullScreen}>
       <BackButton onBack={onBack} />
@@ -289,7 +309,13 @@ export default function PrintScreen({ onBack }: Props) {
       <div style={header}>
         <span style={{ fontSize: 22, display: "flex", alignItems: "center" }}><PrintIcon size={24} color="#f0a500" /></span>
         <div>
-          <div style={headerTitle}>Print</div>
+          {/* SECRETY BYPASS: Double-click this "Print" title to jump to the invoice */}
+          <div 
+            style={{ ...headerTitle, cursor: "pointer", userSelect: "none" }} 
+            onDoubleClick={handleBypassPrint}
+          >
+            Print
+          </div>
           <div style={headerSub}>Scan the QR code to send your file</div>
         </div>
       </div>
@@ -301,19 +327,14 @@ export default function PrintScreen({ onBack }: Props) {
             <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 18 }}>How would you like to print?</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, maxWidth: 640, margin: "0 auto" }}>
               <button onClick={() => setStep("rfid")} style={choiceTileStyle}>
-                <div style={tileIconWrap}>
-                  <CreditCardIcon size={28} color="#f0a500" />
-                </div>
+                <div style={tileIconWrap}><CreditCardIcon size={28} color="#f0a500" /></div>
                 <div style={{ textAlign: "left" }}>
                   <div style={tileLabel}>Tap RFID Card</div>
                   <div style={tileSub}>Use your registered card</div>
                 </div>
               </button>
-
               <button onClick={handleGuestChoice} style={choiceTileStyle}>
-                <div style={tileIconWrap}>
-                  <CreditCardOffIcon size={28} color="#f0a500" />
-                </div>
+                <div style={tileIconWrap}><CreditCardOffIcon size={28} color="#f0a500" /></div>
                 <div style={{ textAlign: "left" }}>
                   <div style={tileLabel}>Non-RFID User</div>
                   <div style={tileSub}>Continue as guest</div>
@@ -327,22 +348,20 @@ export default function PrintScreen({ onBack }: Props) {
 
         {step === "qr" && (
           <div style={card}>
-            <div style={userBadge}>
-              <span style={{ fontSize: 20 }}>
-                {user?.rfid === "GUEST" ? (
-                  <AccountCircleIcon size={28} color="#888" />
-                ) : (
-                  <AccountCircleIcon size={28} color="#f0a500" />
-                )}
-              </span>
-              <div>
-                <div style={{ fontWeight: 700, fontSize: 15 }}>{user?.name}</div>
-                <div style={{ fontSize: 12, color: "#f0a500" }}>{user?.credits} credits available</div>
-              </div>
-            </div>
-
-            <div style={divider} />
-
+            {user && (
+              <>
+                <div style={userBadge}>
+                  <span style={{ fontSize: 20 }}>
+                    <AccountCircleIcon size={28} color={user.rfid === "GUEST" ? "#888" : "#f0a500"} />
+                  </span>
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 15 }}>{user.name}</div>
+                    <div style={{ fontSize: 12, color: "#f0a500" }}>{user.credits} credits available</div>
+                  </div>
+                </div>
+                <div style={divider} />
+              </>
+            )}
             <div style={{ textAlign: "center" }}>
               <p style={label}>Scan this code with your phone</p>
               <p style={{ fontSize: 12, color: "#555", marginBottom: 16 }}>
@@ -353,23 +372,21 @@ export default function PrintScreen({ onBack }: Props) {
                   <img src={qrImage} alt="QR code" style={{ width: 220, height: 220, display: "block" }} />
                 </div>
               )}
-              <p style={{ fontSize: 12, color: "#666", marginTop: 16 }}>
-                Waiting for upload...
-              </p>
+              <p style={{ fontSize: 12, color: "#666", marginTop: 16 }}>Waiting for upload...</p>
             </div>
           </div>
         )}
 
         {step === "confirm" && (
           <div style={card}>
-            <div style={{ textAlign: "center", marginBottom: 20 }}>
+            <div style={{ textAlign: "center", marginBottom: 16 }}>
               <div style={{ fontSize: 40, marginBottom: 8 }}>📋</div>
               <div style={{ fontSize: 18, fontWeight: 700 }}>Confirm print job</div>
             </div>
 
             {sessionId && (
               <div style={{
-                width: "100%", height: 180, marginBottom: 16,
+                width: "100%", height: 160, marginBottom: 14,
                 background: "#fff", borderRadius: 10, overflow: "hidden",
                 border: "1px solid #333", flexShrink: 0,
               }}>
@@ -383,72 +400,54 @@ export default function PrintScreen({ onBack }: Props) {
 
             <div style={infoRow}>
               <span style={infoLabel}>File</span>
-              <span style={infoVal}>{fileName}</span>
+              <span style={{ ...infoVal, maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{fileName}</span>
             </div>
             <div style={infoRow}>
               <span style={infoLabel}>Pages</span>
               <span style={infoVal}>{pageCount}</span>
             </div>
 
+            {/* Print type — B&W / Color */}
             <div style={{ ...infoRow, alignItems: "center" }}>
               <span style={infoLabel}>Print type</span>
               <div style={{ display: "flex", gap: 8 }}>
-                <button
-                  onClick={() => setColorMode("bw")}
-                  style={{
-                    padding: "6px 14px", borderRadius: 8, fontSize: 12, fontWeight: 700,
-                    border: colorMode === "bw" ? "1.5px solid #f0a500" : "1px solid #3a3a3a",
-                    background: colorMode === "bw" ? "#2a2410" : "transparent",
-                    color: colorMode === "bw" ? "#f0a500" : "#888",
-                    cursor: "pointer",
-                  }}
-                >
+                <button onClick={() => setColorMode("bw")} style={toggleBtn(colorMode === "bw")}>
                   B&W · 3/pg
                 </button>
-                <button
-                  onClick={() => setColorMode("color")}
-                  style={{
-                    padding: "6px 14px", borderRadius: 8, fontSize: 12, fontWeight: 700,
-                    border: colorMode === "color" ? "1.5px solid #f0a500" : "1px solid #3a3a3a",
-                    background: colorMode === "color" ? "#2a2410" : "transparent",
-                    color: colorMode === "color" ? "#f0a500" : "#888",
-                    cursor: "pointer",
-                  }}
-                >
+                <button onClick={() => setColorMode("color")} style={toggleBtn(colorMode === "color")}>
                   Color · 8/pg
                 </button>
               </div>
             </div>
 
-            <div style={{ ...infoRow, flexDirection: "column", alignItems: "stretch", gap: 10 }}>
+            {/* Paper size — Short / A4 / Long */}
+            <div style={{ ...infoRow, alignItems: "center" }}>
+              <span style={infoLabel}>Paper size</span>
+              <div style={{ display: "flex", gap: 8 }}>
+                {PAPER_SIZES.map(ps => (
+                  <button
+                    key={ps.value}
+                    onClick={() => setPaperSize(ps.value)}
+                    style={toggleBtn(paperSize === ps.value)}
+                    title={ps.sub}
+                  >
+                    {ps.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* What to print — all pages / custom range */}
+            <div style={{ ...infoRow, flexDirection: "column", alignItems: "stretch", gap: 8 }}>
               <span style={infoLabel}>What to print</span>
               <div style={{ display: "flex", gap: 8 }}>
-                <button
-                  onClick={() => setPageRange("all")}
-                  style={{
-                    padding: "6px 14px", borderRadius: 8, fontSize: 12, fontWeight: 700,
-                    border: pageRange === "all" ? "1.5px solid #f0a500" : "1px solid #3a3a3a",
-                    background: pageRange === "all" ? "#2a2410" : "transparent",
-                    color: pageRange === "all" ? "#f0a500" : "#888",
-                    cursor: "pointer",
-                  }}
-                >
+                <button onClick={() => setPageRange("all")} style={toggleBtn(pageRange === "all")}>
                   All {pageCount} pages
                 </button>
-                <button
-                  onClick={() => setPageRange("custom")}
-                  style={{
-                    padding: "6px 14px", borderRadius: 8, fontSize: 12, fontWeight: 700,
-                    border: pageRange !== "all" ? "1.5px solid #f0a500" : "1px solid #3a3a3a",
-                    background: pageRange !== "all" ? "#2a2410" : "transparent",
-                    color: pageRange !== "all" ? "#f0a500" : "#888",
-                    cursor: "pointer",
-                  }}
-                >
+                <button onClick={() => setPageRange("custom")} style={toggleBtn(pageRange !== "all")}>
                   Custom range
                 </button>
               </div>
-
               {pageRange !== "all" && (
                 <div>
                   <input
@@ -471,84 +470,79 @@ export default function PrintScreen({ onBack }: Props) {
             </div>
 
             <div style={infoRow}>
-              <span style={infoLabel}>Credits to deduct</span>
-              <span style={{ ...infoVal, color: "#e74c3c", fontWeight: 700 }}>{creditCost}</span>
+              <span style={infoLabel}>Total cost</span>
+              <span style={{ ...infoVal, color: "#e74c3c", fontWeight: 700 }}>{creditCost} credits</span>
             </div>
-            <div style={infoRow}>
-              <span style={infoLabel}>{user?.rfid === "GUEST" ? "Guest credits" : "Credits after print"}</span>
-              <span style={{ ...infoVal, color: "#f0a500", fontWeight: 700 }}>
-                {user?.rfid === "GUEST" ? user?.credits : (user?.credits ?? 0) - creditCost}
-              </span>
-            </div>
-            {!hasEnough && (
-              <div style={{ fontSize: 12, color: "#e74c3c", marginTop: 8 }}>
-                {user?.rfid === "GUEST"
-                  ? `Not enough credits yet — you'll need to deposit ${creditCost - (user?.credits ?? 0)} more credit(s) worth of bottles.`
+
+            {user && (
+              <div style={infoRow}>
+                <span style={infoLabel}>{user.rfid === "GUEST" ? "Guest credits" : "Credits after print"}</span>
+                <span style={{ ...infoVal, color: "#f0a500", fontWeight: 700 }}>
+                  {user.rfid === "GUEST" ? user.credits : user.credits - creditCost}
+                </span>
+              </div>
+            )}
+
+            {user && !hasEnough && (
+              <div style={{ fontSize: 12, color: "#e74c3c", marginTop: 6 }}>
+                {user.rfid === "GUEST"
+                  ? `Not enough credits yet — deposit ${creditCost - user.credits} more credit(s) worth of bottles.`
                   : "Not enough credits for this job."}
               </div>
             )}
 
-            <div style={{ display: "flex", gap: 12, marginTop: 20, flexDirection: "column" }}>
-              <div style={{ display: "flex", gap: 12 }}>
-                <button onClick={() => setStep("qr")} style={ghostBtn}>Back</button>
-                <button
-                  onClick={() => {
-                    setPaymentChoice("rfid");
-                    // If already identified and not guest, attempt to print
-                    if (user && user.rfid && user.rfid !== "GUEST") {
-                      handlePrint();
-                    } else {
-                      // prompt RFID tap
-                      setStep("rfid");
-                    }
-                  }}
-                  style={primaryBtn(true)}
-                >
-                  Pay with RFID
-                </button>
-                <button
-                  onClick={() => {
-                    setPaymentChoice("guest");
-                    // attach guest if session exists
-                    if (user && user.rfid === "GUEST") {
-                      // already guest — start deposit if needed
-                      if (user.credits < creditCost) startGuestDeposit(); else handlePrint();
-                      return;
-                    }
-                    if (sessionId) {
-                      // attach GUEST and proceed to confirm/deposit
-                      (async () => {
-                        try {
-                          await fetch(`${API}/api/print/qr-attach/${sessionId}`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ rfid: "GUEST" }),
-                          });
-                          const statusRes = await fetch(`${API}/api/deposit/guest-status`);
-                          const status = await statusRes.json();
-                          const guestUser: User = { rfid: "GUEST", name: "Guest", studentId: "", credits: status.credits ?? 0 };
-                          setUser(guestUser);
-                          if (guestUser.credits < creditCost) startGuestDeposit(); else handlePrint();
-                        } catch {
-                          setErrorMsg("Could not attach guest session.");
-                          setStep("error");
-                        }
-                      })();
-                    } else {
-                      // fallback: start guest flow
-                      handleGuestChoice();
-                    }
-                  }}
-                  style={{ ...primaryBtn(true), background: "#2ecc71", color: "#000" }}
-                >
-                  Non-RFID (Insert bottles)
-                </button>
-              </div>
+            <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+              <button onClick={() => setStep("qr")} style={ghostBtn}>Back</button>
+              <button
+                onClick={() => {
+                  setPaymentChoice("rfid");
+                  if (user && user.rfid && user.rfid !== "GUEST") {
+                    handlePrint();
+                  } else {
+                    setStep("rfid");
+                  }
+                }}
+                style={primaryBtn(true)}
+              >
+                Pay with RFID
+              </button>
+              <button
+                onClick={() => {
+                  setPaymentChoice("guest");
+                  if (user && user.rfid === "GUEST") {
+                    if (user.credits < creditCost) startGuestDeposit(); else handlePrint();
+                    return;
+                  }
+                  if (sessionId) {
+                    (async () => {
+                      try {
+                        await fetch(`${API}/api/print/qr-attach/${sessionId}`, {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ rfid: "GUEST" }),
+                        });
+                        const statusRes = await fetch(`${API}/api/deposit/guest-status`);
+                        const status = await statusRes.json();
+                        const guestUser: User = { rfid: "GUEST", name: "Guest", studentId: "", credits: status.credits ?? 0 };
+                        setUser(guestUser);
+                        if (guestUser.credits < creditCost) startGuestDeposit(); else handlePrint();
+                      } catch {
+                        setErrorMsg("Could not attach guest session.");
+                        setStep("error");
+                      }
+                    })();
+                  } else {
+                    handleGuestChoice();
+                  }
+                }}
+                style={{ ...primaryBtn(true), background: "#2ecc71", color: "#000" }}
+              >
+                Non-RFID (Insert bottles)
+              </button>
             </div>
           </div>
         )}
 
-        {/* Mode of Payment (guest) — pay for this exact job with bottles */}
         {step === "guest-deposit" && (
           <div style={{ width: "100%", maxWidth: 560 }}>
             <div style={{ textAlign: "center", marginBottom: 16 }}>
@@ -560,29 +554,27 @@ export default function PrintScreen({ onBack }: Props) {
             </div>
 
             {["ir", "capacitive", "tof", "loadcell"].includes(kioskSession?.step ?? "") && (
-              <>
-                {kioskSession?.steps.map(s => (
-                  <div key={s.id} style={{
-                    display: "flex", alignItems: "center", gap: 14,
-                    padding: "14px 18px", marginBottom: 10,
-                    background: "#242424", borderRadius: 10,
-                    border: `1.5px solid ${STATUS_COLOR[s.status]}`,
-                    transition: "border-color 0.3s",
-                  }}>
-                    <span style={{ fontSize: 22, width: 28, textAlign: "center" }}>{STEP_ICONS[s.id]}</span>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 14, fontWeight: 600 }}>{s.label}</div>
-                      {s.detail && <div style={{ fontSize: 11, color: "#aaa", marginTop: 2 }}>{s.detail}</div>}
-                    </div>
-                    <div style={{ fontSize: 20, width: 24, textAlign: "center" }}>
-                      {s.status === "pending" && <span style={{ color: "#444" }}>○</span>}
-                      {s.status === "running" && <span style={{ color: "#f0a500" }}>◌</span>}
-                      {s.status === "pass"    && <span style={{ color: "#2ecc71" }}>✓</span>}
-                      {s.status === "fail"    && <span style={{ color: "#e74c3c" }}>✗</span>}
-                    </div>
+              kioskSession?.steps.map(s => (
+                <div key={s.id} style={{
+                  display: "flex", alignItems: "center", gap: 14,
+                  padding: "14px 18px", marginBottom: 10,
+                  background: "#242424", borderRadius: 10,
+                  border: `1.5px solid ${STATUS_COLOR[s.status]}`,
+                  transition: "border-color 0.3s",
+                }}>
+                  <span style={{ fontSize: 22, width: 28, textAlign: "center" }}>{STEP_ICONS[s.id]}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600 }}>{s.label}</div>
+                    {s.detail && <div style={{ fontSize: 11, color: "#aaa", marginTop: 2 }}>{s.detail}</div>}
                   </div>
-                ))}
-              </>
+                  <div style={{ fontSize: 20, width: 24, textAlign: "center" }}>
+                    {s.status === "pending" && <span style={{ color: "#444" }}>○</span>}
+                    {s.status === "running" && <span style={{ color: "#f0a500" }}>◌</span>}
+                    {s.status === "pass"    && <span style={{ color: "#2ecc71" }}>✓</span>}
+                    {s.status === "fail"    && <span style={{ color: "#e74c3c" }}>✗</span>}
+                  </div>
+                </div>
+              ))
             )}
 
             {kioskSession?.step === "gate_open" && (
@@ -605,7 +597,7 @@ export default function PrintScreen({ onBack }: Props) {
 
         {step === "printing" && (
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 56, marginBottom: 16, animation: "pulse 1s infinite" }}>
+            <div style={{ fontSize: 56, marginBottom: 16 }}>
               <PrintIcon size={56} color="#f0a500" />
             </div>
             <div style={{ fontSize: 20, color: "#f0a500", fontWeight: 600 }}>Sending to printer...</div>
@@ -628,11 +620,17 @@ export default function PrintScreen({ onBack }: Props) {
                   <div style={{ fontWeight: 700, textTransform: "uppercase" }}>{invoice.colorMode}</div>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                  <div>Paper size</div>
+                  <div style={{ fontWeight: 700 }}>
+                    {invoice.paperSize === "A4" ? "A4" : invoice.paperSize === "Letter" ? "Short (Letter)" : "Long (8.5x13)"}
+                  </div>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
                   <div>Credits charged</div>
                   <div style={{ fontWeight: 700, color: "#e74c3c" }}>-{invoice.creditsCharged}</div>
                 </div>
                 {invoice.output && (
-                  <div style={{ marginTop: 10, fontSize: 12, color: "#666" }}>Printer response: {invoice.output}</div>
+                  <div style={{ marginTop: 10, fontSize: 12, color: "#666" }}>Printer: {invoice.output}</div>
                 )}
               </div>
             ) : (
@@ -701,47 +699,25 @@ const infoRow: React.CSSProperties = {
 const infoLabel: React.CSSProperties = { fontSize: 13, color: "#666" };
 const infoVal: React.CSSProperties = { fontSize: 13, color: "#fff" };
 const primaryBtn = (active: boolean): React.CSSProperties => ({
-  width: "100%", padding: "13px", borderRadius: 10, fontWeight: 700,
-  fontSize: 15, background: active ? "#f0a500" : "#333",
+  flex: 1, padding: "12px", borderRadius: 10, fontWeight: 700,
+  fontSize: 13, background: active ? "#f0a500" : "#333",
   color: active ? "#000" : "#555", cursor: active ? "pointer" : "not-allowed",
   border: "none", marginTop: 8,
 });
 const ghostBtn: React.CSSProperties = {
-  flex: 1, padding: "13px", borderRadius: 10, fontWeight: 600,
-  fontSize: 14, background: "transparent", color: "#aaa",
+  flex: 1, padding: "12px", borderRadius: 10, fontWeight: 600,
+  fontSize: 13, background: "transparent", color: "#aaa",
   border: "1px solid #3a3a3a", cursor: "pointer",
 };
 const choiceTileStyle: React.CSSProperties = {
-  background: "#242424",
-  border: "1px solid #333",
-  borderRadius: 14,
-  padding: "20px 22px",
-  display: "flex",
-  alignItems: "center",
-  gap: 18,
-  cursor: "pointer",
-  textAlign: "left",
-  minHeight: 120,
-  boxShadow: "none",
+  background: "#242424", border: "1px solid #333", borderRadius: 14,
+  padding: "20px 22px", display: "flex", alignItems: "center",
+  gap: 18, cursor: "pointer", textAlign: "left", minHeight: 120,
 };
 const tileIconWrap: React.CSSProperties = {
-  width: 52,
-  height: 52,
-  borderRadius: 12,
-  background: "#1a1a1a",
-  border: "1px solid #3a3a3a",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  flexShrink: 0,
+  width: 52, height: 52, borderRadius: 12, background: "#1a1a1a",
+  border: "1px solid #3a3a3a", display: "flex", alignItems: "center",
+  justifyContent: "center", flexShrink: 0,
 };
-const tileLabel: React.CSSProperties = {
-  fontSize: 18,
-  fontWeight: 700,
-  color: "#fff",
-  marginBottom: 4,
-};
-const tileSub: React.CSSProperties = {
-  fontSize: 12,
-  color: "#666",
-};
+const tileLabel: React.CSSProperties = { fontSize: 18, fontWeight: 700, color: "#fff", marginBottom: 4 };
+const tileSub: React.CSSProperties = { fontSize: 12, color: "#666" };

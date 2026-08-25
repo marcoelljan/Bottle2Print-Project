@@ -22,13 +22,12 @@ const BAUD_RATE = 9600;
 // ── Size classification ───────────────────────────────────────────────────────
 interface SizeSpec { label: string; minHeight: number; maxHeight: number; minWeight: number; maxWeight: number; }
 const SIZE_SPECS: SizeSpec[] = [
-  { label: "Small",  minHeight: 351, maxHeight: 999, minWeight: 14, maxWeight: 19 },
-  { label: "Medium", minHeight: 351, maxHeight: 999, minWeight: 14, maxWeight: 19 },
-  { label: "Large",  minHeight: 351, maxHeight: 999, minWeight: 18, maxWeight: 25 },
-  { label: "XL",     minHeight: 351, maxHeight: 999, minWeight: 48, maxWeight: 57 },
+  { label: "Small",  minHeight: 100, maxHeight: 150, minWeight: 14, maxWeight: 19 },
+  { label: "Medium", minHeight: 151, maxHeight: 210, minWeight: 14, maxWeight: 19 },
+  { label: "Large",  minHeight: 211, maxHeight: 280, minWeight: 18, maxWeight: 25 },
+  { label: "XL",     minHeight: 281, maxHeight: 350, minWeight: 48, maxWeight: 57 },
 ];
 
-// Tiered credit values — Small=1, Medium=2, Large=3, XL=4.
 const SIZE_CREDITS: Record<string, number> = {
   Small: 1,
   Medium: 2,
@@ -51,7 +50,7 @@ interface SessionState {
   rfid:        string | null;
   userName:    string | null;
   credits:     number;
-  step: "idle" | "gate_open" | "identified" | "already_registered" | "unregistered" | "ir" | "capacitive" | "tof" | "loadcell" | "result";
+  step: "idle" | "identified" | "already_registered" | "unregistered" | "ir" | "capacitive" | "tof" | "loadcell" | "result";
   steps:       ValidationStep[];
   heightMm:    number | null;
   weightG:     number | null;
@@ -80,10 +79,6 @@ let session: SessionState = {
 };
 
 const SENSOR_IN_PROGRESS_STEPS = ["ir", "capacitive", "tof", "loadcell"];
-
-// Set by /api/deposit/guest-stop so an in-flight setTimeout callback
-// (continueGuestLoop) doesn't reopen the gate right after the frontend
-// has already told us the guest is done depositing.
 let guestStopRequested = false;
 
 function resetSession(force = false) {
@@ -115,11 +110,9 @@ app.use(express.json());
 type KioskMode = "deposit" | "register" | "balance" | "print" | "admin" | "idle";
 let kioskMode: KioskMode = "idle";
 
-// ── 1. SERVE STATIC FRONTEND FILES FIRST ──────────────────────────────────────
 const frontendDist = path.join(__dirname, "..", "..", "frontend", "dist");
 app.use(express.static(frontendDist));
 
-// ── 2. MOUNT API ROUTES ───────────────────────────────────────────────────────
 app.post("/api/mode", (req, res) => {
   kioskMode = req.body.mode as KioskMode;
   console.log("Kiosk mode:", kioskMode);
@@ -139,19 +132,12 @@ function continueGuestLoop() {
   session.heightMm = null;
   session.weightG  = null;
   session.size     = null;
-  session.step     = "gate_open";
+  session.step     = "ir"; // Waiting for bottle insertion
   broadcastState();
-  sendToArduino("OPEN_GATE_GUEST");
 }
 
 app.get("/api/mode", (_req, res) => res.json({ mode: kioskMode }));
-app.use(userRoutes);
-app.use(printRoutes);
-app.use(adminRoutes);
-app.use(feedbackRoutes);
 
-// Starts (or resumes) a guest bottle-deposit loop. Used both by the
-// standalone Deposit screen and by Print's "pay with bottles" step.
 app.post("/api/deposit/guest-start", (_req, res) => {
   guestStopRequested = false;
   startGuestSession();
@@ -164,9 +150,8 @@ app.post("/api/deposit/guest-start", (_req, res) => {
   session.errorMsg  = null;
   session.timestamp = Date.now();
   session.sessionId = Date.now();
-  session.step      = "gate_open";
+  session.step      = "ir";
 
-  sendToArduino("OPEN_GATE_GUEST");
   broadcastState();
   res.json({ success: true, credits: getGuestCredits() });
 });
@@ -175,10 +160,6 @@ app.get("/api/deposit/guest-status", (_req, res) => {
   res.json({ active: isGuestActive(), credits: getGuestCredits() });
 });
 
-// Called when the frontend (Deposit screen "Done" button, or Print's
-// deposit-to-pay step reaching its target) wants the gate loop to stop.
-// Does NOT end the guest session or clear banked credits — only
-// endGuestSession() (called after a successful guest print) does that.
 app.post("/api/deposit/guest-stop", (_req, res) => {
   guestStopRequested = true;
   resetSession(true);
@@ -187,12 +168,14 @@ app.post("/api/deposit/guest-stop", (_req, res) => {
 
 app.get("/api/session", (_req, res) => res.json(session));
 
-// ── 3. REACT ROUTER CATCH-ALL LAST ────────────────────────────────────────────
+app.use(userRoutes);
+app.use(printRoutes);
+app.use(adminRoutes);
+app.use(feedbackRoutes);
+
 app.get(/^(?!\/api|\/upload).*/, (_req, res) => {
   res.sendFile(path.join(frontendDist, "index.html"));
 });
-
-// ──────────────────────────────────────────────────────────────────────────────
 
 const httpServer = createServer(app);
 const wss = new WebSocketServer({ server: httpServer });
@@ -236,7 +219,7 @@ parser.on("data", (raw: string) => {
   }
 
   if (line === "RFID:TIMEOUT") {
-    console.log("Arduino reported internal RFID timeout (no OPEN_GATE sent) — ignoring, not a real tap.");
+    console.log("Arduino reported RFID timeout — ignoring.");
     return;
   }
 
@@ -301,7 +284,6 @@ parser.on("data", (raw: string) => {
       session.timestamp = Date.now();
       session.sessionId = newSessionId;
       broadcastState();
-      sendToArduino("IGNORE");
       setTimeout(() => resetSession(), 3000);
       return;
     }
@@ -316,8 +298,7 @@ parser.on("data", (raw: string) => {
     session.sessionId = newSessionId;
 
     if (kioskMode === "deposit") {
-      session.step = "gate_open";
-      sendToArduino("OPEN_GATE");
+      session.step = "ir"; // Waiting for bottle to pass IR pre-chamber sensor
     } else {
       session.step = "identified";
     }
@@ -326,11 +307,10 @@ parser.on("data", (raw: string) => {
     return;
   }
 
-  // Timeout — no bottle inserted
   if (line === "TIMEOUT") {
     if (session.step === "result") return;
     session.step     = "idle";
-    session.errorMsg = "No bottle inserted. Gate closed.";
+    session.errorMsg = "No bottle inserted.";
     broadcastState();
     setTimeout(() => {
       if (session.rfid === "GUEST") continueGuestLoop();
@@ -339,7 +319,7 @@ parser.on("data", (raw: string) => {
     return;
   }
 
-  // IR detected
+  // IR detected (Step 2)
   if (line === "IR:DETECTED") {
     if (session.step === "result") return;
     session.step = "ir";
@@ -351,11 +331,11 @@ parser.on("data", (raw: string) => {
       session.step = "capacitive";
       setStep("capacitive", "running");
       broadcastState();
-    }, 500);
+    }, 300);
     return;
   }
 
-  // Capacitive
+  // Capacitive (Step 5)
   if (line === "CAP:PASS") {
     if (session.step === "result") return;
     setStep("capacitive", "pass", "Physical presence confirmed");
@@ -366,7 +346,7 @@ parser.on("data", (raw: string) => {
   }
   if (line === "CAP:FAIL") {
     if (session.step === "result") return;
-    setStep("capacitive", "fail", "No bottle detected at sensor");
+    setStep("capacitive", "fail", "No bottle detected");
     session.step     = "result";
     session.result   = "rejected";
     session.errorMsg = "Capacitive sensor found no bottle. Try again.";
@@ -379,16 +359,16 @@ parser.on("data", (raw: string) => {
     return;
   }
 
-  // ToF height
+  // ToF height (Step 4)
   if (line.startsWith("TOF:HEIGHT:")) {
     if (session.step === "result") return;
     const heightMm = parseFloat(line.split(":")[2]);
     session.heightMm = heightMm;
-    if (heightMm < 80 || heightMm > 320) {
+    if (heightMm < 80 || heightMm > 350) {
       setStep("tof", "fail", `Height ${heightMm}mm out of range`);
       session.step     = "result";
       session.result   = "rejected";
-      session.errorMsg = `Invalid bottle size (height ${heightMm}mm). Only PET bottles accepted.`;
+      session.errorMsg = `Invalid bottle size (height ${heightMm}mm). Only PET accepted.`;
       broadcastState();
       sendToArduino("REJECT");
       setTimeout(() => {
@@ -408,7 +388,7 @@ parser.on("data", (raw: string) => {
     setStep("tof", "fail", "Sensor timeout");
     session.step     = "result";
     session.result   = "rejected";
-    session.errorMsg = "Height sensor timed out. Try again.";
+    session.errorMsg = "Height sensor timed out.";
     broadcastState();
     sendToArduino("REJECT");
     setTimeout(() => {
@@ -418,10 +398,9 @@ parser.on("data", (raw: string) => {
     return;
   }
 
-  // Load cell weight
+  // Load cell weight (Step 3)
   if (line.startsWith("LOADCELL:WEIGHT:")) {
     if (!session.rfid || session.step === "result") {
-      console.warn("LOADCELL:WEIGHT ignored — no active session or result already set.");
       return;
     }
 
@@ -436,10 +415,6 @@ parser.on("data", (raw: string) => {
       session.errorMsg = `Size mismatch — height and weight don't match a valid bottle type.`;
       broadcastState();
       sendToArduino("REJECT");
-      setTimeout(() => {
-        if (session.rfid === "GUEST") continueGuestLoop();
-        else resetSession();
-      }, 5000);
     } else {
       const creditsEarned = SIZE_CREDITS[match.label] ?? 1;
 
@@ -463,12 +438,33 @@ parser.on("data", (raw: string) => {
       }
 
       broadcastState();
-      sendToArduino("ACCEPT");
-      setTimeout(() => {
-        if (session.rfid === "GUEST") continueGuestLoop();
-        else resetSession();
-      }, 4000);
+      sendToArduino("ACCEPT"); // Triggers Step 6 Diverter Servo Sorting
     }
+    return;
+  }
+
+  // Step 7: Storage Confirmation (Photoelectric Sensor)
+  if (line === "CONFIRM:STORAGE_OK") {
+    console.log("✅ Step 7: Bottle confirmed passing into storage successfully.");
+    return;
+  }
+
+  if (line === "CONFIRM:JAM_DETECTED") {
+    console.warn("⚠️ Step 7: Storage jam detected!");
+    session.errorMsg = "Warning: Bottle jam detected in storage chute.";
+    broadcastState();
+    return;
+  }
+
+  // Step 8: Post-Deposit Bin Fill Level (Ultrasonic Sensor)
+  if (line.startsWith("BIN:FILL_LEVEL_CM:")) {
+    const fillDistanceCm = parseInt(line.split(":")[2], 10);
+    console.log(`🗑️ Step 8: Recycling bin fill distance: ${fillDistanceCm}cm from sensor.`);
+    
+    setTimeout(() => {
+      if (session.rfid === "GUEST") continueGuestLoop();
+      else resetSession();
+    }, 2000);
     return;
   }
 });

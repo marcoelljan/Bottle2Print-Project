@@ -7,12 +7,12 @@ interface Props { onBack: () => void; }
 
 type Step = "tap" | "form" | "saving" | "success" | "error" | "already";
 
-
 export default function RegisterScreen({ onBack }: Props) {
   const [step, setStep]         = useState<Step>("tap");
   const [rfid, setRfid]         = useState("");
   const [name, setName]         = useState("");
   const [studentId, setStudentId] = useState("");
+  const [agreed, setAgreed]     = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [pulse, setPulse]       = useState(false);
 
@@ -22,77 +22,78 @@ export default function RegisterScreen({ onBack }: Props) {
   }, []);
    
   useEffect(() => {
-  if (step !== "tap") return;
+    if (step !== "tap") return;
 
-  let cancelled = false;
-  let ws: WebSocket | null = null;
-  let handled = false;
-  let shouldClose = false;
+    let cancelled = false;
+    let ws: WebSocket | null = null;
+    let handled = false;
+    let shouldClose = false;
 
-  (async () => {
-    try {
-      await fetch(`${API}/api/mode`, {
+    (async () => {
+      try {
+        await fetch(`${API}/api/mode`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: "register" }),
+        });
+      } catch {}
+
+      if (cancelled) return;
+
+      ws = new WebSocket(WS_URL);
+      ws.onopen = () => {
+        if (shouldClose) ws?.close();
+      };
+      ws.onclose = () => {};
+      ws.onerror = () => {};
+
+      ws.onmessage = async (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (handled || msg.type !== "state" || !msg.session?.rfid || msg.session.sessionId === 0) return;
+
+          if (msg.session.step === "already_registered") {
+            handled = true;
+            ws?.close();
+            setRfid(msg.session.rfid);
+            setStep("already");
+            return;
+          }
+
+          if (msg.session.step === "identified") {
+            handled = true;
+            ws?.close();
+            setRfid(msg.session.rfid);
+            setName(
+              msg.session.userName && msg.session.userName !== "User"
+                ? msg.session.userName : ""
+            );
+            setStep("form");
+            return;
+          }
+        } catch {}
+      };
+    })();
+
+    return () => {
+      cancelled = true;
+      fetch(`${API}/api/mode`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "register" }),
+        body: JSON.stringify({ mode: "idle" }),
       });
-    } catch {}
-
-    if (cancelled) return;
-
-    ws = new WebSocket(WS_URL);
-    ws.onopen = () => {
-      if (shouldClose) ws?.close();
-    };
-    ws.onclose = () => {};
-    ws.onerror = () => {};
-
-    ws.onmessage = async (e) => {
-      try {
-        const msg = JSON.parse(e.data);
-        if (handled || msg.type !== "state" || !msg.session?.rfid || msg.session.sessionId === 0) return;
-
-        if (msg.session.step === "already_registered") {
-          handled = true;
-          ws?.close();
-          setRfid(msg.session.rfid);
-          setStep("already");
-          return;
+      if (ws) {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.close();
+        } else if (ws.readyState === WebSocket.CONNECTING) {
+          shouldClose = true;
         }
-
-        if (msg.session.step === "identified") {
-          handled = true;
-          ws?.close();
-          setRfid(msg.session.rfid);
-          setName(
-            msg.session.userName && msg.session.userName !== "User"
-              ? msg.session.userName : ""
-          );
-          setStep("form");
-          return;
-        }
-      } catch {}
-    };
-  })();
-
-  return () => {
-    cancelled = true;
-    fetch(`${API}/api/mode`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "idle" }),
-    });
-    if (ws) {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.close();
-      } else if (ws.readyState === WebSocket.CONNECTING) {
-        shouldClose = true;
       }
-    }
-  };
-}, [step]);
+    };
+  }, [step]);
+
   const handleSave = async () => {
-    if (!name.trim() || !studentId.trim()) return;
+    if (!name.trim() || !studentId.trim() || !agreed) return;
     setStep("saving");
     try {
       const res = await fetch(`${API}/api/user/register`, {
@@ -112,6 +113,8 @@ export default function RegisterScreen({ onBack }: Props) {
       setStep("error");
     }
   };
+
+  const isFormValid = name.trim() && studentId.trim() && agreed;
 
   return (
     <div style={fullScreen}>
@@ -144,13 +147,28 @@ export default function RegisterScreen({ onBack }: Props) {
               <div style={{ fontSize: 18, color: "#f0a500", fontWeight: 600 }}>Tap your RFID card</div>
               <div style={{ fontSize: 13, color: "#555", marginTop: 6 }}>Hold your card near the reader to begin</div>
             </div>
+
+            {/* DEV BYPASS BUTTON FOR TESTING */}
+            <button
+              onClick={() => {
+                setRfid(`TEST_REG_${Math.floor(Math.random() * 90000 + 10000)}`);
+                setStep("form");
+              }}
+              style={{
+                padding: "10px 16px", borderRadius: 8, background: "#222",
+                border: "1px dashed #f0a500", color: "#f0a500", fontSize: 13,
+                cursor: "pointer", fontWeight: 600, marginTop: 10
+              }}
+            >
+              ⚡ [Dev Bypass] Tap Test Registration
+            </button>
           </div>
         )}
 
         {/* form */}
         {step === "form" && (
           <div style={card}>
-            <div style={{ marginBottom: 20 }}>
+            <div style={{ marginBottom: 16 }}>
               <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Enter your details</div>
               <div style={{ fontSize: 12, color: "#555" }}>RFID: {rfid}</div>
             </div>
@@ -175,16 +193,30 @@ export default function RegisterScreen({ onBack }: Props) {
               />
             </div>
 
-            <div style={{ display: "flex", gap: 12, marginTop: 8 }}>
+            {/* Data Privacy & Terms and Agreement Checkbox */}
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 20, textAlign: "left" }}>
+              <input
+                type="checkbox"
+                id="terms"
+                checked={agreed}
+                onChange={e => setAgreed(e.target.checked)}
+                style={{ marginTop: 3, cursor: "pointer", accentColor: "#f0a500" }}
+              />
+              <label htmlFor="terms" style={{ fontSize: 11, color: "#888", lineHeight: 1.4, cursor: "pointer" }}>
+                I agree to the <strong style={{ color: "#aaa" }}>Data Privacy Policy</strong>. I consent to the collection of my student credentials and recycling metrics for credit tracking.
+              </label>
+            </div>
+
+            <div style={{ display: "flex", gap: 12 }}>
               <button onClick={() => setStep("tap")} style={ghostBtn}>Cancel</button>
               <button
                 onClick={handleSave}
-                disabled={!name.trim() || !studentId.trim()}
+                disabled={!isFormValid}
                 style={{
                   flex: 1, padding: "13px", borderRadius: 10, fontWeight: 700,
-                  fontSize: 15, border: "none", cursor: name.trim() && studentId.trim() ? "pointer" : "not-allowed",
-                  background: name.trim() && studentId.trim() ? "#f0a500" : "#333",
-                  color: name.trim() && studentId.trim() ? "#000" : "#555",
+                  fontSize: 15, border: "none", cursor: isFormValid ? "pointer" : "not-allowed",
+                  background: isFormValid ? "#f0a500" : "#333",
+                  color: isFormValid ? "#000" : "#555",
                 }}
               >
                 Register
@@ -196,7 +228,7 @@ export default function RegisterScreen({ onBack }: Props) {
         {/* saving */}
         {step === "saving" && (
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 48, marginBottom: 16 }}>⏳</div>
+            <div style={{ fontSize: 48, marginBottom: 16 }}></div>
             <div style={{ fontSize: 18, color: "#f0a500" }}>Saving...</div>
           </div>
         )}
@@ -204,7 +236,7 @@ export default function RegisterScreen({ onBack }: Props) {
         {/* success */}
         {step === "success" && (
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 64, marginBottom: 16 }}>✅</div>
+            <div style={{ fontSize: 64, marginBottom: 16 }}></div>
             <div style={{ fontSize: 22, color: "#2ecc71", fontWeight: 700, marginBottom: 8 }}>Registered!</div>
             <div style={{ fontSize: 14, color: "#aaa", marginBottom: 8 }}>{name}</div>
             <div style={{ fontSize: 12, color: "#666", marginBottom: 24 }}>Student ID: {studentId}</div>
@@ -227,7 +259,7 @@ export default function RegisterScreen({ onBack }: Props) {
         {/* error */}
         {step === "error" && (
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 64, marginBottom: 16 }}>❌</div>
+            <div style={{ fontSize: 64, marginBottom: 16 }}></div>
             <div style={{ fontSize: 20, color: "#e74c3c", fontWeight: 700, marginBottom: 8 }}>Registration failed</div>
             <div style={{ fontSize: 14, color: "#aaa", marginBottom: 24 }}>{errorMsg}</div>
             <button onClick={() => setStep("form")} style={doneBtn}>Try again</button>
@@ -254,9 +286,9 @@ const body: React.CSSProperties = {
 };
 const card: React.CSSProperties = {
   background: "#242424", border: "1px solid #333", borderRadius: 14,
-  padding: "28px 32px", width: "100%", maxWidth: 460,
+  padding: "24px 32px", width: "100%", maxWidth: 460,
 };
-const fieldGroup: React.CSSProperties = { marginBottom: 16 };
+const fieldGroup: React.CSSProperties = { marginBottom: 14 };
 const fieldLabel: React.CSSProperties = { fontSize: 12, color: "#888", display: "block", marginBottom: 6 };
 const input: React.CSSProperties = {
   width: "100%", padding: "12px 14px", background: "#1e1e1e",

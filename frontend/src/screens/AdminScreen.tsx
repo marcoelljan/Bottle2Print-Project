@@ -1,11 +1,10 @@
 import { useEffect, useState } from "react";
-import BackButton from "../components/BackButton";
 import { LockPersonIcon, PrintIcon, AccountCircleIcon, ChatIcon, RecyclingIcon } from "../components/KioskIcons";
 import { API } from "../config";
+
 interface Props { onBack: () => void; }
-type Tab = "logs" | "users" | "transactions" | "feedback";
-
-
+type Tab = "logs" | "users" | "transactions" | "feedback" | "admins";
+type Role = "admin" | "super_admin";
 
 interface User {
   rfid: string; name: string; studentId: string;
@@ -19,26 +18,58 @@ interface Feedback {
   id: number; rfid: string | null; context: string;
   rating: number; comment: string; created_at: string;
 }
+interface AdminAccount {
+  id: number; username: string; role: Role; created_at: string;
+}
 
-export default function AdminScreen({ onBack }: Props) {
+export default function AdminScreen({}: Props) {
   const [token, setToken]           = useState<string | null>(null);
+  const [myAdminId, setMyAdminId]   = useState<number | null>(null);
+  const [myUsername, setMyUsername] = useState<string>("");
+  const [myRole, setMyRole]         = useState<Role>("admin");
+  const [passwordChanged, setPasswordChanged] = useState<boolean>(true);
+  
   const verified = token !== null;
+  const isSuperAdmin = myRole === "super_admin";
 
-  // password login state
+  // login step flow state ("username" -> "password")
+  const [loginStep, setLoginStep]   = useState<"username" | "password">("username");
+  const [userInput, setUserInput]   = useState("");
+  const [userCheckLoading, setUserCheckLoading] = useState(false);
+  const [userError, setUserError]   = useState("");
+
   const [pwInput, setPwInput]       = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [pwError, setPwError]       = useState("");
   const [pwLoading, setPwLoading]   = useState(false);
+
+  // forced password change state for first login
+  const [forceNewPass, setForceNewPass]     = useState("");
+  const [forceConfirmPass, setForceConfirmPass] = useState("");
+  const [showForcePass, setShowForcePass]   = useState(false);
+  const [forceMsg, setForceMsg]             = useState("");
 
   const [tab, setTab]               = useState<Tab>("logs");
   const [users, setUsers]           = useState<User[]>([]);
   const [txns, setTxns]             = useState<Transaction[]>([]);
   const [feedback, setFeedback]     = useState<Feedback[]>([]);
+  const [admins, setAdmins]         = useState<AdminAccount[]>([]);
   const [loading, setLoading]       = useState(false);
   const [addCredits, setAddCredits] = useState<{ rfid: string; name: string } | null>(null);
   const [creditAmount, setCreditAmount] = useState("");
   const [creditMsg, setCreditMsg]   = useState("");
 
-  // helper — every admin fetch goes through this so the token is always attached
+  // admin-account modal state (for super-admin managing all admins)
+  const [adminModal, setAdminModal] = useState<null | { mode: "create" } | { mode: "edit"; admin: AdminAccount }>(null);
+  const [adminForm, setAdminForm]   = useState({ username: "", password: "", role: "admin" as Role });
+  const [adminMsg, setAdminMsg]     = useState("");
+
+  // personal account settings modal state (for any logged-in admin)
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [settingsForm, setSettingsForm]     = useState({ username: "", newPassword: "", confirmPassword: "" });
+  const [showSettingsPass, setShowSettingsPass] = useState(false);
+  const [settingsMsg, setSettingsMsg]       = useState("");
+
   const authFetch = (path: string, options: RequestInit = {}) => {
     return fetch(`${API}${path}`, {
       ...options,
@@ -49,7 +80,6 @@ export default function AdminScreen({ onBack }: Props) {
     });
   };
 
-  // set mode to admin while on this screen
   useEffect(() => {
     fetch(`${API}/api/mode`, {
       method: "POST",
@@ -65,22 +95,49 @@ export default function AdminScreen({ onBack }: Props) {
     };
   }, []);
 
+  const handleNextStep = async () => {
+    if (!userInput.trim()) return;
+    setUserError("");
+    setUserCheckLoading(true);
+
+    try {
+      const res = await fetch(`${API}/api/admin/check-username`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: userInput.trim() }),
+      });
+      const data = await res.json();
+      if (res.ok && data.exists) {
+        setLoginStep("password");
+      } else {
+        setUserError(data.error ?? "Username not found.");
+      }
+    } catch {
+      setUserError("Could not reach backend.");
+    }
+    setUserCheckLoading(false);
+  };
+
   const handlePasswordLogin = async () => {
-    if (!pwInput) return;
+    if (!userInput || !pwInput) return;
     setPwLoading(true);
     setPwError("");
     try {
       const res = await fetch(`${API}/api/admin/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: pwInput }),
+        body: JSON.stringify({ username: userInput, password: pwInput }),
       });
       const data = await res.json();
       if (res.ok && data.token) {
         setToken(data.token);
+        setMyAdminId(data.adminId);
+        setMyUsername(data.username);
+        setMyRole(data.role);
+        setPasswordChanged(data.passwordChanged);
         setPwInput("");
       } else {
-        setPwError(data.error ?? "Incorrect password.");
+        setPwError(data.error ?? "Incorrect username or password.");
       }
     } catch {
       setPwError("Could not reach backend.");
@@ -88,10 +145,77 @@ export default function AdminScreen({ onBack }: Props) {
     setPwLoading(false);
   };
 
+  const handleForcePasswordChange = async () => {
+    if (!forceNewPass || forceNewPass.length < 8) {
+      setForceMsg("Password must be at least 8 characters.");
+      return;
+    }
+    if (forceNewPass !== forceConfirmPass) {
+      setForceMsg("Passwords do not match.");
+      return;
+    }
+
+    try {
+      const res = await authFetch(`/api/admin/me/password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPassword: pwInput || "DefaultPass123!", newPassword: forceNewPass }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setPasswordChanged(true);
+      } else {
+        setForceMsg(data.error ?? "Failed to update password.");
+      }
+    } catch {
+      setForceMsg("Could not reach backend.");
+    }
+  };
+
+  const handleSaveSettings = async () => {
+    if (!myAdminId) return;
+    if (!settingsForm.username.trim()) {
+      setSettingsMsg("Username cannot be empty.");
+      return;
+    }
+
+    const payload: any = { username: settingsForm.username.trim() };
+    if (settingsForm.newPassword) {
+      if (settingsForm.newPassword.length < 8) {
+        setSettingsMsg("New password must be at least 8 characters.");
+        return;
+      }
+      if (settingsForm.newPassword !== settingsForm.confirmPassword) {
+        setSettingsMsg("New passwords do not match.");
+        return;
+      }
+      payload.password = settingsForm.newPassword;
+    }
+
+    try {
+      const res = await authFetch(`/api/admin/admins/${myAdminId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setMyUsername(settingsForm.username.trim());
+        setShowSettingsModal(false);
+        setSettingsMsg("");
+        fetchData();
+      } else {
+        setSettingsMsg(data.error ?? "Failed to update profile.");
+      }
+    } catch {
+      setSettingsMsg("Could not reach backend.");
+    }
+  };
+
   useEffect(() => {
-    if (verified) fetchData();
+    if (verified && passwordChanged) fetchData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [verified, tab]);
+  }, [verified, passwordChanged, tab]);
 
   const fetchData = async () => {
     setLoading(true);
@@ -107,6 +231,10 @@ export default function AdminScreen({ onBack }: Props) {
       if (tab === "feedback") {
         const r = await authFetch(`/api/admin/feedback`);
         setFeedback(await r.json());
+      }
+      if (tab === "admins" && isSuperAdmin) {
+        const r = await authFetch(`/api/admin/admins`);
+        setAdmins(await r.json());
       }
     } catch {}
     setLoading(false);
@@ -148,87 +276,333 @@ export default function AdminScreen({ onBack }: Props) {
     }
   };
 
-  const handleBack = () => {
-    if (!verified) {
-      onBack();
-      return;
-    }
-    if (window.confirm("Log out of the admin panel?")) {
-      setToken(null);
-      setTab("logs");
+  const openCreateAdmin = () => {
+    setAdminForm({ username: "", password: "", role: "admin" });
+    setAdminMsg("");
+    setAdminModal({ mode: "create" });
+  };
+
+  const openEditAdmin = (admin: AdminAccount) => {
+    setAdminForm({ username: admin.username, password: "", role: admin.role });
+    setAdminMsg("");
+    setAdminModal({ mode: "edit", admin });
+  };
+
+  const handleSaveAdmin = async () => {
+    if (!adminModal) return;
+    if (adminModal.mode === "create") {
+      if (!adminForm.username) {
+        setAdminMsg("Username is required.");
+        return;
+      }
+      const res = await authFetch(`/api/admin/admins`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: adminForm.username, role: adminForm.role }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setAdminModal(null);
+        fetchData();
+      } else {
+        setAdminMsg(data.error ?? "Failed to create admin.");
+      }
+    } else {
+      const body: any = { username: adminForm.username, role: adminForm.role };
+      if (adminForm.password) body.password = adminForm.password;
+      const res = await authFetch(`/api/admin/admins/${adminModal.admin.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setAdminModal(null);
+        fetchData();
+      } else {
+        setAdminMsg(data.error ?? "Failed to update admin.");
+      }
     }
   };
+
+  const handleDeleteAdmin = async (admin: AdminAccount) => {
+    if (!window.confirm(`Delete admin account "${admin.username}"?`)) return;
+    const res = await authFetch(`/api/admin/admins/${admin.id}`, { method: "DELETE" });
+    const data = await res.json();
+    if (!data.success) {
+      alert(data.error ?? "Failed to delete admin.");
+    }
+    fetchData();
+  };
+
+  const handleLogout = () => {
+    if (window.confirm("Log out of the admin panel?")) {
+      setToken(null);
+      setPasswordChanged(true);
+      setLoginStep("username");
+      setUserInput("");
+      setTab("logs");
+      setShowSettingsModal(false);
+    }
+  };
+
+  
 
   // ── login screen ───────────────────────────────────────────────────────────
   if (!verified) {
     return (
       <div style={fullScreen}>
-        <BackButton onBack={handleBack} />
-        <div style={headerBar}>
+        <div style={{ ...headerBar, paddingLeft: 24 }}>
           <LockPersonIcon size={22} color="#f0a500" />
           <div>
             <div style={headerTitle}>Admin Access</div>
-            <div style={headerSub}>Log in with your admin password</div>
+            <div style={headerSub}>
+              {loginStep === "username" ? "Enter your admin username" : `Logging in as: ${userInput}`}
+            </div>
           </div>
         </div>
         <div style={loginBody}>
           <div style={loginPanel}>
-
-            {/* password login */}
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              <div style={{ fontSize: 13, color: "#888", fontWeight: 600 }}>Admin password</div>
-              <input
-                type="password"
-                value={pwInput}
-                onChange={e => setPwInput(e.target.value)}
-                onKeyDown={e => { if (e.key === "Enter") handlePasswordLogin(); }}
-                placeholder="Enter password"
-                style={{
-                  width: "100%", padding: "12px 14px", background: "#1e1e1e",
-                  border: "1px solid #3a3a3a", borderRadius: 8, color: "#fff",
-                  fontSize: 15, outline: "none", boxSizing: "border-box",
-                }}
-              />
-              {pwError && (
-                <div style={{ fontSize: 12, color: "#e74c3c" }}>{pwError}</div>
-              )}
-              <button
-                onClick={handlePasswordLogin}
-                disabled={!pwInput || pwLoading}
-                style={{
-                  padding: "12px", borderRadius: 8, fontWeight: 700, fontSize: 14,
-                  border: "none", cursor: !pwInput || pwLoading ? "not-allowed" : "pointer",
-                  background: !pwInput || pwLoading ? "#333" : "#f0a500",
-                  color: !pwInput || pwLoading ? "#555" : "#000",
-                }}
-              >
-                {pwLoading ? "Checking..." : "Log in"}
-              </button>
-            </div>
+              
+              {loginStep === "username" ? (
+                <>
+                  <div style={{ fontSize: 13, color: "#888", fontWeight: 600 }}>Username</div>
+                  <input
+                    type="text"
+                    value={userInput}
+                    onChange={e => setUserInput(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") handleNextStep(); }}
+                    placeholder="Enter username"
+                    autoCapitalize="none"
+                    autoFocus
+                    style={inputStyle}
+                  />
 
+                  {userError && (
+                    <div style={{ fontSize: 12, color: "#e74c3c" }}>{userError}</div>
+                  )}
+
+                  <button
+                    onClick={handleNextStep}
+                    disabled={!userInput.trim() || userCheckLoading}
+                    style={{
+                      padding: "12px", borderRadius: 8, fontWeight: 700, fontSize: 14,
+                      border: "none", cursor: !userInput.trim() || userCheckLoading ? "not-allowed" : "pointer",
+                      background: !userInput.trim() || userCheckLoading ? "#333" : "#f0a500",
+                      color: !userInput.trim() || userCheckLoading ? "#555" : "#000",
+                      marginTop: 4,
+                    }}
+                  >
+                    {userCheckLoading ? "Checking..." : "Next"}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div style={{ fontSize: 13, color: "#888", fontWeight: 600 }}>Password</div>
+                    <button
+                      onClick={() => { setLoginStep("username"); setPwInput(""); setPwError(""); }}
+                      style={{ background: "none", border: "none", color: "#f0a500", fontSize: 12, cursor: "pointer" }}
+                    >
+                      ← Change username
+                    </button>
+                  </div>
+                  
+                  <div style={{ position: "relative" }}>
+                    <input
+                      type={showPassword ? "text" : "password"}
+                      value={pwInput}
+                      onChange={e => setPwInput(e.target.value)}
+                      onKeyDown={e => { if (e.key === "Enter") handlePasswordLogin(); }}
+                      placeholder="Enter password"
+                      autoFocus
+                      style={{ ...inputStyle, paddingRight: 45 }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      style={{
+                        position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)",
+                        background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: 13
+                      }}
+                    >
+                      {showPassword ? "Hide" : "Show"}
+                    </button>
+                  </div>
+
+                  <div style={{ fontSize: 11, color: "#666", lineHeight: 1.4, marginTop: 2 }}>
+                    💡 New admin account? Use the default password: <strong style={{ color: "#aaa" }}>DefaultPass123!</strong>
+                  </div>
+
+                  {pwError && (
+                    <div style={{ fontSize: 12, color: "#e74c3c" }}>{pwError}</div>
+                  )}
+
+                  <button
+                    onClick={handlePasswordLogin}
+                    disabled={!pwInput || pwLoading}
+                    style={{
+                      padding: "12px", borderRadius: 8, fontWeight: 700, fontSize: 14,
+                      border: "none", cursor: !pwInput || pwLoading ? "not-allowed" : "pointer",
+                      background: !pwInput || pwLoading ? "#333" : "#f0a500",
+                      color: !pwInput || pwLoading ? "#555" : "#000",
+                      marginTop: 4,
+                    }}
+                  >
+                    {pwLoading ? "Checking..." : "Log in"}
+                  </button>
+                </>
+              )}
+
+            </div>
           </div>
         </div>
       </div>
     );
   }
 
-  // ── Admin panel (after verified) ───────────────────────────────────────────
+  // ── Force Password Change Screen (First Login) ────────────────────────────
+  if (!passwordChanged) {
+    return (
+      <div style={fullScreen}>
+        <div style={{ ...headerBar, paddingLeft: 24 }}>
+          <LockPersonIcon size={22} color="#f0a500" />
+          <div>
+            <div style={headerTitle}>Security Update Required</div>
+            <div style={headerSub}>You must change your default password to continue</div>
+          </div>
+        </div>
+        <div style={loginBody}>
+          <div style={loginPanel}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{ fontSize: 13, color: "#888", fontWeight: 600 }}>New Password</div>
+              <div style={{ position: "relative" }}>
+                <input
+                  type={showForcePass ? "text" : "password"}
+                  value={forceNewPass}
+                  onChange={e => setForceNewPass(e.target.value)}
+                  placeholder="At least 8 characters"
+                  style={{ ...inputStyle, paddingRight: 45 }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowForcePass(!showForcePass)}
+                  style={{
+                    position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)",
+                    background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: 13
+                  }}
+                >
+                  {showForcePass ? "Hide" : "Show"}
+                </button>
+              </div>
+
+              <div style={{ fontSize: 13, color: "#888", fontWeight: 600, marginTop: 6 }}>Confirm New Password</div>
+              <input
+                type="password"
+                value={forceConfirmPass}
+                onChange={e => setForceConfirmPass(e.target.value)}
+                placeholder="Re-enter new password"
+                style={inputStyle}
+              />
+
+              {forceMsg && (
+                <div style={{ fontSize: 12, color: "#e74c3c" }}>{forceMsg}</div>
+              )}
+              <button
+                onClick={handleForcePasswordChange}
+                disabled={!forceNewPass || !forceConfirmPass}
+                style={{
+                  padding: "12px", borderRadius: 8, fontWeight: 700, fontSize: 14,
+                  border: "none", cursor: !forceNewPass || !forceConfirmPass ? "not-allowed" : "pointer",
+                  background: !forceNewPass || !forceConfirmPass ? "#333" : "#f0a500",
+                  color: !forceNewPass || !forceConfirmPass ? "#555" : "#000",
+                  marginTop: 4,
+                }}
+              >
+                Update Password & Continue
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Admin panel (after verified & password changed) ───────────────────────
   return (
     <div style={fullScreen}>
-      <BackButton onBack={handleBack} />
+      {/* Hidden file input for database restore inside settings */}
+      <input
+        type="file"
+        id="restoreFileInput"
+        accept=".json"
+        style={{ display: "none" }}
+        onChange={async (e) => {
+          const file = e.target.files?.[0];
+          if (!file) return;
 
-      <div style={headerBar}>
+          if (!window.confirm("⚠️ WARNING: Restoring a backup file will completely overwrite all current kiosk users, transactions, and settings. Proceed?")) {
+            e.target.value = "";
+            return;
+          }
+
+          try {
+            const text = await file.text();
+            const json = JSON.parse(text);
+
+            const res = await authFetch(`/api/admin/restore`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(json),
+            });
+            const data = await res.json();
+
+            if (res.ok && data.success) {
+              alert("✅ System successfully restored from backup!");
+              setShowSettingsModal(false);
+              fetchData();
+            } else {
+              alert(`❌ Restore failed: ${data.error ?? "Unknown error"}`);
+            }
+          } catch {
+            alert("❌ Invalid JSON backup file format.");
+          }
+          e.target.value = "";
+        }}
+      />
+
+      {/* Clean header without top-left back arrow */}
+      <div style={{ ...headerBar, paddingLeft: 24 }}>
         <LockPersonIcon size={22} color="#f0a500" />
         <div>
           <div style={headerTitle}>Admin Panel</div>
-          <div style={headerSub}>Manage users, view logs and transactions</div>
+          <div style={headerSub}>Logged in as {myUsername} {isSuperAdmin && "· super-admin"}</div>
         </div>
-        <button onClick={fetchData} style={refreshBtn}>↻ Refresh</button>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+          <button 
+            onClick={() => {
+              setSettingsForm({ username: myUsername, newPassword: "", confirmPassword: "" });
+              setSettingsMsg("");
+              setShowSettingsModal(true);
+            }} 
+            style={actionBtn("#2a2a2a", "#f0a500")}
+          >
+            ⚙️ Settings
+          </button>
+          <button onClick={fetchData} style={refreshBtn}>↻ Refresh</button>
+        </div>
       </div>
 
       {/* tabs */}
       <div style={tabBar}>
-        {([["logs", <><PrintIcon size={15} /> Activity Logs</>], ["users", <><AccountCircleIcon size={15} /> Manage Users</>], ["transactions", <><RecyclingIcon size={15} /> Transactions</>], ["feedback", <><ChatIcon size={15} /> Feedback</>]] as [Tab, React.ReactNode][]).map(([t, label]) => (
+        {([
+          ["logs", <><PrintIcon size={15} /> Activity Logs</>],
+          ["users", <><AccountCircleIcon size={15} /> Manage Users</>],
+          ["transactions", <><RecyclingIcon size={15} /> Transactions</>],
+          ["feedback", <><ChatIcon size={15} /> Feedback</>],
+          ...(isSuperAdmin ? [["admins", <><LockPersonIcon size={15} /> Manage Admins</>] as [Tab, React.ReactNode]] : []),
+        ] as [Tab, React.ReactNode][]).map(([t, label]) => (
           <button key={t} onClick={() => setTab(t)} style={{
             ...tabBtn,
             color: tab === t ? "#f0a500" : "#666",
@@ -258,13 +632,19 @@ export default function AdminScreen({ onBack }: Props) {
                     <td style={td}>
                       <span style={{
                         padding: "2px 8px", borderRadius: 20, fontSize: 11,
-                        background: t.type === "deposit" ? "#1a3a2a" : t.type === "admin_credit" ? "#1a2a3a" : "#1a1a3a",
-                        color: t.type === "deposit" ? "#2ecc71" : t.type === "admin_credit" ? "#3498db" : "#e74c3c",
+                        background: t.type === "deposit" ? "#1a3a2a" : t.type === "admin_credit" ? "#1a2a3a" : t.type === "register" ? "#3a2a1a" : "#1a1a3a",
+                        color: t.type === "deposit" ? "#2ecc71" : t.type === "admin_credit" ? "#3498db" : t.type === "register" ? "#f0a500" : "#e74c3c",
                       }}>
                         {t.type}
                       </span>
                     </td>
-                    <td style={td}>{t.type === "deposit" ? `${t.size ?? "—"} · ${t.height_mm ?? "—"}mm · ${t.weight_g ?? "—"}g` : "—"}</td>
+                    <td style={td}>
+                      {t.type === "deposit" 
+                        ? `${t.size ?? "—"} · ${t.height_mm ?? "—"}mm · ${t.weight_g ?? "—"}g` 
+                        : t.type === "register" 
+                        ? (t.size ?? "New user account registered") 
+                        : "—"}
+                    </td>
                     <td style={{ ...td, color: t.type === "print" ? "#e74c3c" : "#2ecc71", fontWeight: 700 }}>
                       {t.type === "print" ? `-${t.credits}` : `+${t.credits}`}
                     </td>
@@ -313,16 +693,26 @@ export default function AdminScreen({ onBack }: Props) {
         {/* TRANSACTIONS TAB */}
         {!loading && tab === "transactions" && (
           <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 12 }}>
               {[
                 { label: "Total users",       val: users.length,                                          color: "#fff" },
                 { label: "Bottles deposited", val: txns.filter(t => t.type === "deposit").length,         color: "#2ecc71" },
                 { label: "Print jobs",        val: txns.filter(t => t.type === "print").length,           color: "#3498db" },
                 { label: "Credits earned",    val: txns.filter(t => t.type !== "print").reduce((a, t) => a + t.credits, 0), color: "#f0a500" },
+                { 
+                  label: "Plastic Collected", 
+                  val: `${(txns.filter(t => t.type === "deposit").reduce((a, t) => a + (t.weight_g ?? 0), 0) / 1000).toFixed(2)} kg`, 
+                  color: "#27ae60" 
+                },
+                { 
+                  label: "CO2 Avoided", 
+                  val: `${((txns.filter(t => t.type === "deposit").reduce((a, t) => a + (t.weight_g ?? 0), 0) / 1000) * 3).toFixed(2)} kg`, 
+                  color: "#1abc9c" 
+                },
               ].map(s => (
                 <div key={s.label} style={statCard}>
                   <div style={{ fontSize: 11, color: "#555", marginBottom: 4 }}>{s.label}</div>
-                  <div style={{ fontSize: 28, fontWeight: 800, color: s.color }}>{s.val}</div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color: s.color }}>{s.val}</div>
                 </div>
               ))}
             </div>
@@ -355,11 +745,7 @@ export default function AdminScreen({ onBack }: Props) {
           <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 12 }}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
               {[
-                {
-                  label: "Total feedback",
-                  val: feedback.length,
-                  color: "#fff",
-                },
+                { label: "Total feedback", val: feedback.length, color: "#fff" },
                 {
                   label: "Average rating",
                   val: feedback.length
@@ -414,7 +800,165 @@ export default function AdminScreen({ onBack }: Props) {
             </div>
           </div>
         )}
+
+        {/* MANAGE ADMINS TAB */}
+        {!loading && tab === "admins" && isSuperAdmin && (
+          <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+              <button onClick={openCreateAdmin} style={{ ...actionBtn("#1a3a2a", "#2ecc71"), padding: "8px 16px", fontSize: 12 }}>
+                + New Admin
+              </button>
+            </div>
+            <div style={tableWrap}>
+              <table style={table}>
+                <thead>
+                  <tr>{["Username", "Role", "Created", "Actions"].map(h => <th key={h} style={th}>{h}</th>)}</tr>
+                </thead>
+                <tbody>
+                  {admins.length === 0 && <tr><td colSpan={4} style={{ ...td, textAlign: "center", color: "#555" }}>No admins yet</td></tr>}
+                  {admins.map(a => (
+                    <tr key={a.id} style={{ borderBottom: "1px solid #2a2a2a" }}>
+                      <td style={td}>{a.username}</td>
+                      <td style={td}>
+                        <span style={{
+                          padding: "2px 8px", borderRadius: 20, fontSize: 11,
+                          background: a.role === "super_admin" ? "#3a2a1a" : "#1e1e1e",
+                          color: a.role === "super_admin" ? "#f0a500" : "#aaa",
+                        }}>
+                          {a.role === "super_admin" ? "super-admin" : "admin"}
+                        </span>
+                      </td>
+                      <td style={{ ...td, fontSize: 11, color: "#555" }}>{new Date(a.created_at).toLocaleDateString()}</td>
+                      <td style={td}>
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <button onClick={() => openEditAdmin(a)} style={actionBtn("#1a2a3a", "#3498db")}>Edit</button>
+                          <button onClick={() => handleDeleteAdmin(a)} style={actionBtn("#3a1a1a", "#e74c3c")}>Delete</button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* Account Settings Modal */}
+      {showSettingsModal && (
+        <div style={overlay}>
+          <div style={{ ...modal, maxWidth: 400 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 20 }}></span>
+                <span style={{ fontSize: 17, fontWeight: 700, color: "#fff" }}>Admin Settings</span>
+              </div>
+              <button
+                onClick={handleLogout}
+                style={{
+                  padding: "6px 12px", borderRadius: 6, fontWeight: 600,
+                  fontSize: 12, background: "#2a1a1a", color: "#e74c3c",
+                  border: "1px solid #e74c3c44", cursor: "pointer",
+                }}
+              >
+                 Log Out
+              </button>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, textAlign: "left", maxHeight: 380, overflowY: "auto", paddingRight: 4 }}>
+              <div>
+                <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Username</div>
+                <input
+                  value={settingsForm.username}
+                  onChange={e => setSettingsForm({ ...settingsForm, username: e.target.value })}
+                  style={inputStyle}
+                  autoCapitalize="none"
+                />
+              </div>
+
+              <div>
+                <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>New Password (optional)</div>
+                <div style={{ position: "relative" }}>
+                  <input
+                    type={showSettingsPass ? "text" : "password"}
+                    value={settingsForm.newPassword}
+                    onChange={e => setSettingsForm({ ...settingsForm, newPassword: e.target.value })}
+                    placeholder="Leave blank to keep current"
+                    style={{ ...inputStyle, paddingRight: 45 }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowSettingsPass(!showSettingsPass)}
+                    style={{
+                      position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)",
+                      background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: 13
+                    }}
+                  >
+                    {showSettingsPass ? "Hide" : "Show"}
+                  </button>
+                </div>
+              </div>
+
+              {settingsForm.newPassword && (
+                <div>
+                  <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Confirm New Password</div>
+                  <input
+                    type="password"
+                    value={settingsForm.confirmPassword}
+                    onChange={e => setSettingsForm({ ...settingsForm, confirmPassword: e.target.value })}
+                    placeholder="Re-enter new password"
+                    style={inputStyle}
+                  />
+                </div>
+              )}
+
+              {/* Super-admin system backup and restore tools inside settings matching Cancel button style */}
+              {isSuperAdmin && (
+                <div style={{ borderTop: "1px solid #333", paddingTop: 14, marginTop: 4, display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ fontSize: 11, color: "#666", fontWeight: 600, letterSpacing: 0.5 }}>SYSTEM MAINTENANCE</div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button
+                      onClick={async () => {
+                        try {
+                          const res = await authFetch(`/api/admin/backup`);
+                          const blob = await res.blob();
+                          const url = window.URL.createObjectURL(blob);
+                          const a = document.createElement("a");
+                          a.href = url;
+                          a.download = `kiosk_database_backup_${new Date().toISOString().slice(0, 10)}.json`;
+                          document.body.appendChild(a);
+                          a.click();
+                          a.remove();
+                        } catch {
+                          alert("Failed to download database backup.");
+                        }
+                      }}
+                      style={ghostBtn}
+                    >
+                      Download Backup
+                    </button>
+                    <button
+                      onClick={() => document.getElementById("restoreFileInput")?.click()}
+                      style={ghostBtn} 
+                    >
+                     Restore Backup
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {settingsMsg && (
+              <div style={{ fontSize: 13, color: "#e74c3c", marginTop: 12 }}>{settingsMsg}</div>
+            )}
+
+            <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+              <button onClick={() => setShowSettingsModal(false)} style={ghostBtn}>Cancel</button>
+              <button onClick={handleSaveSettings} style={confirmBtn}>Save Profile</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Add credits modal */}
       {addCredits && (
@@ -451,6 +995,68 @@ export default function AdminScreen({ onBack }: Props) {
           </div>
         </div>
       )}
+
+      {/* Create / Edit admin modal (Super Admin tool) */}
+      {adminModal && (
+        <div style={overlay}>
+          <div style={modal}>
+            <div style={{ fontSize: 36, marginBottom: 12 }}>🔑</div>
+            <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 20 }}>
+              {adminModal.mode === "create" ? "New Admin Account" : `Edit "${adminModal.admin.username}"`}
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, textAlign: "left" }}>
+              <div>
+                <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Username</div>
+                <input
+                  value={adminForm.username}
+                  onChange={e => setAdminForm({ ...adminForm, username: e.target.value })}
+                  style={inputStyle}
+                  autoCapitalize="none"
+                />
+              </div>
+
+              {adminModal.mode === "edit" && (
+                <div>
+                  <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>
+                    New password (leave blank to keep current)
+                  </div>
+                  <input
+                    type="password"
+                    value={adminForm.password}
+                    onChange={e => setAdminForm({ ...adminForm, password: e.target.value })}
+                    placeholder="••••••••"
+                    style={inputStyle}
+                  />
+                </div>
+              )}
+
+              <div>
+                <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Role</div>
+                <select
+                  value={adminForm.role}
+                  onChange={e => setAdminForm({ ...adminForm, role: e.target.value as Role })}
+                  style={{ ...inputStyle, cursor: "pointer" }}
+                >
+                  <option value="admin">Admin</option>
+                  <option value="super_admin">Super-admin</option>
+                </select>
+              </div>
+            </div>
+
+            {adminMsg && (
+              <div style={{ fontSize: 13, color: "#e74c3c", marginTop: 12 }}>{adminMsg}</div>
+            )}
+
+            <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+              <button onClick={() => setAdminModal(null)} style={ghostBtn}>Cancel</button>
+              <button onClick={handleSaveAdmin} style={confirmBtn}>
+                {adminModal.mode === "create" ? "Create" : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -462,7 +1068,7 @@ const fullScreen: React.CSSProperties = {
 };
 const headerBar: React.CSSProperties = {
   padding: "12px 24px", borderBottom: "1px solid #2a2a2a",
-  display: "flex", alignItems: "center", gap: 12, paddingLeft: 80,
+  display: "flex", alignItems: "center", gap: 12,
 };
 const headerTitle: React.CSSProperties = { fontWeight: 700, fontSize: 15, color: "#fff" };
 const headerSub: React.CSSProperties = { fontSize: 11, color: "#555" };
@@ -482,6 +1088,11 @@ const loginBody: React.CSSProperties = {
 const loginPanel: React.CSSProperties = {
   width: "100%", maxWidth: 380, display: "flex", flexDirection: "column", gap: 28,
 };
+const inputStyle: React.CSSProperties = {
+  width: "100%", padding: "12px 14px", background: "#1e1e1e",
+  border: "1px solid #3a3a3a", borderRadius: 8, color: "#fff",
+  fontSize: 15, outline: "none", boxSizing: "border-box",
+};
 const tableWrap: React.CSSProperties = {
   flex: 1, overflow: "auto", borderRadius: 10, border: "1px solid #2a2a2a",
 };
@@ -494,14 +1105,14 @@ const th: React.CSSProperties = {
 };
 const td: React.CSSProperties = { padding: "10px 14px", color: "#ccc", verticalAlign: "middle" };
 const actionBtn = (bg: string, color: string): React.CSSProperties => ({
-  padding: "4px 10px", borderRadius: 6, border: "none",
+  padding: "4px 10px", borderRadius: "6px", border: "none",
   background: bg, color, fontSize: 11, cursor: "pointer", fontWeight: 600,
 });
 const statCard: React.CSSProperties = {
   background: "#242424", border: "1px solid #2a2a2a", borderRadius: 10, padding: "14px 16px",
 };
 const refreshBtn: React.CSSProperties = {
-  marginLeft: "auto", padding: "6px 14px", borderRadius: 8,
+  padding: "6px 14px", borderRadius: 8,
   background: "#2a2a2a", border: "1px solid #3a3a3a",
   color: "#aaa", fontSize: 12, cursor: "pointer",
 };
