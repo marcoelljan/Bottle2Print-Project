@@ -7,13 +7,12 @@ import QRCode from "qrcode";
 import { db } from "../db";
 import { upload } from "../upload";
 import { createSession, getSession, updateSession, deleteSession } from "../qrSessions";
-import { isGuestActive, getGuestCredits, deductGuestCredits, endGuestSession } from "../guestSession";
+import { getGuestCredits, deductGuestCredits, endGuestSession } from "../guestSession";
 import { broadcast } from "../wsHub";
 
 const router = Router();
 const PI_IP = process.env.PI_IP || "localhost";
 
-// ── Paper size allow-list ──────────
 const VALID_PAPER_SIZES = ["A4", "Letter", "Long"] as const;
 type PaperSize = typeof VALID_PAPER_SIZES[number];
 const DEFAULT_PAPER_SIZE: PaperSize = "Letter";
@@ -25,7 +24,6 @@ function sanitizePaperSize(input: unknown): PaperSize {
   return DEFAULT_PAPER_SIZE;
 }
 
-// Maps our friendly names to exact CUPS media string
 function getCupsMediaString(size: PaperSize): string {
   if (size === "A4") return "A4";
   if (size === "Letter") return "Letter";
@@ -33,7 +31,6 @@ function getCupsMediaString(size: PaperSize): string {
   return "Letter";
 }
 
-// ── shared PDF helper ───────────────────────────────────────────────────────
 async function ensurePdf(
   filePath: string,
   mimetype: string,
@@ -88,7 +85,6 @@ function parsePageRange(range: string, totalPages: number): number[] | null {
   return pages.size > 0 ? Array.from(pages).sort((a, b) => a - b) : null;
 }
 
-// ── page count preview ──────────────────────────────────────────────────────
 router.post("/api/count-pages", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file." });
   try {
@@ -102,89 +98,6 @@ router.post("/api/count-pages", upload.single("file"), async (req, res) => {
     return res.status(422).json({ error: "Could not read this file. Try a different format." });
   }
 });
-
-// ── direct print ─────────────────────────────────────────────────────────────
-router.post("/api/print", upload.single("document"), async (req, res) => {
-  const rfid = req.body.rfid as string;
-
-  if (!rfid || !req.file) return res.status(400).json({ error: "Missing rfid or file." });
-  const isGuest = rfid === "GUEST";
-  let availableCredits: number;
-
-  if (isGuest) {
-    availableCredits = getGuestCredits();
-  } else {
-    const user = db.prepare("SELECT * FROM users WHERE rfid = ?").get(rfid) as any;
-    if (!user) {
-      fs.unlink(req.file.path, () => {});
-      return res.status(404).json({ error: "User not found." });
-    }
-    availableCredits = user.credits;
-  }
-
-  let pdfPath: string;
-  let pageCount: number;
-  try {
-    const outDir = path.dirname(req.file.path);
-    ({ pdfPath, pageCount } = await ensurePdf(req.file.path, req.file.mimetype, outDir));
-  } catch {
-    fs.unlink(req.file.path, () => {});
-    return res.status(500).json({ error: "Could not process this file. Try a different format." });
-  }
-
-  const colorMode: "bw" | "color" = req.body.colorMode === "color" ? "color" : "bw";
-  const paperSize = sanitizePaperSize(req.body.paperSize);
-  const rangeInput: string = (req.body.pageRange ?? "all").trim();
-
-  let selectedPages: number[];
-  let cupsRangeFlag = "";
-
-  const totalPages = pageCount ?? 1;
-  if (rangeInput === "all" || rangeInput === "") {
-    selectedPages = Array.from({ length: totalPages }, (_, i) => i + 1);
-  } else {
-    const parsed = parsePageRange(rangeInput, totalPages);
-    if (!parsed) {
-      const cleanupPaths = req.file.path !== pdfPath ? [req.file.path, pdfPath] : [pdfPath];
-      cleanupPaths.forEach(p => fs.unlink(p, () => {}));
-      return res.status(400).json({ error: `Invalid page range. This document has ${totalPages} page(s).` });
-    }
-    selectedPages = parsed;
-    cupsRangeFlag = `-P ${rangeInput}`;
-  }
-
-  const creditsPerPage = colorMode === "color" ? 8 : 3;
-  const totalCost = selectedPages.length * creditsPerPage;
-
-  if (availableCredits < totalCost) {
-    const cleanupPaths = req.file.path !== pdfPath ? [req.file.path, pdfPath] : [pdfPath];
-    cleanupPaths.forEach(p => fs.unlink(p, () => {}));
-    return res.status(403).json({ error: "Not enough credits." });
-  }
-
-  const cleanupPaths = req.file.path !== pdfPath ? [req.file.path, pdfPath] : [pdfPath];
-
-  const cupsColorFlag = colorMode === "color" ? "RGB" : "Gray";
-  const cupsMediaString = getCupsMediaString(paperSize);
-  const cmd = `lp ${cupsRangeFlag} -o ColorModel=${cupsColorFlag} -o media=${cupsMediaString} "${pdfPath}"`;
-
-  exec(cmd, (error, stdout, stderr) => {
-    cleanupPaths.forEach(p => fs.unlink(p, () => {}));
-    if (error) return res.status(500).json({ error: stderr || error.message });
-
-    if (isGuest) {
-      deductGuestCredits(totalCost);
-      endGuestSession();
-    } else {
-      db.prepare("UPDATE users SET credits = credits - ? WHERE rfid = ?").run(totalCost, rfid);
-      db.prepare(`INSERT INTO transactions (rfid, type, credits) VALUES (?, 'print', ?)`).run(rfid, totalCost);
-    }
-
-    res.json({ success: true, output: stdout.trim(), pagesPrinted: selectedPages.length, creditsCharged: totalCost, colorMode, paperSize });
-  });
-});
-
-// ── QR code print flow ───────────────────────────────────────────────────────
 
 router.post("/api/print/qr-session", async (req, res) => {
   const { rfid } = req.body;
@@ -226,7 +139,7 @@ router.get("/upload/:sessionId", (req, res) => {
       </div>
 
       <div id="success-section" style="display:none; margin-top: 40px;">
-        <h2 style="color: #2ecc71; margin-bottom: 10px;">✅ File uploaded successfully!</h2>
+        <h2 style="color: #2ecc71; margin-bottom: 10px;">File uploaded successfully!</h2>
         <p style="font-size: 16px; color: #333; line-height: 1.5; padding: 0 15px;">
           Your file is ready. Please look at the kiosk screen to choose your payment method and continue.
         </p>
@@ -325,7 +238,6 @@ router.get("/api/print/preview/:sessionId", (req, res) => {
   res.sendFile(path.resolve(session.pdfPath));
 });
 
-// 4. Kiosk confirms the print
 router.post("/api/print/qr-confirm/:sessionId", (req, res) => {
   const session = getSession(req.params.sessionId);
   if (!session || !session.pdfPath) {

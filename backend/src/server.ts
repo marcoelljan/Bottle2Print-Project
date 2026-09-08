@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 dotenv.config();
 import express from "express";
 import cors from "cors";
+import bcrypt from "bcrypt";
 import { createServer } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { SerialPort } from "serialport";
@@ -19,15 +20,18 @@ const PORT = process.env.PORT ? parseInt(process.env.PORT) : 4000;
 const ARDUINO_PORT = process.env.ARDUINO_PORT || "/dev/tty.usbmodem14101";
 const BAUD_RATE = 9600;
 
-// ── Size classification ───────────────────────────────────────────────────────
-interface SizeSpec { label: string; minHeight: number; maxHeight: number; minWeight: number; maxWeight: number; }
-const SIZE_SPECS: SizeSpec[] = [
-  { label: "Small",  minHeight: 100, maxHeight: 150, minWeight: 14, maxWeight: 19 },
-  { label: "Medium", minHeight: 151, maxHeight: 210, minWeight: 14, maxWeight: 19 },
-  { label: "Large",  minHeight: 211, maxHeight: 280, minWeight: 18, maxWeight: 25 },
-  { label: "XL",     minHeight: 281, maxHeight: 350, minWeight: 48, maxWeight: 57 },
-];
+// ── PIN policy ─────────────────────────────────────────────────────────────
+const PIN_MAX_ATTEMPTS = 3;
+const PIN_LOCKOUT_MS = 20 * 1000; // 20 second cooldown
 
+// ── Size classification based on real physical testing (250ml - 1500ml) ────────
+interface SizeSpec { label: string; minWeight: number; maxWeight: number; }
+const SIZE_SPECS: SizeSpec[] = [
+  { label: "Small",  minWeight: 11, maxWeight: 14 },
+  { label: "Medium", minWeight: 15, maxWeight: 19 },
+  { label: "Large",  minWeight: 20, maxWeight: 25 },
+  { label: "XL",     minWeight: 40, maxWeight: 60 },
+];
 const SIZE_CREDITS: Record<string, number> = {
   Small: 1,
   Medium: 2,
@@ -35,11 +39,22 @@ const SIZE_CREDITS: Record<string, number> = {
   XL: 4,
 };
 
-function classifyBottle(heightMm: number, weightG: number): SizeSpec | null {
+function classifyBottleSecure(heightMm: number, weightG: number): SizeSpec | null {
+  // 🚫 ANTI-WATER / TAMPER GUARD:
+  // 1. Absolute ceiling: Standard empty bottles max out at 60g (XL). Anything above 68g is liquid/rocks.
+  if (weightG > 68) return null;
+
+  // 2. Proportional sanity check: A short bottle (height < 100mm) cannot weigh more than 35g.
+  if (heightMm < 100 && weightG > 35) return null;
+
+  // Match strictly to your tested weight tiers
   return SIZE_SPECS.find(
-    s => heightMm >= s.minHeight && heightMm <= s.maxHeight
-      && weightG  >= s.minWeight  && weightG  <= s.maxWeight
+    s => weightG >= s.minWeight && weightG <= s.maxWeight
   ) ?? null;
+}
+
+function co2SavedGrams(weightG: number): number {
+  return (weightG / 1000) * 3000;
 }
 
 // ── Validation state machine ──────────────────────────────────────────────────
@@ -50,7 +65,8 @@ interface SessionState {
   rfid:        string | null;
   userName:    string | null;
   credits:     number;
-  step: "idle" | "identified" | "already_registered" | "unregistered" | "ir" | "capacitive" | "tof" | "loadcell" | "result";
+  step: "idle" | "awaiting_pin" | "awaiting_new_pin" | "identified" | "already_registered" | "unregistered"
+      | "ir" | "capacitive" | "tof" | "loadcell" | "result" | "session_summary";
   steps:       ValidationStep[];
   heightMm:    number | null;
   weightG:     number | null;
@@ -59,6 +75,9 @@ interface SessionState {
   errorMsg:    string | null;
   timestamp:   number;
   sessionId:   number;
+  depositBottleCount:   number;
+  depositCreditsEarned: number;
+  depositCo2Grams:      number;
 }
 
 function freshSteps(): ValidationStep[] {
@@ -70,16 +89,23 @@ function freshSteps(): ValidationStep[] {
   ];
 }
 
+function freshDepositTotals() {
+  return { depositBottleCount: 0, depositCreditsEarned: 0, depositCo2Grams: 0 };
+}
+
 let session: SessionState = {
   rfid: null, userName: null, credits: 0,
   step: "idle", steps: freshSteps(),
   heightMm: null, weightG: null, size: null,
   result: null, errorMsg: null,
   timestamp: 0, sessionId: 0,
+  ...freshDepositTotals(),
 };
 
 const SENSOR_IN_PROGRESS_STEPS = ["ir", "capacitive", "tof", "loadcell"];
-let guestStopRequested = false;
+
+let rfidDepositSessionActive = false;
+let depositStopRequested = false;
 
 function resetSession(force = false) {
   if (!force && SENSOR_IN_PROGRESS_STEPS.includes(session.step)) {
@@ -93,7 +119,10 @@ function resetSession(force = false) {
     heightMm: null, weightG: null, size: null,
     result: null, errorMsg: null,
     timestamp: 0, sessionId: 0,
+    ...freshDepositTotals(),
   };
+  rfidDepositSessionActive = false;
+  depositStopRequested = false;
   broadcastState();
 }
 
@@ -102,7 +131,6 @@ function setStep(id: string, status: StepStatus, detail?: string) {
   if (s) { s.status = status; if (detail) s.detail = detail; }
 }
 
-// ── Express + WS ──────────────────────────────────────────────────────────────
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -120,26 +148,165 @@ app.post("/api/mode", (req, res) => {
   res.json({ success: true, mode: kioskMode });
 });
 
-function continueGuestLoop() {
-  if (guestStopRequested || !isGuestActive()) {
-    guestStopRequested = false;
-    resetSession(true);
+function continueDepositLoop() {
+  const stillActive = session.rfid === "GUEST" ? isGuestActive() : rfidDepositSessionActive;
+
+  if (depositStopRequested || !stillActive) {
+    finalizeDepositSession();
     return;
   }
+
   session.steps    = freshSteps();
   session.result   = null;
   session.errorMsg = null;
   session.heightMm = null;
   session.weightG  = null;
   session.size     = null;
-  session.step     = "ir"; // Waiting for bottle insertion
+  session.step     = "ir";
   broadcastState();
+}
+
+function finalizeDepositSession() {
+  depositStopRequested = false;
+  rfidDepositSessionActive = false;
+  session.step = "session_summary";
+  broadcastState();
+  setTimeout(() => {
+    if (session.step === "session_summary") resetSession(true);
+  }, 15000);
 }
 
 app.get("/api/mode", (_req, res) => res.json({ mode: kioskMode }));
 
+// ── PIN verification — handles reset flagging workflow ─────────────────────
+app.post("/api/session/verify-pin", async (req, res) => {
+  const { pin } = req.body;
+  if (!pin) return res.status(400).json({ error: "Missing pin." });
+  if (session.step !== "awaiting_pin" || !session.rfid) {
+    return res.status(400).json({ error: "No active PIN request." });
+  }
+
+  const rfid = session.rfid;
+  const user = db.prepare("SELECT * FROM users WHERE rfid = ?").get(rfid) as any;
+  if (!user || !user.pin_hash) {
+    return res.status(400).json({ error: "No PIN set for this account." });
+  }
+
+  if (user.pin_locked_until) {
+    const remainingMs = new Date(user.pin_locked_until).getTime() - Date.now();
+    if (remainingMs > 0) {
+      return res.status(423).json({
+        error: "Too many incorrect attempts. Please wait before trying again.",
+        lockedOut: true,
+        secondsRemaining: Math.ceil(remainingMs / 1000),
+      });
+    }
+  }
+
+  let match = false;
+  try {
+    match = await bcrypt.compare(String(pin), user.pin_hash);
+  } catch {
+    return res.status(500).json({ error: "Could not verify PIN." });
+  }
+
+  if (!match) {
+    const newFailCount = (user.pin_fail_count ?? 0) + 1;
+
+    if (newFailCount >= PIN_MAX_ATTEMPTS) {
+      const lockedUntil = new Date(Date.now() + PIN_LOCKOUT_MS).toISOString();
+      db.prepare("UPDATE users SET pin_fail_count = 0, pin_locked_until = ? WHERE rfid = ?").run(lockedUntil, rfid);
+      return res.status(423).json({
+        error: "Too many incorrect attempts. Please wait 20 seconds before trying again.",
+        lockedOut: true,
+        secondsRemaining: 20,
+      });
+    }
+
+    db.prepare("UPDATE users SET pin_fail_count = ? WHERE rfid = ?").run(newFailCount, rfid);
+    return res.status(401).json({
+      error: "Incorrect PIN.",
+      attemptsRemaining: PIN_MAX_ATTEMPTS - newFailCount,
+    });
+  }
+
+  db.prepare("UPDATE users SET pin_fail_count = 0, pin_locked_until = NULL WHERE rfid = ?").run(rfid);
+
+  // If user account was flagged by admin reset, force them to set a new PIN
+  if (user.pin_needs_reset === 1) {
+    session.step = "awaiting_new_pin";
+    broadcastState();
+    return res.json({ success: true, requiresNewPin: true });
+  }
+
+  if (kioskMode === "deposit") {
+    rfidDepositSessionActive = true;
+    depositStopRequested = false;
+    Object.assign(session, freshDepositTotals());
+    session.step = "ir";
+    sendToArduino("PROCEED");
+  } else {
+    session.step = "identified";
+  }
+
+  broadcastState();
+  res.json({ success: true });
+});
+
+// ── Forced PIN update route after an admin reset ───────────────────────────
+app.post("/api/session/update-pin", async (req, res) => {
+  const { pin } = req.body;
+  if (!pin || !/^\d{6}$/.test(String(pin))) {
+    return res.status(400).json({ error: "PIN must be exactly 6 digits." });
+  }
+  if (session.step !== "awaiting_new_pin" || !session.rfid) {
+    return res.status(400).json({ error: "No active PIN update request." });
+  }
+
+  try {
+    const newHash = await bcrypt.hash(String(pin), 10);
+    db.prepare(`
+      UPDATE users 
+      SET pin_hash = ?, pin_needs_reset = 0, pin_fail_count = 0, pin_locked_until = NULL 
+      WHERE rfid = ?
+    `).run(newHash, session.rfid);
+
+    if (kioskMode === "deposit") {
+      rfidDepositSessionActive = true;
+      depositStopRequested = false;
+      Object.assign(session, freshDepositTotals());
+      session.step = "ir";
+      sendToArduino("PROCEED");
+    } else {
+      session.step = "identified";
+    }
+
+    broadcastState();
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to update PIN: " + err.message });
+  }
+});
+
+app.post("/api/deposit/finish", (_req, res) => {
+  depositStopRequested = true;
+  sendToArduino("DONE");
+
+  const summary = {
+    bottles:  session.depositBottleCount,
+    credits:  session.depositCreditsEarned,
+    co2Grams: session.depositCo2Grams,
+  };
+
+  if (!SENSOR_IN_PROGRESS_STEPS.includes(session.step)) {
+    finalizeDepositSession();
+  }
+
+  res.json({ success: true, summary });
+});
+
 app.post("/api/deposit/guest-start", (_req, res) => {
-  guestStopRequested = false;
+  depositStopRequested = false;
   startGuestSession();
 
   session.rfid      = "GUEST";
@@ -151,6 +318,7 @@ app.post("/api/deposit/guest-start", (_req, res) => {
   session.timestamp = Date.now();
   session.sessionId = Date.now();
   session.step      = "ir";
+  Object.assign(session, freshDepositTotals());
 
   broadcastState();
   res.json({ success: true, credits: getGuestCredits() });
@@ -161,7 +329,7 @@ app.get("/api/deposit/guest-status", (_req, res) => {
 });
 
 app.post("/api/deposit/guest-stop", (_req, res) => {
-  guestStopRequested = true;
+  depositStopRequested = true;
   resetSession(true);
   res.json({ success: true, credits: getGuestCredits() });
 });
@@ -190,7 +358,6 @@ wss.on("connection", ws => {
   ws.send(JSON.stringify({ type: "state", session: { ...session, timestamp: 0 } }));
 });
 
-// ── Serial ────────────────────────────────────────────────────────────────────
 const serial = new SerialPort({ path: ARDUINO_PORT, baudRate: BAUD_RATE });
 const parser = serial.pipe(new ReadlineParser({ delimiter: "\r\n" }));
 
@@ -211,17 +378,7 @@ parser.on("data", (raw: string) => {
   const line = raw.trim();
   console.log("Arduino →", line);
 
-  if (line === "READY") {
-    console.log("✅ Arduino boot sequence complete and ready for commands.");
-  }
-  if (line === "RESET:OK") {
-    console.log("✅ Arduino acknowledged RESET command.");
-  }
-
-  if (line === "RFID:TIMEOUT") {
-    console.log("Arduino reported RFID timeout — ignoring.");
-    return;
-  }
+  if (line === "RFID:TIMEOUT") return;
 
   if (line.startsWith("RFID:")) {
     const rfid = line.split(":")[1];
@@ -243,7 +400,8 @@ parser.on("data", (raw: string) => {
         user &&
         user.studentId !== null &&
         user.studentId !== undefined &&
-        String(user.studentId).trim().length > 0
+        String(user.studentId).trim().length > 0 &&
+        user.pin_needs_reset !== 1
       );
 
       session.rfid      = rfid;
@@ -296,30 +454,17 @@ parser.on("data", (raw: string) => {
     session.errorMsg  = null;
     session.timestamp = Date.now();
     session.sessionId = newSessionId;
-
-    if (kioskMode === "deposit") {
-      session.step = "ir"; // Waiting for bottle to pass IR pre-chamber sensor
-    } else {
-      session.step = "identified";
-    }
-
+    session.step      = "awaiting_pin";
     broadcastState();
-    return;
-  }
 
-  if (line === "TIMEOUT") {
-    if (session.step === "result") return;
-    session.step     = "idle";
-    session.errorMsg = "No bottle inserted.";
-    broadcastState();
     setTimeout(() => {
-      if (session.rfid === "GUEST") continueGuestLoop();
-      else resetSession();
-    }, 2000);
+      if (session.step === "awaiting_pin" && session.sessionId === newSessionId) {
+        resetSession();
+      }
+    }, 30000);
     return;
   }
 
-  // IR detected (Step 2)
   if (line === "IR:DETECTED") {
     if (session.step === "result") return;
     session.step = "ir";
@@ -335,7 +480,6 @@ parser.on("data", (raw: string) => {
     return;
   }
 
-  // Capacitive (Step 5)
   if (line === "CAP:PASS") {
     if (session.step === "result") return;
     setStep("capacitive", "pass", "Physical presence confirmed");
@@ -352,29 +496,24 @@ parser.on("data", (raw: string) => {
     session.errorMsg = "Capacitive sensor found no bottle. Try again.";
     broadcastState();
     sendToArduino("REJECT");
-    setTimeout(() => {
-      if (session.rfid === "GUEST") continueGuestLoop();
-      else resetSession();
-    }, 3000);
+    setTimeout(() => continueDepositLoop(), 3000);
     return;
   }
 
-  // ToF height (Step 4)
   if (line.startsWith("TOF:HEIGHT:")) {
     if (session.step === "result") return;
     const heightMm = parseFloat(line.split(":")[2]);
     session.heightMm = heightMm;
-    if (heightMm < 80 || heightMm > 350) {
+    
+    // TOF checks common bottle height bounds (40mm to 300mm)
+    if (heightMm < 40 || heightMm > 300) {
       setStep("tof", "fail", `Height ${heightMm}mm out of range`);
       session.step     = "result";
       session.result   = "rejected";
       session.errorMsg = `Invalid bottle size (height ${heightMm}mm). Only PET accepted.`;
       broadcastState();
       sendToArduino("REJECT");
-      setTimeout(() => {
-        if (session.rfid === "GUEST") continueGuestLoop();
-        else resetSession();
-      }, 5000);
+      setTimeout(() => continueDepositLoop(), 5000);
     } else {
       setStep("tof", "pass", `Height: ${heightMm}mm`);
       session.step = "loadcell";
@@ -383,40 +522,27 @@ parser.on("data", (raw: string) => {
     }
     return;
   }
-  if (line === "TOF:FAIL:TIMEOUT") {
-    if (session.step === "result") return;
-    setStep("tof", "fail", "Sensor timeout");
-    session.step     = "result";
-    session.result   = "rejected";
-    session.errorMsg = "Height sensor timed out.";
-    broadcastState();
-    sendToArduino("REJECT");
-    setTimeout(() => {
-      if (session.rfid === "GUEST") continueGuestLoop();
-      else resetSession();
-    }, 5000);
-    return;
-  }
 
-  // Load cell weight (Step 3)
   if (line.startsWith("LOADCELL:WEIGHT:")) {
-    if (!session.rfid || session.step === "result") {
-      return;
-    }
+    if (!session.rfid || session.step === "result") return;
 
     const weightG = parseFloat(line.split(":")[2]);
     session.weightG = weightG;
-    const match = classifyBottle(session.heightMm!, weightG);
+    
+    // Secure classification: load cell categorizes size, TOF + ceiling acts as water/tamper guard
+    const match = classifyBottleSecure(session.heightMm!, weightG);
 
     if (!match) {
-      setStep("loadcell", "fail", `Weight ${weightG}g doesn't match height`);
+      setStep("loadcell", "fail", `Weight ${weightG}g failed validation or liquid detected`);
       session.step     = "result";
       session.result   = "rejected";
-      session.errorMsg = `Size mismatch — height and weight don't match a valid bottle type.`;
+      session.errorMsg = `Bottle rejected: Abnormal weight or liquid detected.`;
       broadcastState();
       sendToArduino("REJECT");
+      setTimeout(() => continueDepositLoop(), 3000);
     } else {
       const creditsEarned = SIZE_CREDITS[match.label] ?? 1;
+      const co2Grams = co2SavedGrams(weightG);
 
       setStep("loadcell", "pass", `Weight: ${weightG}g — ${match.label} (+${creditsEarned})`);
       session.size   = match.label;
@@ -428,43 +554,27 @@ parser.on("data", (raw: string) => {
         session.credits = getGuestCredits();
       } else {
         db.prepare(`
-          INSERT INTO transactions (rfid, type, size, height_mm, weight_g, credits)
-          VALUES (?, 'deposit', ?, ?, ?, ?)
-        `).run(session.rfid, match.label, session.heightMm, weightG, creditsEarned);
+          INSERT INTO transactions (rfid, type, size, height_mm, weight_g, co2_saved_g, credits)
+          VALUES (?, 'deposit', ?, ?, ?, ?, ?)
+        `).run(session.rfid, match.label, session.heightMm, weightG, co2Grams, creditsEarned);
         db.prepare(`UPDATE users SET credits = credits + ? WHERE rfid = ?`).run(creditsEarned, session.rfid);
 
         const updated = db.prepare("SELECT credits FROM users WHERE rfid = ?").get(session.rfid) as any;
         session.credits = updated.credits;
       }
 
+      session.depositBottleCount   += 1;
+      session.depositCreditsEarned += creditsEarned;
+      session.depositCo2Grams      += co2Grams;
+
       broadcastState();
-      sendToArduino("ACCEPT"); // Triggers Step 6 Diverter Servo Sorting
+      sendToArduino("ACCEPT");
     }
     return;
   }
 
-  // Step 7: Storage Confirmation (Photoelectric Sensor)
-  if (line === "CONFIRM:STORAGE_OK") {
-    console.log("✅ Step 7: Bottle confirmed passing into storage successfully.");
-    return;
-  }
-
-  if (line === "CONFIRM:JAM_DETECTED") {
-    console.warn("⚠️ Step 7: Storage jam detected!");
-    session.errorMsg = "Warning: Bottle jam detected in storage chute.";
-    broadcastState();
-    return;
-  }
-
-  // Step 8: Post-Deposit Bin Fill Level (Ultrasonic Sensor)
   if (line.startsWith("BIN:FILL_LEVEL_CM:")) {
-    const fillDistanceCm = parseInt(line.split(":")[2], 10);
-    console.log(`🗑️ Step 8: Recycling bin fill distance: ${fillDistanceCm}cm from sensor.`);
-    
-    setTimeout(() => {
-      if (session.rfid === "GUEST") continueGuestLoop();
-      else resetSession();
-    }, 2000);
+    setTimeout(() => continueDepositLoop(), 3000);
     return;
   }
 });

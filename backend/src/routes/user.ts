@@ -1,7 +1,11 @@
 import { Router } from "express";
+import bcrypt from "bcrypt";
 import { db } from "../db";
 
 const router = Router();
+
+const PIN_MAX_ATTEMPTS = 3;
+const PIN_LOCKOUT_MS = 20 * 1000; // 20 second cooldown
 
 router.get("/api/user/:rfid", (req, res) => {
   const user = db.prepare("SELECT * FROM users WHERE rfid = ?").get(req.params.rfid);
@@ -16,7 +20,7 @@ router.get("/api/user/:rfid/transactions", (req, res) => {
   res.json(rows);
 });
 
-// ── Search user by name or student ID for transfers ──
+// ── Search user by name components or student ID for transfers ──
 router.get("/api/user/search", (req, res) => {
   const { query, senderRfid } = req.query;
   if (!query || !senderRfid) {
@@ -25,38 +29,116 @@ router.get("/api/user/search", (req, res) => {
 
   const searchTerm = `%${query}%`;
   const users = db.prepare(`
-    SELECT rfid, name, studentId, credits 
+    SELECT rfid, surname, firstname, middlename, studentId, credits 
     FROM users 
-    WHERE rfid != ? AND (name LIKE ? OR studentId LIKE ?)
+    WHERE rfid != ? AND (surname LIKE ? OR firstname LIKE ? OR middlename LIKE ? OR studentId LIKE ?)
     LIMIT 5
-  `).all(senderRfid, searchTerm, searchTerm);
+  `).all(senderRfid, searchTerm, searchTerm, searchTerm, searchTerm);
 
   res.json(users);
 });
 
-router.post("/api/user/register", (req, res) => {
-  const { rfid, name, studentId } = req.body;
-  if (!rfid || !name || !studentId) return res.status(400).json({ error: "Missing fields." });
+// ── Registration — supports separated name columns & 6-digit PIN hashing ──
+router.post("/api/user/register", async (req, res) => {
+  const { rfid, surname, firstname, middlename, studentId, pin } = req.body;
+  if (!rfid || !surname || !firstname || !studentId) {
+    return res.status(400).json({ error: "Missing required fields." });
+  }
+  if (!pin || !/^\d{6}$/.test(String(pin))) {
+    return res.status(400).json({ error: "PIN must be exactly 6 digits." });
+  }
 
   const existing = db.prepare("SELECT * FROM users WHERE rfid = ?").get(rfid) as any;
-  
-  const registerTxn = db.transaction(() => {
+
+  let pinHash: string;
+  try {
+    pinHash = await bcrypt.hash(String(pin), 10);
+  } catch (err: any) {
+    return res.status(500).json({ error: "Could not process PIN: " + err.message });
+  }
+
+  const cleanSurname = String(surname).trim();
+  const cleanFirstname = String(firstname).trim();
+  const cleanMiddlename = middlename ? String(middlename).trim() : "";
+  const cleanStudentId = String(studentId).trim();
+
+  const registerTxn = db.transaction((hash: string) => {
     if (existing) {
-      db.prepare("UPDATE users SET name = ?, studentId = ? WHERE rfid = ?").run(name, studentId, rfid);
+      db.prepare(`
+        UPDATE users
+        SET surname = ?, firstname = ?, middlename = ?, studentId = ?, pin_hash = ?, pin_fail_count = 0, pin_locked_until = NULL
+        WHERE rfid = ?
+      `).run(cleanSurname, cleanFirstname, cleanMiddlename, cleanStudentId, hash, rfid);
     } else {
-      db.prepare("INSERT INTO users (rfid, name, studentId) VALUES (?, ?, ?)").run(rfid, name, studentId);
-      // Include name and student ID in the registration log detail
-      const detailText = `Registered: ${name} (${studentId})`;
+      db.prepare(
+        "INSERT INTO users (rfid, surname, firstname, middlename, studentId, pin_hash) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run(rfid, cleanSurname, cleanFirstname, cleanMiddlename, cleanStudentId, hash);
+      
+      const detailText = `Registered: ${cleanSurname}, ${cleanFirstname} ${cleanMiddlename} (${cleanStudentId})`.trim();
       db.prepare("INSERT INTO transactions (rfid, type, size, credits) VALUES (?, 'register', ?, 0)").run(rfid, detailText);
     }
   });
 
   try {
-    registerTxn();
+    registerTxn(pinHash);
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: "Registration failed: " + err.message });
   }
+});
+
+// ── PIN verification — 3 attempts, then a 20-second cooldown ───────────────
+router.post("/api/user/verify-pin", async (req, res) => {
+  const { rfid, pin } = req.body;
+  if (!rfid || !pin) return res.status(400).json({ error: "Missing rfid or pin." });
+
+  const user = db.prepare("SELECT * FROM users WHERE rfid = ?").get(rfid) as any;
+  if (!user) return res.status(404).json({ error: "User not found." });
+
+  if (!user.pin_hash) {
+    return res.status(400).json({ error: "No PIN set for this account. Please contact an admin." });
+  }
+
+  if (user.pin_locked_until) {
+    const remainingMs = new Date(user.pin_locked_until).getTime() - Date.now();
+    if (remainingMs > 0) {
+      return res.status(423).json({
+        error: "Too many incorrect attempts. Please wait before trying again.",
+        lockedOut: true,
+        secondsRemaining: Math.ceil(remainingMs / 1000),
+      });
+    }
+  }
+
+  let match = false;
+  try {
+    match = await bcrypt.compare(String(pin), user.pin_hash);
+  } catch {
+    return res.status(500).json({ error: "Could not verify PIN." });
+  }
+
+  if (match) {
+    db.prepare("UPDATE users SET pin_fail_count = 0, pin_locked_until = NULL WHERE rfid = ?").run(rfid);
+    return res.json({ success: true });
+  }
+
+  const newFailCount = (user.pin_fail_count ?? 0) + 1;
+
+  if (newFailCount >= PIN_MAX_ATTEMPTS) {
+    const lockedUntil = new Date(Date.now() + PIN_LOCKOUT_MS).toISOString();
+    db.prepare("UPDATE users SET pin_fail_count = 0, pin_locked_until = ? WHERE rfid = ?").run(lockedUntil, rfid);
+    return res.status(423).json({
+      error: "Too many incorrect attempts. Please wait 20 seconds before trying again.",
+      lockedOut: true,
+      secondsRemaining: 20,
+    });
+  }
+
+  db.prepare("UPDATE users SET pin_fail_count = ? WHERE rfid = ?").run(newFailCount, rfid);
+  return res.status(401).json({
+    error: "Incorrect PIN.",
+    attemptsRemaining: PIN_MAX_ATTEMPTS - newFailCount,
+  });
 });
 
 // ── Deposit route with Fraud Prevention & Environmental Impact Tracking ──
@@ -66,7 +148,6 @@ router.post("/api/user/deposit", (req, res) => {
     return res.status(400).json({ error: "Missing deposit parameters." });
   }
 
-  // 1. Fraud Prevention: Check for rapid duplicate scans of the exact same bottle profile (within 10 seconds)
   const recentDuplicate = db.prepare(`
     SELECT id FROM transactions 
     WHERE rfid = ? AND type = 'deposit' 
@@ -81,11 +162,9 @@ router.post("/api/user/deposit", (req, res) => {
     });
   }
 
-  // 2. Environmental Impact Calculation (PET plastic recycling: ~3kg CO2 saved per 1kg of plastic)
   const plasticKg = weight_g / 1000;
-  const co2SavedG = plasticKg * 3000; // CO2 saved in grams
+  const co2SavedG = plasticKg * 3000;
 
-  // 3. Record transaction and update user credits
   const creditAmount = credits ?? 1;
 
   const insertTxn = db.prepare(`
