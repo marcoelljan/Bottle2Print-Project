@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { API } from "../config";
+import { CheckCircleIcon, CloseIcon, StarIcon } from "./KioskIcons";
 
 interface Props {
   context: "print" | "deposit" | "general";
@@ -34,11 +35,11 @@ export default function FeedbackModal({ context, rfid, onClose }: Props) {
   return (
     <div style={overlay}>
       <div style={modal}>
-        <button onClick={onClose} style={closeBtn} aria-label="Skip feedback">✕</button>
+        <button onClick={onClose} style={closeBtn} aria-label="Skip feedback"><CloseIcon size={18} /></button>
 
         {submitted ? (
           <div style={{ textAlign: "center", padding: "20px 0" }}>
-            <div style={{ fontSize: 40, marginBottom: 10 }}>🙏</div>
+            <div style={{ marginBottom: 10 }}><CheckCircleIcon size={40} color="#2ecc71" /></div>
             <div style={{ fontSize: 16, color: "#2ecc71", fontWeight: 700 }}>Thanks for your feedback!</div>
           </div>
         ) : (
@@ -61,13 +62,13 @@ export default function FeedbackModal({ context, rfid, onClose }: Props) {
                   onMouseLeave={() => setHover(0)}
                   style={{
                     background: "none", border: "none", cursor: "pointer",
-                    fontSize: 32, padding: 2,
+                    padding: 2, display: "flex",
                     color: (hover || rating) >= n ? "#f0a500" : "#3a3a3a",
                     transition: "color 0.15s",
                   }}
                   aria-label={`${n} star${n > 1 ? "s" : ""}`}
                 >
-                  ★
+                  <StarIcon size={30} />
                 </button>
               ))}
             </div>

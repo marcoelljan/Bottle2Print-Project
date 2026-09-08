@@ -1,5 +1,20 @@
-import { useEffect, useState } from "react";
-import { LockPersonIcon, PrintIcon, AccountCircleIcon, ChatIcon, RecyclingIcon } from "../components/KioskIcons";
+import { useEffect, useState, useRef } from "react";
+import {
+  AccountCircleIcon,
+  ChatIcon,
+  CheckCircleIcon,
+  EditIcon,
+  InfoIcon,
+  KeyIcon,
+  LockPersonIcon,
+  LogOutIcon,
+  PrintIcon,
+  RecyclingIcon,
+  SettingsIcon,
+  StarIcon,
+  WrenchIcon,
+  XCircleIcon,
+} from "../components/KioskIcons";
 import { API } from "../config";
 
 interface Props { onBack: () => void; }
@@ -14,25 +29,48 @@ interface Transaction {
   id: number; rfid: string; type: string; size?: string;
   height_mm?: number; weight_g?: number; credits: number; created_at: string;
 }
+interface ActivityLog {
+  id: number; admin_user: string; action: string; details: string; created_at: string;
+}
 interface Feedback {
   id: number; rfid: string | null; context: string;
   rating: number; comment: string; created_at: string;
 }
 interface AdminAccount {
-  id: number; username: string; role: Role; created_at: string;
+  id: number; username: string; email: string; role: Role; created_at: string;
 }
+
+const formatPhTime = (dateString: string) => {
+  if (!dateString) return "—";
+  try {
+    const normalized = dateString.endsWith("Z") || dateString.includes("+") ? dateString : dateString + "Z";
+    return new Date(normalized).toLocaleString("en-US", {
+      timeZone: "Asia/Manila",
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+    });
+  } catch {
+    return dateString;
+  }
+};
 
 export default function AdminScreen({}: Props) {
   const [token, setToken]           = useState<string | null>(null);
   const [myAdminId, setMyAdminId]   = useState<number | null>(null);
   const [myUsername, setMyUsername] = useState<string>("");
+  const [myEmail, setMyEmail]       = useState<string>("");
   const [myRole, setMyRole]         = useState<Role>("admin");
   const [passwordChanged, setPasswordChanged] = useState<boolean>(true);
   
   const verified = token !== null;
   const isSuperAdmin = myRole === "super_admin";
 
-  // login step flow state ("username" -> "password")
+  const [authView, setAuthView]     = useState<"login" | "forgot" | "reset">("login");
   const [loginStep, setLoginStep]   = useState<"username" | "password">("username");
   const [userInput, setUserInput]   = useState("");
   const [userCheckLoading, setUserCheckLoading] = useState(false);
@@ -43,14 +81,32 @@ export default function AdminScreen({}: Props) {
   const [pwError, setPwError]       = useState("");
   const [pwLoading, setPwLoading]   = useState(false);
 
-  // Lockout timer state
+  // Forgot password exact match fields
+  const [forgotUsername, setForgotUsername] = useState("");
+  const [forgotEmail, setForgotEmail]       = useState("");
+  const [forgotMsg, setForgotMsg]           = useState("");
+  const [forgotLoading, setForgotLoading]   = useState(false);
+
+  const [resetToken, setResetToken]         = useState<string | null>(null);
+  const [newResetPass, setNewResetPass]     = useState("");
+  const [resetConfirmPass, setResetConfirmPass] = useState("");
+  const [showResetPass, setShowResetPass]   = useState(false);
+  const [resetMsg, setResetMsg]             = useState("");
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tokenParam = params.get("reset_token");
+    if (tokenParam) {
+      setResetToken(tokenParam);
+      setAuthView("reset");
+    }
+  }, []);
+
   const [lockoutUntil, setLockoutUntil] = useState<number | null>(null);
   const [lockoutRemaining, setLockoutRemaining] = useState<number>(0);
 
-  // Countdown effect
   useEffect(() => {
     if (!lockoutUntil) return;
-
     const updateTimer = () => {
       const now = Date.now();
       if (now >= lockoutUntil) {
@@ -60,13 +116,11 @@ export default function AdminScreen({}: Props) {
         setLockoutRemaining(Math.ceil((lockoutUntil - now) / 1000));
       }
     };
-
-    updateTimer(); // Run immediately
+    updateTimer();
     const interval = setInterval(updateTimer, 1000);
     return () => clearInterval(interval);
   }, [lockoutUntil]);
 
-  // forced password change state for first login
   const [forceNewPass, setForceNewPass]     = useState("");
   const [forceConfirmPass, setForceConfirmPass] = useState("");
   const [showForcePass, setShowForcePass]   = useState(false);
@@ -75,23 +129,40 @@ export default function AdminScreen({}: Props) {
   const [tab, setTab]               = useState<Tab>("logs");
   const [users, setUsers]           = useState<User[]>([]);
   const [txns, setTxns]             = useState<Transaction[]>([]);
+  const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
   const [feedback, setFeedback]     = useState<Feedback[]>([]);
   const [admins, setAdmins]         = useState<AdminAccount[]>([]);
   const [loading, setLoading]       = useState(false);
-  const [addCredits, setAddCredits] = useState<{ rfid: string; name: string } | null>(null);
-  const [creditAmount, setCreditAmount] = useState("");
-  const [creditMsg, setCreditMsg]   = useState("");
 
-  // admin-account modal state (for super-admin managing all admins)
+  const [editUserModal, setEditUserModal] = useState<User | null>(null);
+  const [editName, setEditName]       = useState("");
+  const [editStudentId, setEditStudentId] = useState("");
+  const [editMsg, setEditMsg]         = useState("");
+
   const [adminModal, setAdminModal] = useState<null | { mode: "create" } | { mode: "edit"; admin: AdminAccount }>(null);
-  const [adminForm, setAdminForm]   = useState({ username: "", password: "", role: "admin" as Role });
+  const [adminForm, setAdminForm]   = useState({ username: "", email: "", password: "", role: "admin" as Role });
   const [adminMsg, setAdminMsg]     = useState("");
+  const [createdDefaultPassNotice, setCreatedDefaultPassNotice] = useState<string | null>(null);
 
-  // personal account settings modal state (for any logged-in admin)
-  const [showSettingsModal, setShowSettingsModal] = useState(false);
-  const [settingsForm, setSettingsForm]     = useState({ username: "", newPassword: "", confirmPassword: "" });
+  const [showDropdown, setShowDropdown] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  const [showAccountModal, setShowAccountModal] = useState(false);
+  const [settingsForm, setSettingsForm]     = useState({ username: "", email: "", newPassword: "", confirmPassword: "" });
   const [showSettingsPass, setShowSettingsPass] = useState(false);
   const [settingsMsg, setSettingsMsg]       = useState("");
+
+  const [showMaintenanceModal, setShowMaintenanceModal] = useState(false);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setShowDropdown(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   const authFetch = (path: string, options: RequestInit = {}) => {
     return fetch(`${API}${path}`, {
@@ -155,15 +226,16 @@ export default function AdminScreen({}: Props) {
       
       if (res.status === 429 && data.lockoutUntil) {
         setLockoutUntil(data.lockoutUntil);
-        setPwError(""); // Clear standard error in favor of lockout message
+        setPwError("");
       } else if (res.ok && data.token) {
         setToken(data.token);
         setMyAdminId(data.adminId);
         setMyUsername(data.username);
+        setMyEmail(data.email || "");
         setMyRole(data.role);
         setPasswordChanged(data.passwordChanged);
         setPwInput("");
-        setLockoutUntil(null); // Clear lockout on success
+        setLockoutUntil(null);
       } else {
         setPwError(data.error ?? "Incorrect username or password.");
       }
@@ -171,6 +243,53 @@ export default function AdminScreen({}: Props) {
       setPwError("Could not reach backend.");
     }
     setPwLoading(false);
+  };
+
+  const handleForgotPasswordRequest = async () => {
+    if (!forgotUsername.trim() || !forgotEmail.trim()) return;
+    setForgotLoading(true);
+    setForgotMsg("");
+    try {
+      const res = await fetch(`${API}/api/admin/forgot-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: forgotUsername.trim(), email: forgotEmail.trim() }),
+      });
+      const data = await res.json();
+      setForgotMsg(data.message || data.error);
+    } catch {
+      setForgotMsg("Could not reach backend.");
+    }
+    setForgotLoading(false);
+  };
+
+  const handleResetPasswordSubmit = async () => {
+    if (!newResetPass || newResetPass.length < 8) {
+      setResetMsg("Password must be at least 8 characters.");
+      return;
+    }
+    if (newResetPass !== resetConfirmPass) {
+      setResetMsg("Passwords do not match.");
+      return;
+    }
+    try {
+      const res = await fetch(`${API}/api/admin/reset-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: resetToken, newPassword: newResetPass }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setResetMsg("Password successfully reset! Redirecting to login...");
+        setTimeout(() => {
+          window.location.href = "/?screen=admin";
+        }, 2000);
+      } else {
+        setResetMsg(data.error ?? "Reset failed.");
+      }
+    } catch {
+      setResetMsg("Could not reach backend.");
+    }
   };
 
   const handleForcePasswordChange = async () => {
@@ -207,7 +326,10 @@ export default function AdminScreen({}: Props) {
       return;
     }
 
-    const payload: any = { username: settingsForm.username.trim() };
+    const payload: any = { 
+      username: settingsForm.username.trim(),
+      email: settingsForm.email.trim()
+    };
     if (settingsForm.newPassword) {
       if (settingsForm.newPassword.length < 8) {
         setSettingsMsg("New password must be at least 8 characters.");
@@ -229,7 +351,8 @@ export default function AdminScreen({}: Props) {
       const data = await res.json();
       if (data.success) {
         setMyUsername(settingsForm.username.trim());
-        setShowSettingsModal(false);
+        setMyEmail(settingsForm.email.trim());
+        setShowAccountModal(false);
         setSettingsMsg("");
         fetchData();
       } else {
@@ -242,17 +365,20 @@ export default function AdminScreen({}: Props) {
 
   useEffect(() => {
     if (verified && passwordChanged) fetchData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [verified, passwordChanged, tab]);
 
   const fetchData = async () => {
     setLoading(true);
     try {
-      if (tab === "users" || tab === "logs") {
+      if (tab === "logs") {
+        const r = await authFetch(`/api/admin/activity-logs`);
+        setActivityLogs(await r.json());
+      }
+      if (tab === "users") {
         const r = await authFetch(`/api/admin/users`);
         setUsers(await r.json());
       }
-      if (tab === "transactions" || tab === "logs") {
+      if (tab === "transactions") {
         const r = await authFetch(`/api/admin/transactions`);
         setTxns(await r.json());
       }
@@ -268,51 +394,23 @@ export default function AdminScreen({}: Props) {
     setLoading(false);
   };
 
-  const handleResetCredits = async (rfid: string) => {
-    await authFetch(`/api/admin/user/${rfid}/reset-credits`, { method: "POST" });
-    fetchData();
-  };
-
   const handleDeleteUser = async (rfid: string) => {
+    if (!window.confirm("Are you sure you want to delete this user?")) return;
     await authFetch(`/api/admin/user/${rfid}`, { method: "DELETE" });
     fetchData();
   };
 
-  const handleAddCredits = async () => {
-    if (!addCredits) return;
-    const amount = parseInt(creditAmount);
-    if (isNaN(amount) || amount <= 0) {
-      setCreditMsg("Enter a valid number.");
-      return;
-    }
-    const res = await authFetch(`/api/admin/user/${addCredits.rfid}/add-credits`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ amount }),
-    });
-    const data = await res.json();
-    if (data.success) {
-      setCreditMsg(`✅ Added ${amount} credits. New total: ${data.credits}`);
-      fetchData();
-      setTimeout(() => {
-        setAddCredits(null);
-        setCreditAmount("");
-        setCreditMsg("");
-      }, 2000);
-    } else {
-      setCreditMsg(`❌ ${data.error}`);
-    }
-  };
-
   const openCreateAdmin = () => {
-    setAdminForm({ username: "", password: "", role: "admin" });
+    setAdminForm({ username: "", email: "", password: "", role: "admin" });
     setAdminMsg("");
+    setCreatedDefaultPassNotice(null);
     setAdminModal({ mode: "create" });
   };
 
   const openEditAdmin = (admin: AdminAccount) => {
-    setAdminForm({ username: admin.username, password: "", role: admin.role });
+    setAdminForm({ username: admin.username, email: admin.email || "", password: "", role: admin.role });
     setAdminMsg("");
+    setCreatedDefaultPassNotice(null);
     setAdminModal({ mode: "edit", admin });
   };
 
@@ -326,17 +424,17 @@ export default function AdminScreen({}: Props) {
       const res = await authFetch(`/api/admin/admins`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: adminForm.username, role: adminForm.role }),
+        body: JSON.stringify({ username: adminForm.username, email: adminForm.email, role: adminForm.role }),
       });
       const data = await res.json();
-      if (data.success) {
-        setAdminModal(null);
+      if (res.ok && data.success) {
+        setCreatedDefaultPassNotice(data.defaultPassword || "DefaultPass123!");
         fetchData();
       } else {
         setAdminMsg(data.error ?? "Failed to create admin.");
       }
     } else {
-      const body: any = { username: adminForm.username, role: adminForm.role };
+      const body: any = { username: adminForm.username, email: adminForm.email, role: adminForm.role };
       if (adminForm.password) body.password = adminForm.password;
       const res = await authFetch(`/api/admin/admins/${adminModal.admin.id}`, {
         method: "PATCH",
@@ -357,9 +455,7 @@ export default function AdminScreen({}: Props) {
     if (!window.confirm(`Delete admin account "${admin.username}"?`)) return;
     const res = await authFetch(`/api/admin/admins/${admin.id}`, { method: "DELETE" });
     const data = await res.json();
-    if (!data.success) {
-      alert(data.error ?? "Failed to delete admin.");
-    }
+    if (!data.success) alert(data.error ?? "Failed to delete admin.");
     fetchData();
   };
 
@@ -370,11 +466,12 @@ export default function AdminScreen({}: Props) {
       setLoginStep("username");
       setUserInput("");
       setTab("logs");
-      setShowSettingsModal(false);
+      setShowDropdown(false);
+      setShowAccountModal(false);
+      setShowMaintenanceModal(false);
     }
   };
 
-  // ── login screen ───────────────────────────────────────────────────────────
   if (!verified) {
     return (
       <div style={fullScreen}>
@@ -383,132 +480,191 @@ export default function AdminScreen({}: Props) {
           <div>
             <div style={headerTitle}>Admin Access</div>
             <div style={headerSub}>
-              {loginStep === "username" ? "Enter your admin username" : `Logging in as: ${userInput}`}
+              {authView === "reset" ? "Reset your password" : authView === "forgot" ? "Password Recovery" : loginStep === "username" ? "Enter your admin username" : `Logging in as: ${userInput}`}
             </div>
           </div>
         </div>
         <div style={loginBody}>
           <div style={loginPanel}>
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              
-              {loginStep === "username" ? (
-                <>
-                  <div style={{ fontSize: 13, color: "#888", fontWeight: 600 }}>Username</div>
+            {authView === "reset" ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ fontSize: 13, color: "#888", fontWeight: 600 }}>New Password</div>
+                <div style={{ position: "relative" }}>
                   <input
-                    type="text"
-                    value={userInput}
-                    onChange={e => setUserInput(e.target.value)}
-                    onKeyDown={e => { if (e.key === "Enter") handleNextStep(); }}
-                    placeholder="Enter username"
-                    autoCapitalize="none"
+                    type={showResetPass ? "text" : "password"}
+                    value={newResetPass}
+                    onChange={e => setNewResetPass(e.target.value)}
+                    placeholder="At least 8 characters"
+                    style={{ ...inputStyle, paddingRight: 45 }}
                     autoFocus
-                    style={inputStyle}
                   />
-
-                  {userError && (
-                    <div style={{ fontSize: 12, color: "#e74c3c" }}>{userError}</div>
-                  )}
-
                   <button
-                    onClick={handleNextStep}
-                    disabled={!userInput.trim() || userCheckLoading}
+                    type="button"
+                    onClick={() => setShowResetPass(!showResetPass)}
                     style={{
-                      padding: "12px", borderRadius: 8, fontWeight: 700, fontSize: 14,
-                      border: "none", cursor: !userInput.trim() || userCheckLoading ? "not-allowed" : "pointer",
-                      background: !userInput.trim() || userCheckLoading ? "#333" : "#f0a500",
-                      color: !userInput.trim() || userCheckLoading ? "#555" : "#000",
-                      marginTop: 4,
+                      position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)",
+                      background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: 13
                     }}
                   >
-                    {userCheckLoading ? "Checking..." : "Next"}
+                    {showResetPass ? "Hide" : "Show"}
                   </button>
-                </>
-              ) : (
-                <>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <div style={{ fontSize: 13, color: "#888", fontWeight: 600 }}>Password</div>
-                    <button
-                      onClick={() => { setLoginStep("username"); setPwInput(""); setPwError(""); }}
-                      disabled={lockoutRemaining > 0}
-                      style={{ 
-                        background: "none", border: "none", color: "#f0a500", 
-                        fontSize: 12, cursor: lockoutRemaining > 0 ? "not-allowed" : "pointer" 
-                      }}
-                    >
-                      ← Change username
-                    </button>
-                  </div>
-                  
-                  <div style={{ position: "relative" }}>
-                    <input
-                      type={showPassword ? "text" : "password"}
-                      value={pwInput}
-                      onChange={e => setPwInput(e.target.value)}
-                      onKeyDown={e => { if (e.key === "Enter") handlePasswordLogin(); }}
-                      placeholder="Enter password"
-                      autoFocus
-                      disabled={lockoutRemaining > 0}
-                      style={{ 
-                        ...inputStyle, 
-                        paddingRight: 45,
-                        opacity: lockoutRemaining > 0 ? 0.5 : 1,
-                        cursor: lockoutRemaining > 0 ? "not-allowed" : "text"
-                      }}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowPassword(!showPassword)}
-                      disabled={lockoutRemaining > 0}
-                      style={{
-                        position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)",
-                        background: "none", border: "none", color: "#888", 
-                        cursor: lockoutRemaining > 0 ? "not-allowed" : "pointer", 
-                        fontSize: 13
-                      }}
-                    >
-                      {showPassword ? "Hide" : "Show"}
-                    </button>
-                  </div>
+                </div>
 
-                  <div style={{ fontSize: 11, color: "#666", lineHeight: 1.4, marginTop: 2 }}>
-                    💡 New admin account? Use the default password: <strong style={{ color: "#aaa" }}>DefaultPass123!</strong>
-                  </div>
+                <div style={{ fontSize: 13, color: "#888", fontWeight: 600, marginTop: 4 }}>Confirm New Password</div>
+                <input
+                  type="password"
+                  value={resetConfirmPass}
+                  onChange={e => setResetConfirmPass(e.target.value)}
+                  placeholder="Re-enter new password"
+                  style={inputStyle}
+                />
 
-                  {pwError && !lockoutRemaining && (
-                    <div style={{ fontSize: 12, color: "#e74c3c" }}>{pwError}</div>
-                  )}
-
-                  {lockoutRemaining > 0 && (
-                    <div style={{ fontSize: 13, color: "#e74c3c", fontWeight: 700, textAlign: "center", marginTop: 4 }}>
-                       Locked out. Try again in {Math.floor(lockoutRemaining / 60)}:{(lockoutRemaining % 60).toString().padStart(2, '0')}
-                    </div>
-                  )}
-
+                {resetMsg && <div style={{ fontSize: 12, color: resetMsg.startsWith("Password successfully") ? "#2ecc71" : "#e74c3c", display: "flex", alignItems: "center", gap: 6 }}>
+                  {resetMsg.startsWith("Password successfully") ? <CheckCircleIcon size={15} color="#2ecc71" /> : <XCircleIcon size={15} color="#e74c3c" />} {resetMsg}
+                </div>}
+                
+                <button
+                  onClick={handleResetPasswordSubmit}
+                  disabled={!newResetPass || !resetConfirmPass}
+                  style={{
+                    padding: "12px", borderRadius: 8, fontWeight: 700, 
+                    background: !newResetPass || !resetConfirmPass ? "#333" : "#f0a500", 
+                    color: !newResetPass || !resetConfirmPass ? "#555" : "#000", 
+                    border: "none", cursor: !newResetPass || !resetConfirmPass ? "not-allowed" : "pointer", marginTop: 4 
+                  }}
+                >
+                  Update Password
+                </button>
+              </div>
+            ) : authView === "forgot" ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ fontSize: 13, color: "#888", fontWeight: 600 }}>Username</div>
+                <input
+                  type="text"
+                  value={forgotUsername}
+                  onChange={e => setForgotUsername(e.target.value)}
+                  placeholder="Enter admin username"
+                  style={inputStyle}
+                  autoFocus
+                />
+                <div style={{ fontSize: 13, color: "#888", fontWeight: 600, marginTop: 4 }}>Registered Gmail Address</div>
+                <input
+                  type="email"
+                  value={forgotEmail}
+                  onChange={e => setForgotEmail(e.target.value)}
+                  placeholder="Enter exact account Gmail"
+                  style={inputStyle}
+                />
+                {forgotMsg && <div style={{ fontSize: 12, color: forgotMsg.startsWith("Password") ? "#2ecc71" : "#f0a500", lineHeight: 1.4 }}>{forgotMsg}</div>}
+                <button
+                  onClick={handleForgotPasswordRequest}
+                  disabled={!forgotUsername.trim() || !forgotEmail.trim() || forgotLoading}
+                  style={{ padding: "12px", borderRadius: 8, fontWeight: 700, background: "#f0a500", color: "#000", border: "none", cursor: "pointer", marginTop: 4 }}
+                >
+                  {forgotLoading ? "Sending..." : "Send Reset Link"}
+                </button>
+                <button
+                  onClick={() => { setAuthView("login"); setForgotMsg(""); }}
+                  style={{ background: "none", border: "none", color: "#888", fontSize: 12, cursor: "pointer", marginTop: 4 }}
+                >
+                  ← Back to Log In
+                </button>
+              </div>
+            ) : loginStep === "username" ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ fontSize: 13, color: "#888", fontWeight: 600 }}>Username</div>
+                <input
+                  type="text"
+                  value={userInput}
+                  onChange={e => setUserInput(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter") handleNextStep(); }}
+                  placeholder="Enter username"
+                  autoCapitalize="none"
+                  autoFocus
+                  style={inputStyle}
+                />
+                {userError && <div style={{ fontSize: 12, color: "#e74c3c" }}>{userError}</div>}
+                <button
+                  onClick={handleNextStep}
+                  disabled={!userInput.trim() || userCheckLoading}
+                  style={{
+                    padding: "12px", borderRadius: 8, fontWeight: 700, fontSize: 14,
+                    border: "none", cursor: !userInput.trim() || userCheckLoading ? "not-allowed" : "pointer",
+                    background: !userInput.trim() || userCheckLoading ? "#333" : "#f0a500",
+                    color: !userInput.trim() || userCheckLoading ? "#555" : "#000",
+                    marginTop: 4,
+                  }}
+                >
+                  {userCheckLoading ? "Checking..." : "Next"}
+                </button>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div style={{ fontSize: 13, color: "#888", fontWeight: 600 }}>Password</div>
                   <button
-                    onClick={handlePasswordLogin}
-                    disabled={!pwInput || pwLoading || lockoutRemaining > 0}
-                    style={{
-                      padding: "12px", borderRadius: 8, fontWeight: 700, fontSize: 14,
-                      border: "none", 
-                      cursor: !pwInput || pwLoading || lockoutRemaining > 0 ? "not-allowed" : "pointer",
-                      background: !pwInput || pwLoading || lockoutRemaining > 0 ? "#333" : "#f0a500",
-                      color: !pwInput || pwLoading || lockoutRemaining > 0 ? "#555" : "#000",
-                      marginTop: 4,
-                    }}
+                    onClick={() => { setLoginStep("username"); setPwInput(""); setPwError(""); }}
+                    disabled={lockoutRemaining > 0}
+                    style={{ background: "none", border: "none", color: "#f0a500", fontSize: 12, cursor: lockoutRemaining > 0 ? "not-allowed" : "pointer" }}
                   >
-                    {lockoutRemaining > 0 ? "Locked" : pwLoading ? "Checking..." : "Log in"}
+                    ← Change username
                   </button>
-                </>
-              )}
+                </div>
+                <div style={{ position: "relative" }}>
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    value={pwInput}
+                    onChange={e => setPwInput(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter") handlePasswordLogin(); }}
+                    placeholder="Enter password"
+                    autoFocus
+                    disabled={lockoutRemaining > 0}
+                    style={{ ...inputStyle, paddingRight: 45, opacity: lockoutRemaining > 0 ? 0.5 : 1 }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    disabled={lockoutRemaining > 0}
+                    style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: 13 }}
+                  >
+                    {showPassword ? "Hide" : "Show"}
+                  </button>
+                </div>
 
-            </div>
+                <button
+                  onClick={() => setAuthView("forgot")}
+                  style={{ background: "none", border: "none", color: "#f0a500", fontSize: 12, cursor: "pointer", textAlign: "left", padding: 0 }}
+                >
+                  Forgot password?
+                </button>
+
+                {pwError && !lockoutRemaining && <div style={{ fontSize: 12, color: "#e74c3c" }}>{pwError}</div>}
+                {lockoutRemaining > 0 && (
+                  <div style={{ fontSize: 13, color: "#e74c3c", fontWeight: 700, textAlign: "center", marginTop: 4 }}>
+                     Locked out. Try again in {Math.floor(lockoutRemaining / 60)}:{(lockoutRemaining % 60).toString().padStart(2, '0')}
+                  </div>
+                )}
+                <button
+                  onClick={handlePasswordLogin}
+                  disabled={!pwInput || pwLoading || lockoutRemaining > 0}
+                  style={{
+                    padding: "12px", borderRadius: 8, fontWeight: 700, fontSize: 14, border: "none",
+                    cursor: !pwInput || pwLoading || lockoutRemaining > 0 ? "not-allowed" : "pointer",
+                    background: !pwInput || pwLoading || lockoutRemaining > 0 ? "#333" : "#f0a500",
+                    color: !pwInput || pwLoading || lockoutRemaining > 0 ? "#555" : "#000",
+                    marginTop: 4,
+                  }}
+                >
+                  {lockoutRemaining > 0 ? "Locked" : pwLoading ? "Checking..." : "Log in"}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
     );
   }
 
-  // ── Force Password Change Screen (First Login) ────────────────────────────
   if (!passwordChanged) {
     return (
       <div style={fullScreen}>
@@ -534,15 +690,11 @@ export default function AdminScreen({}: Props) {
                 <button
                   type="button"
                   onClick={() => setShowForcePass(!showForcePass)}
-                  style={{
-                    position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)",
-                    background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: 13
-                  }}
+                  style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: 13 }}
                 >
                   {showForcePass ? "Hide" : "Show"}
                 </button>
               </div>
-
               <div style={{ fontSize: 13, color: "#888", fontWeight: 600, marginTop: 6 }}>Confirm New Password</div>
               <input
                 type="password"
@@ -551,16 +703,13 @@ export default function AdminScreen({}: Props) {
                 placeholder="Re-enter new password"
                 style={inputStyle}
               />
-
-              {forceMsg && (
-                <div style={{ fontSize: 12, color: "#e74c3c" }}>{forceMsg}</div>
-              )}
+              {forceMsg && <div style={{ fontSize: 12, color: "#e74c3c" }}>{forceMsg}</div>}
               <button
                 onClick={handleForcePasswordChange}
                 disabled={!forceNewPass || !forceConfirmPass}
                 style={{
-                  padding: "12px", borderRadius: 8, fontWeight: 700, fontSize: 14,
-                  border: "none", cursor: !forceNewPass || !forceConfirmPass ? "not-allowed" : "pointer",
+                  padding: "12px", borderRadius: 8, fontWeight: 700, fontSize: 14, border: "none",
+                  cursor: !forceNewPass || !forceConfirmPass ? "not-allowed" : "pointer",
                   background: !forceNewPass || !forceConfirmPass ? "#333" : "#f0a500",
                   color: !forceNewPass || !forceConfirmPass ? "#555" : "#000",
                   marginTop: 4,
@@ -575,10 +724,8 @@ export default function AdminScreen({}: Props) {
     );
   }
 
-  // ── Admin panel (after verified & password changed) ───────────────────────
   return (
     <div style={fullScreen}>
-      {/* Hidden file input for database restore inside settings */}
       <input
         type="file"
         id="restoreFileInput"
@@ -605,42 +752,68 @@ export default function AdminScreen({}: Props) {
             const data = await res.json();
 
             if (res.ok && data.success) {
-              alert(" System successfully restored from backup!");
-              setShowSettingsModal(false);
+              alert("System successfully restored from backup!");
+              setShowMaintenanceModal(false);
               fetchData();
             } else {
-              alert(` Restore failed: ${data.error ?? "Unknown error"}`);
+              alert(`Restore failed: ${data.error ?? "Unknown error"}`);
             }
           } catch {
-            alert(" Invalid JSON backup file format.");
+            alert("Invalid JSON backup file format.");
           }
           e.target.value = "";
         }}
       />
 
-      {/* Clean header without top-left back arrow */}
       <div style={{ ...headerBar, paddingLeft: 24 }}>
         <LockPersonIcon size={22} color="#f0a500" />
         <div>
           <div style={headerTitle}>Admin Panel</div>
           <div style={headerSub}>Logged in as {myUsername} {isSuperAdmin && "· super-admin"}</div>
         </div>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-          <button 
-            onClick={() => {
-              setSettingsForm({ username: myUsername, newPassword: "", confirmPassword: "" });
-              setSettingsMsg("");
-              setShowSettingsModal(true);
-            }} 
-            style={actionBtn("#2a2a2a", "#f0a500")}
-          >
-             Settings
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8, position: "relative" }} ref={dropdownRef}>
+          <button onClick={() => setShowDropdown(!showDropdown)} style={actionBtn("#2a2a2a", "#f0a500")}>
+            <SettingsIcon size={15} /> Settings ▾
           </button>
+          
+          {showDropdown && (
+            <div style={dropdownMenu}>
+              <button
+                onClick={() => {
+                  setShowDropdown(false);
+                  setSettingsForm({ username: myUsername, email: myEmail, newPassword: "", confirmPassword: "" });
+                  setSettingsMsg("");
+                  setShowAccountModal(true);
+                }}
+                style={dropdownItem}
+              >
+                <AccountCircleIcon size={16} /> Account Settings
+              </button>
+              
+              {isSuperAdmin && (
+                <button
+                  onClick={() => {
+                    setShowDropdown(false);
+                    setShowMaintenanceModal(true);
+                  }}
+                  style={dropdownItem}
+                >
+                  <WrenchIcon size={16} /> System Maintenance
+                </button>
+              )}
+
+              <div style={{ height: "1px", background: "#333", margin: "4px 0" }} />
+
+              <button onClick={handleLogout} style={{ ...dropdownItem, color: "#e74c3c" }}>
+                <LogOutIcon size={16} /> Log Out
+              </button>
+            </div>
+          )}
+
           <button onClick={fetchData} style={refreshBtn}>↻ Refresh</button>
         </div>
       </div>
 
-      {/* tabs */}
       <div style={tabBar}>
         {([
           ["logs", <><PrintIcon size={15} /> Activity Logs</>],
@@ -662,38 +835,24 @@ export default function AdminScreen({}: Props) {
       <div style={body}>
         {loading && <div style={{ color: "#666", fontSize: 14 }}>Loading...</div>}
 
-        {/* LOGS TAB */}
         {!loading && tab === "logs" && (
           <div style={tableWrap}>
             <table style={table}>
               <thead>
-                <tr>{["Time", "RFID", "Type", "Detail", "Credits"].map(h => <th key={h} style={th}>{h}</th>)}</tr>
+                <tr>{["Time", "Admin User", "Action", "Details"].map(h => <th key={h} style={th}>{h}</th>)}</tr>
               </thead>
               <tbody>
-                {txns.length === 0 && <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "#555" }}>No activity yet</td></tr>}
-                {txns.map(t => (
-                  <tr key={t.id} style={{ borderBottom: "1px solid #2a2a2a" }}>
-                    <td style={td}>{new Date(t.created_at).toLocaleString()}</td>
-                    <td style={{ ...td, fontFamily: "monospace", fontSize: 11, color: "#666" }}>{t.rfid}</td>
+                {activityLogs.length === 0 && <tr><td colSpan={4} style={{ ...td, textAlign: "center", color: "#555" }}>No activity logs recorded yet</td></tr>}
+                {activityLogs.map(l => (
+                  <tr key={l.id} style={{ borderBottom: "1px solid #2a2a2a" }}>
+                    <td style={td}>{formatPhTime(l.created_at)}</td>
+                    <td style={{ ...td, fontWeight: 600, color: "#f0a500" }}>{l.admin_user}</td>
                     <td style={td}>
-                      <span style={{
-                        padding: "2px 8px", borderRadius: 20, fontSize: 11,
-                        background: t.type === "deposit" ? "#1a3a2a" : t.type === "admin_credit" ? "#1a2a3a" : t.type === "register" ? "#3a2a1a" : "#1a1a3a",
-                        color: t.type === "deposit" ? "#2ecc71" : t.type === "admin_credit" ? "#3498db" : t.type === "register" ? "#f0a500" : "#e74c3c",
-                      }}>
-                        {t.type}
+                      <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, background: "#2a2a2a", color: "#fff" }}>
+                        {l.action}
                       </span>
                     </td>
-                    <td style={td}>
-                      {t.type === "deposit" 
-                        ? `${t.size ?? "—"} · ${t.height_mm ?? "—"}mm · ${t.weight_g ?? "—"}g` 
-                        : t.type === "register" 
-                        ? (t.size ?? "New user account registered") 
-                        : "—"}
-                    </td>
-                    <td style={{ ...td, color: t.type === "print" ? "#e74c3c" : "#2ecc71", fontWeight: 700 }}>
-                      {t.type === "print" ? `-${t.credits}` : `+${t.credits}`}
-                    </td>
+                    <td style={td}>{l.details}</td>
                   </tr>
                 ))}
               </tbody>
@@ -701,7 +860,6 @@ export default function AdminScreen({}: Props) {
           </div>
         )}
 
-        {/* USERS TAB */}
         {!loading && tab === "users" && (
           <div style={tableWrap}>
             <table style={table}>
@@ -718,14 +876,18 @@ export default function AdminScreen({}: Props) {
                     <td style={{ ...td, color: "#f0a500", fontWeight: 700 }}>{u.credits}</td>
                     <td style={{ ...td, fontSize: 11, color: "#555" }}>{new Date(u.created_at).toLocaleDateString()}</td>
                     <td style={td}>
-                      <div style={{ display: "flex", gap: 6 }}>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                         <button
-                          onClick={() => { setAddCredits({ rfid: u.rfid, name: u.name }); setCreditAmount(""); setCreditMsg(""); }}
-                          style={actionBtn("#1a2a3a", "#3498db")}
+                          onClick={() => {
+                            setEditUserModal(u);
+                            setEditName(u.name);
+                            setEditStudentId(u.studentId);
+                            setEditMsg("");
+                          }}
+                          style={actionBtn("#1e293b", "#38bdf8")}
                         >
-                          + Credits
+                          Edit
                         </button>
-                        <button onClick={() => handleResetCredits(u.rfid)} style={actionBtn("#333", "#aaa")}>Reset</button>
                         <button onClick={() => handleDeleteUser(u.rfid)} style={actionBtn("#3a1a1a", "#e74c3c")}>Delete</button>
                       </div>
                     </td>
@@ -736,42 +898,19 @@ export default function AdminScreen({}: Props) {
           </div>
         )}
 
-        {/* TRANSACTIONS TAB */}
         {!loading && tab === "transactions" && (
           <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 12 }}>
-              {[
-                { label: "Total users",       val: users.length,                                          color: "#fff" },
-                { label: "Bottles deposited", val: txns.filter(t => t.type === "deposit").length,         color: "#2ecc71" },
-                { label: "Print jobs",        val: txns.filter(t => t.type === "print").length,           color: "#3498db" },
-                { label: "Credits earned",    val: txns.filter(t => t.type !== "print").reduce((a, t) => a + t.credits, 0), color: "#f0a500" },
-                { 
-                  label: "Plastic Collected", 
-                  val: `${(txns.filter(t => t.type === "deposit").reduce((a, t) => a + (t.weight_g ?? 0), 0) / 1000).toFixed(2)} kg`, 
-                  color: "#27ae60" 
-                },
-                { 
-                  label: "CO2 Avoided", 
-                  val: `${((txns.filter(t => t.type === "deposit").reduce((a, t) => a + (t.weight_g ?? 0), 0) / 1000) * 3).toFixed(2)} kg`, 
-                  color: "#1abc9c" 
-                },
-              ].map(s => (
-                <div key={s.label} style={statCard}>
-                  <div style={{ fontSize: 11, color: "#555", marginBottom: 4 }}>{s.label}</div>
-                  <div style={{ fontSize: 22, fontWeight: 800, color: s.color }}>{s.val}</div>
-                </div>
-              ))}
-            </div>
             <div style={tableWrap}>
               <table style={table}>
                 <thead>
                   <tr>{["#", "Time", "RFID", "Type", "Size", "Credits"].map(h => <th key={h} style={th}>{h}</th>)}</tr>
                 </thead>
                 <tbody>
+                  {txns.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: "center", color: "#555" }}>No transactions yet</td></tr>}
                   {txns.map(t => (
                     <tr key={t.id} style={{ borderBottom: "1px solid #2a2a2a" }}>
                       <td style={{ ...td, color: "#555" }}>{t.id}</td>
-                      <td style={td}>{new Date(t.created_at).toLocaleString()}</td>
+                      <td style={td}>{formatPhTime(t.created_at)}</td>
                       <td style={{ ...td, fontFamily: "monospace", fontSize: 11, color: "#666" }}>{t.rfid}</td>
                       <td style={td}>{t.type}</td>
                       <td style={td}>{t.size ?? "—"}</td>
@@ -786,59 +925,24 @@ export default function AdminScreen({}: Props) {
           </div>
         )}
 
-        {/* FEEDBACK TAB */}
         {!loading && tab === "feedback" && (
           <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
-              {[
-                { label: "Total feedback", val: feedback.length, color: "#fff" },
-                {
-                  label: "Average rating",
-                  val: feedback.length
-                    ? (feedback.reduce((a, f) => a + f.rating, 0) / feedback.length).toFixed(1)
-                    : "—",
-                  color: "#f0a500",
-                },
-                {
-                  label: "With comments",
-                  val: feedback.filter(f => f.comment && f.comment.trim().length > 0).length,
-                  color: "#3498db",
-                },
-              ].map(s => (
-                <div key={s.label} style={statCard}>
-                  <div style={{ fontSize: 11, color: "#555", marginBottom: 4 }}>{s.label}</div>
-                  <div style={{ fontSize: 28, fontWeight: 800, color: s.color }}>{s.val}</div>
-                </div>
-              ))}
-            </div>
             <div style={tableWrap}>
               <table style={table}>
                 <thead>
                   <tr>{["Time", "Context", "Rating", "Comment", "RFID"].map(h => <th key={h} style={th}>{h}</th>)}</tr>
                 </thead>
                 <tbody>
-                  {feedback.length === 0 && (
-                    <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "#555" }}>No feedback yet</td></tr>
-                  )}
+                  {feedback.length === 0 && <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "#555" }}>No feedback yet</td></tr>}
                   {feedback.map(f => (
                     <tr key={f.id} style={{ borderBottom: "1px solid #2a2a2a" }}>
-                      <td style={td}>{new Date(f.created_at).toLocaleString()}</td>
-                      <td style={td}>
-                        <span style={{
-                          padding: "2px 8px", borderRadius: 20, fontSize: 11,
-                          background: f.context === "deposit" ? "#1a3a2a" : f.context === "print" ? "#1a2a3a" : "#2a2a2a",
-                          color: f.context === "deposit" ? "#2ecc71" : f.context === "print" ? "#3498db" : "#aaa",
-                        }}>
-                          {f.context}
-                        </span>
+                      <td style={td}>{formatPhTime(f.created_at)}</td>
+                      <td style={td}>{f.context}</td>
+                      <td style={{ ...td, color: "#f0a500", fontWeight: 700, display: "flex", gap: 2 }}>
+                        {Array.from({ length: f.rating }, (_, i) => <StarIcon key={i} size={14} color="#f0a500" />)}
                       </td>
-                      <td style={{ ...td, color: "#f0a500", fontWeight: 700, letterSpacing: 1 }}>
-                        {"★".repeat(f.rating)}{"☆".repeat(5 - f.rating)}
-                      </td>
-                      <td style={td}>{f.comment ? f.comment : <span style={{ color: "#444" }}>—</span>}</td>
-                      <td style={{ ...td, fontFamily: "monospace", fontSize: 11, color: "#666" }}>
-                        {f.rfid ?? <span style={{ color: "#444" }}>anon</span>}
-                      </td>
+                      <td style={td}>{f.comment || "—"}</td>
+                      <td style={{ ...td, fontFamily: "monospace", fontSize: 11, color: "#666" }}>{f.rfid ?? "anon"}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -847,7 +951,6 @@ export default function AdminScreen({}: Props) {
           </div>
         )}
 
-        {/* MANAGE ADMINS TAB */}
         {!loading && tab === "admins" && isSuperAdmin && (
           <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 12 }}>
             <div style={{ display: "flex", justifyContent: "flex-end" }}>
@@ -858,20 +961,17 @@ export default function AdminScreen({}: Props) {
             <div style={tableWrap}>
               <table style={table}>
                 <thead>
-                  <tr>{["Username", "Role", "Created", "Actions"].map(h => <th key={h} style={th}>{h}</th>)}</tr>
+                  <tr>{["Username", "Gmail Notification", "Role", "Created", "Actions"].map(h => <th key={h} style={th}>{h}</th>)}</tr>
                 </thead>
                 <tbody>
-                  {admins.length === 0 && <tr><td colSpan={4} style={{ ...td, textAlign: "center", color: "#555" }}>No admins yet</td></tr>}
+                  {admins.length === 0 && <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "#555" }}>No admins yet</td></tr>}
                   {admins.map(a => (
                     <tr key={a.id} style={{ borderBottom: "1px solid #2a2a2a" }}>
                       <td style={td}>{a.username}</td>
+                      <td style={{ ...td, color: a.email ? "#38bdf8" : "#666" }}>{a.email || "Not set"}</td>
                       <td style={td}>
-                        <span style={{
-                          padding: "2px 8px", borderRadius: 20, fontSize: 11,
-                          background: a.role === "super_admin" ? "#3a2a1a" : "#1e1e1e",
-                          color: a.role === "super_admin" ? "#f0a500" : "#aaa",
-                        }}>
-                          {a.role === "super_admin" ? "super-admin" : "admin"}
+                        <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, background: a.role === "super_admin" ? "#3a2a1a" : "#1e1e1e", color: a.role === "super_admin" ? "#f0a500" : "#aaa" }}>
+                          {a.role}
                         </span>
                       </td>
                       <td style={{ ...td, fontSize: 11, color: "#555" }}>{new Date(a.created_at).toLocaleDateString()}</td>
@@ -891,34 +991,32 @@ export default function AdminScreen({}: Props) {
       </div>
 
       {/* Account Settings Modal */}
-      {showSettingsModal && (
+      {showAccountModal && (
         <div style={overlay}>
           <div style={{ ...modal, maxWidth: 400 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 20 }}></span>
-                <span style={{ fontSize: 17, fontWeight: 700, color: "#fff" }}>Admin Settings</span>
-              </div>
-              <button
-                onClick={handleLogout}
-                style={{
-                  padding: "6px 12px", borderRadius: 6, fontWeight: 600,
-                  fontSize: 12, background: "#2a1a1a", color: "#e74c3c",
-                  border: "1px solid #e74c3c44", cursor: "pointer",
-                }}
-              >
-                 Log Out
-              </button>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+              <AccountCircleIcon size={20} color="#f0a500" />
+              <span style={{ fontSize: 17, fontWeight: 700, color: "#fff" }}>Account Settings</span>
             </div>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: 12, textAlign: "left", maxHeight: 380, overflowY: "auto", paddingRight: 4 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, textAlign: "left" }}>
               <div>
                 <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Username</div>
                 <input
                   value={settingsForm.username}
                   onChange={e => setSettingsForm({ ...settingsForm, username: e.target.value })}
                   style={inputStyle}
-                  autoCapitalize="none"
+                />
+              </div>
+
+              <div>
+                <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Gmail Address (for Password Recovery & Alerts)</div>
+                <input
+                  type="email"
+                  value={settingsForm.email}
+                  onChange={e => setSettingsForm({ ...settingsForm, email: e.target.value })}
+                  placeholder="admin@gmail.com"
+                  style={inputStyle}
                 />
               </div>
 
@@ -952,154 +1050,214 @@ export default function AdminScreen({}: Props) {
                     type="password"
                     value={settingsForm.confirmPassword}
                     onChange={e => setSettingsForm({ ...settingsForm, confirmPassword: e.target.value })}
-                    placeholder="Re-enter new password"
                     style={inputStyle}
                   />
                 </div>
               )}
-
-              {/* Super-admin system backup and restore tools inside settings matching Cancel button style */}
-              {isSuperAdmin && (
-                <div style={{ borderTop: "1px solid #333", paddingTop: 14, marginTop: 4, display: "flex", flexDirection: "column", gap: 8 }}>
-                  <div style={{ fontSize: 11, color: "#666", fontWeight: 600, letterSpacing: 0.5 }}>SYSTEM MAINTENANCE</div>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button
-                      onClick={async () => {
-                        try {
-                          const res = await authFetch(`/api/admin/backup`);
-                          const blob = await res.blob();
-                          const url = window.URL.createObjectURL(blob);
-                          const a = document.createElement("a");
-                          a.href = url;
-                          a.download = `kiosk_database_backup_${new Date().toISOString().slice(0, 10)}.json`;
-                          document.body.appendChild(a);
-                          a.click();
-                          a.remove();
-                        } catch {
-                          alert("Failed to download database backup.");
-                        }
-                      }}
-                      style={ghostBtn}
-                    >
-                      Download Backup
-                    </button>
-                    <button
-                      onClick={() => document.getElementById("restoreFileInput")?.click()}
-                      style={ghostBtn} 
-                    >
-                     Restore Backup
-                    </button>
-                  </div>
-                </div>
-              )}
             </div>
 
-            {settingsMsg && (
-              <div style={{ fontSize: 13, color: "#e74c3c", marginTop: 12 }}>{settingsMsg}</div>
-            )}
+            {settingsMsg && <div style={{ fontSize: 13, color: "#e74c3c", marginTop: 12 }}>{settingsMsg}</div>}
 
             <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
-              <button onClick={() => setShowSettingsModal(false)} style={ghostBtn}>Cancel</button>
+              <button onClick={() => setShowAccountModal(false)} style={ghostBtn}>Cancel</button>
               <button onClick={handleSaveSettings} style={confirmBtn}>Save Profile</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Add credits modal */}
-      {addCredits && (
+      {/* System Maintenance Modal */}
+      {showMaintenanceModal && isSuperAdmin && (
+        <div style={overlay}>
+          <div style={{ ...modal, maxWidth: 400 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
+              <WrenchIcon size={20} color="#f0a500" />
+              <span style={{ fontSize: 17, fontWeight: 700, color: "#fff" }}>System Maintenance</span>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, textAlign: "left" }}>
+              <div style={{ fontSize: 12, color: "#888", lineHeight: 1.4 }}>
+                Export encrypted database backups or restore system state from an existing backup file.
+              </div>
+
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <button
+                  onClick={async () => {
+                    try {
+                      const res = await authFetch(`/api/admin/backup`);
+                      const blob = await res.blob();
+                      const url = window.URL.createObjectURL(blob);
+                      const a = document.createElement("a");
+                      a.href = url;
+                      a.download = `kiosk_secure_backup_${new Date().toISOString().slice(0, 10)}.json`;
+                      document.body.appendChild(a);
+                      a.click();
+                      a.remove();
+                    } catch {
+                      alert("Failed to download database backup.");
+                    }
+                  }}
+                  style={{ ...confirmBtn, background: "#2a2a2a", color: "#f0a500", border: "1px solid #3a3a3a" }}
+                >
+                  Download Backup
+                </button>
+                <button
+                  onClick={() => document.getElementById("restoreFileInput")?.click()}
+                  style={{ ...confirmBtn, background: "#2a2a2a", color: "#fff", border: "1px solid #3a3a3a" }}
+                >
+                  Restore Backup
+                </button>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", marginTop: 24 }}>
+              <button onClick={() => setShowMaintenanceModal(false)} style={{ ...ghostBtn, width: "100%" }}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit User Account Modal */}
+      {editUserModal && (
         <div style={overlay}>
           <div style={modal}>
-            <div style={{ fontSize: 36, marginBottom: 12 }}>💳</div>
-            <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>Add Credits</div>
-            <div style={{ fontSize: 13, color: "#666", marginBottom: 20 }}>{addCredits.name}</div>
-            <input
-              type="number"
-              value={creditAmount}
-              onChange={e => setCreditAmount(e.target.value)}
-              placeholder="Enter amount"
-              min={1}
-              style={{
-                width: "100%", padding: "12px 14px", background: "#1e1e1e",
-                border: "1px solid #3a3a3a", borderRadius: 8, color: "#fff",
-                fontSize: 18, textAlign: "center", outline: "none", marginBottom: 12,
-              }}
-            />
-            {creditMsg && (
-              <div style={{ fontSize: 13, color: creditMsg.startsWith("✅") ? "#2ecc71" : "#e74c3c", marginBottom: 12 }}>
-                {creditMsg}
+            <div style={{ marginBottom: 12 }}><EditIcon size={36} color="#3498db" /></div>
+            <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>Edit User Account</div>
+            <div style={{ fontSize: 13, color: "#666", marginBottom: 20 }}>RFID: {editUserModal.rfid}</div>
+            
+            <div style={{ display: "flex", flexDirection: "column", gap: 12, textAlign: "left" }}>
+              <div>
+                <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Full Name</div>
+                <input
+                  value={editName}
+                  onChange={e => setEditName(e.target.value)}
+                  style={inputStyle}
+                />
               </div>
-            )}
-            <div style={{ display: "flex", gap: 10 }}>
-              <button onClick={() => { setAddCredits(null); setCreditAmount(""); setCreditMsg(""); }} style={ghostBtn}>
-                Cancel
-              </button>
-              <button onClick={handleAddCredits} style={confirmBtn}>
-                Add Credits
+              <div>
+                <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Student ID</div>
+                <input
+                  value={editStudentId}
+                  onChange={e => setEditStudentId(e.target.value)}
+                  style={inputStyle}
+                />
+              </div>
+            </div>
+
+            {editMsg && <div style={{ fontSize: 13, color: editMsg.startsWith("Updated") ? "#2ecc71" : "#e74c3c", marginTop: 12, display: "flex", alignItems: "center", gap: 6 }}>
+              {editMsg.startsWith("Updated") ? <CheckCircleIcon size={15} color="#2ecc71" /> : <XCircleIcon size={15} color="#e74c3c" />} {editMsg}
+            </div>}
+
+            <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+              <button onClick={() => setEditUserModal(null)} style={ghostBtn}>Cancel</button>
+              <button
+                onClick={async () => {
+                  try {
+                    const res = await authFetch(`/api/admin/user/${editUserModal.rfid}`, {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ name: editName, studentId: editStudentId }),
+                    });
+                    const data = await res.json();
+                    if (res.ok && data.success) {
+                      setEditMsg("Updated successfully!");
+                      setTimeout(() => {
+                        setEditUserModal(null);
+                        fetchData();
+                      }, 1000);
+                    } else {
+                      setEditMsg(data.error ?? "Update failed.");
+                    }
+                  } catch {
+                    setEditMsg("Network error.");
+                  }
+                }}
+                style={confirmBtn}
+              >
+                Save Changes
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Create / Edit admin modal (Super Admin tool) */}
+      {/* Create / Edit Admin Modal with Default Password Guide Notice */}
       {adminModal && (
         <div style={overlay}>
           <div style={modal}>
-            <div style={{ fontSize: 36, marginBottom: 12 }}>🔑</div>
+            <div style={{ marginBottom: 12 }}><KeyIcon size={36} color="#f0a500" /></div>
             <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 20 }}>
               {adminModal.mode === "create" ? "New Admin Account" : `Edit "${adminModal.admin.username}"`}
             </div>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: 12, textAlign: "left" }}>
-              <div>
-                <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Username</div>
-                <input
-                  value={adminForm.username}
-                  onChange={e => setAdminForm({ ...adminForm, username: e.target.value })}
-                  style={inputStyle}
-                  autoCapitalize="none"
-                />
-              </div>
-
-              {adminModal.mode === "edit" && (
-                <div>
-                  <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>
-                    New password (leave blank to keep current)
-                  </div>
-                  <input
-                    type="password"
-                    value={adminForm.password}
-                    onChange={e => setAdminForm({ ...adminForm, password: e.target.value })}
-                    placeholder="••••••••"
-                    style={inputStyle}
-                  />
+            {createdDefaultPassNotice ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12, textAlign: "left" }}>
+                <div style={{ background: "#1e3a2a", border: "1px solid #2ecc71", padding: 12, borderRadius: 8, color: "#2ecc71", fontSize: 13, lineHeight: 1.4 }}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><CheckCircleIcon size={16} /> Admin account successfully created!</span>
+                  <br/><br/>
+                  Initial default password for first login: <strong>{createdDefaultPassNotice}</strong>
+                  <br/><br/>
+                  <span style={{ color: "#aaa", fontSize: 11 }}>The new admin will be forced to update this password upon their first login.</span>
                 </div>
-              )}
-
-              <div>
-                <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Role</div>
-                <select
-                  value={adminForm.role}
-                  onChange={e => setAdminForm({ ...adminForm, role: e.target.value as Role })}
-                  style={{ ...inputStyle, cursor: "pointer" }}
+                <button
+                  onClick={() => { setAdminModal(null); fetchData(); }}
+                  style={{ ...confirmBtn, marginTop: 8 }}
                 >
-                  <option value="admin">Admin</option>
-                  <option value="super_admin">Super-admin</option>
-                </select>
+                  Done
+                </button>
               </div>
-            </div>
+            ) : (
+              <>
+                <div style={{ display: "flex", flexDirection: "column", gap: 12, textAlign: "left" }}>
+                  <div>
+                    <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Username</div>
+                    <input
+                      value={adminForm.username}
+                      onChange={e => setAdminForm({ ...adminForm, username: e.target.value })}
+                      style={inputStyle}
+                    />
+                  </div>
 
-            {adminMsg && (
-              <div style={{ fontSize: 13, color: "#e74c3c", marginTop: 12 }}>{adminMsg}</div>
+                  <div>
+                    <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Gmail Address</div>
+                    <input
+                      type="email"
+                      value={adminForm.email}
+                      onChange={e => setAdminForm({ ...adminForm, email: e.target.value })}
+                      placeholder="admin@gmail.com"
+                      style={inputStyle}
+                    />
+                  </div>
+
+                  <div>
+                    <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Role</div>
+                    <select
+                      value={adminForm.role}
+                      onChange={e => setAdminForm({ ...adminForm, role: e.target.value as Role })}
+                      style={{ ...inputStyle, cursor: "pointer" }}
+                    >
+                      <option value="admin">Admin</option>
+                      <option value="super_admin">Super-admin</option>
+                    </select>
+                  </div>
+
+                  {adminModal.mode === "create" && (
+                    <div style={{ background: "#2a2a1a", border: "1px solid #f0a500", padding: 10, borderRadius: 6, fontSize: 11, color: "#f0a500", lineHeight: 1.4 }}>
+                      <InfoIcon size={15} style={{ verticalAlign: "middle", marginRight: 5 }} /> Newly created accounts are automatically assigned the default password: <strong>DefaultPass123!</strong>
+                    </div>
+                  )}
+                </div>
+
+                {adminMsg && <div style={{ fontSize: 13, color: "#e74c3c", marginTop: 12 }}>{adminMsg}</div>}
+
+                <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+                  <button onClick={() => setAdminModal(null)} style={ghostBtn}>Cancel</button>
+                  <button onClick={handleSaveAdmin} style={confirmBtn}>
+                    {adminModal.mode === "create" ? "Create" : "Save"}
+                  </button>
+                </div>
+              </>
             )}
-
-            <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
-              <button onClick={() => setAdminModal(null)} style={ghostBtn}>Cancel</button>
-              <button onClick={handleSaveAdmin} style={confirmBtn}>
-                {adminModal.mode === "create" ? "Create" : "Save"}
-              </button>
-            </div>
           </div>
         </div>
       )}
@@ -1108,28 +1266,28 @@ export default function AdminScreen({}: Props) {
 }
 
 const fullScreen: React.CSSProperties = {
-  width: "100%", maxWidth: 1024, minHeight: "100svh", background: "#1a1a1a",
+  width: "100%", height: "100%", flex: 1, background: "#1a1a1a",
   display: "flex", flexDirection: "column", position: "relative",
   fontFamily: "'Inter', 'Segoe UI', sans-serif", overflow: "hidden",
+  boxSizing: "border-box",
 };
 const headerBar: React.CSSProperties = {
   padding: "12px 24px", borderBottom: "1px solid #2a2a2a",
-  display: "flex", alignItems: "center", gap: 12,
+  display: "flex", alignItems: "center", gap: 12, flexShrink: 0,
 };
 const headerTitle: React.CSSProperties = { fontWeight: 700, fontSize: 15, color: "#fff" };
 const headerSub: React.CSSProperties = { fontSize: 11, color: "#555" };
-const tabBar: React.CSSProperties = { display: "flex", borderBottom: "1px solid #2a2a2a", paddingLeft: 24 };
+const tabBar: React.CSSProperties = { display: "flex", borderBottom: "1px solid #2a2a2a", paddingLeft: 24, flexShrink: 0 };
 const tabBtn: React.CSSProperties = {
   padding: "10px 20px", background: "none", border: "none",
-  cursor: "pointer", fontSize: 13, fontWeight: 600, transition: "color 0.2s",
+  cursor: "pointer", fontSize: 13, fontWeight: 600,
 };
 const body: React.CSSProperties = {
   flex: 1, overflow: "hidden", padding: "16px 24px",
-  display: "flex", flexDirection: "column",
+  display: "flex", flexDirection: "column", boxSizing: "border-box",
 };
 const loginBody: React.CSSProperties = {
-  flex: 1, display: "flex", alignItems: "center", justifyContent: "center",
-  padding: 24, boxSizing: "border-box",
+  flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 24, boxSizing: "border-box",
 };
 const loginPanel: React.CSSProperties = {
   width: "100%", maxWidth: 380, display: "flex", flexDirection: "column", gap: 28,
@@ -1140,27 +1298,33 @@ const inputStyle: React.CSSProperties = {
   fontSize: 15, outline: "none", boxSizing: "border-box",
 };
 const tableWrap: React.CSSProperties = {
-  flex: 1, overflow: "auto", borderRadius: 10, border: "1px solid #2a2a2a",
+  flex: 1, overflow: "auto", borderRadius: 10, border: "1px solid #2a2a2a", boxSizing: "border-box",
 };
 const table: React.CSSProperties = { width: "100%", borderCollapse: "collapse", fontSize: 13 };
 const th: React.CSSProperties = {
   padding: "10px 14px", textAlign: "left", color: "#555",
-  fontSize: 11, fontWeight: 600, letterSpacing: 0.5,
-  background: "#1e1e1e", borderBottom: "1px solid #2a2a2a",
-  position: "sticky", top: 0,
+  fontSize: 11, fontWeight: 600, background: "#1e1e1e",
+  borderBottom: "1px solid #2a2a2a", position: "sticky", top: 0,
 };
 const td: React.CSSProperties = { padding: "10px 14px", color: "#ccc", verticalAlign: "middle" };
 const actionBtn = (bg: string, color: string): React.CSSProperties => ({
   padding: "4px 10px", borderRadius: "6px", border: "none",
   background: bg, color, fontSize: 11, cursor: "pointer", fontWeight: 600,
 });
-const statCard: React.CSSProperties = {
-  background: "#242424", border: "1px solid #2a2a2a", borderRadius: 10, padding: "14px 16px",
-};
 const refreshBtn: React.CSSProperties = {
-  padding: "6px 14px", borderRadius: 8,
-  background: "#2a2a2a", border: "1px solid #3a3a3a",
-  color: "#aaa", fontSize: 12, cursor: "pointer",
+  padding: "6px 14px", borderRadius: 8, background: "#2a2a2a",
+  border: "1px solid #3a3a3a", color: "#aaa", fontSize: 12, cursor: "pointer",
+};
+const dropdownMenu: React.CSSProperties = {
+  position: "absolute", top: "calc(100% + 6px)", right: 0, width: 200,
+  background: "#242424", border: "1px solid #3a3a3a", borderRadius: 10,
+  boxShadow: "0 8px 24px rgba(0,0,0,0.5)", zIndex: 1000,
+  display: "flex", flexDirection: "column", padding: "6px",
+};
+const dropdownItem: React.CSSProperties = {
+  padding: "10px 12px", background: "transparent", border: "none",
+  borderRadius: 6, color: "#ddd", fontSize: 13, textAlign: "left",
+  cursor: "pointer", fontWeight: 600, display: "flex", alignItems: "center", gap: 8,
 };
 const overlay: React.CSSProperties = {
   position: "absolute", inset: 0, background: "rgba(0,0,0,0.75)",
@@ -1168,15 +1332,11 @@ const overlay: React.CSSProperties = {
 };
 const modal: React.CSSProperties = {
   background: "#242424", border: "1px solid #444", borderRadius: 16,
-  padding: "32px 36px", textAlign: "center", maxWidth: 340, width: "100%",
+  padding: "32px 36px", textAlign: "center", maxWidth: 340, width: "100%", boxSizing: "border-box",
 };
 const ghostBtn: React.CSSProperties = {
-  flex: 1, padding: "11px", borderRadius: 8, fontWeight: 600,
-  fontSize: 14, background: "transparent", color: "#aaa",
-  border: "1px solid #3a3a3a", cursor: "pointer",
+  flex: 1, padding: "11px", borderRadius: 8, fontWeight: 600, fontSize: 14, background: "transparent", color: "#aaa", border: "1px solid #3a3a3a", cursor: "pointer",
 };
 const confirmBtn: React.CSSProperties = {
-  flex: 1, padding: "11px", borderRadius: 8, fontWeight: 700,
-  fontSize: 14, background: "#f0a500", color: "#000",
-  border: "none", cursor: "pointer",
+  flex: 1, padding: "11px", borderRadius: 8, fontWeight: 700, fontSize: 14, background: "#f0a500", color: "#000", border: "none", cursor: "pointer",
 };

@@ -1,25 +1,32 @@
 import { useState, useEffect } from "react";
 import BackButton from "../components/BackButton";
 import RFIDprompt from "../components/RFIDprompt";
+import PINpad from "../components/Pinpad";
 import { API } from "../config";
-import { CreditCardIcon } from "../components/KioskIcons";
+import { AlertTriangleIcon, CreditCardIcon, PrintIcon, RecyclingIcon } from "../components/KioskIcons";
 
 interface Props { onBack: () => void; }
 interface User { rfid: string; name: string; studentId: string; credits: number; }
+
+type TransferStep = "search" | "confirm" | "pin";
 
 export default function CheckBalanceScreen({ onBack }: Props) {
   const [user, setUser] = useState<User | null>(null);
   const [history, setHistory] = useState<any[]>([]);
   const [allTxns, setAllTxns] = useState<any[]>([]);
 
-  // Transfer modal state (Name typing & search)
+  // Transfer modal state
   const [showTransfer, setShowTransfer] = useState(false);
+  const [transferStep, setTransferStep] = useState<TransferStep>("search");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [selectedRecipient, setSelectedRecipient] = useState<any | null>(null);
   const [transferAmount, setTransferAmount] = useState("");
   const [transferMsg, setTransferMsg] = useState("");
   const [transferLoading, setTransferLoading] = useState(false);
+
+  // Transfer PIN Verification Step
+  const [transferPinError, setTransferPinError] = useState("");
 
   useEffect(() => {
     fetch(`${API}/api/mode`, {
@@ -62,18 +69,53 @@ export default function CheckBalanceScreen({ onBack }: Props) {
     return () => clearTimeout(timer);
   }, [searchQuery, user]);
 
-  const handleTransfer = async () => {
-    if (!user || !selectedRecipient || !transferAmount) return;
+  const handleProceedToConfirm = () => {
     const amount = parseInt(transferAmount);
     if (isNaN(amount) || amount <= 0) {
       setTransferMsg("Enter a valid credit amount.");
       return;
     }
+    if (user && amount > user.credits) {
+      setTransferMsg("Insufficient credits.");
+      return;
+    }
+    if (!selectedRecipient) {
+      setTransferMsg("Select a recipient.");
+      return;
+    }
+    // Clear message and transition to confirmation step
+    setTransferMsg("");
+    setTransferStep("confirm");
+  };
+
+  const handleProceedToPin = () => {
+    setTransferPinError("");
+    setTransferStep("pin");
+  };
+
+  const handleVerifyPinAndTransfer = async (pin: string) => {
+    if (!user || !selectedRecipient) return;
+    const amount = parseInt(transferAmount);
 
     setTransferLoading(true);
-    setTransferMsg("");
+    setTransferPinError("");
 
     try {
+      // First verify PIN
+      const pinRes = await fetch(`${API}/api/session/verify-pin`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin }),
+      });
+      const pinData = await pinRes.json();
+
+      if (!pinRes.ok || pinData.success === false) {
+        setTransferPinError(pinData.error || "Incorrect PIN.");
+        setTransferLoading(false);
+        return;
+      }
+
+      // PIN is correct, execute transfer
       const res = await fetch(`${API}/api/user/transfer`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -86,9 +128,10 @@ export default function CheckBalanceScreen({ onBack }: Props) {
       const data = await res.json();
       if (res.ok && data.success) {
         setUser({ ...user, credits: data.newCredits });
+        setTransferStep("search");
+        setShowTransfer(false);
         setTransferMsg(`Successfully transferred ${amount} credits to ${selectedRecipient.name}!`);
         setTimeout(() => {
-          setShowTransfer(false);
           setSearchQuery("");
           setSelectedRecipient(null);
           setTransferAmount("");
@@ -96,9 +139,13 @@ export default function CheckBalanceScreen({ onBack }: Props) {
           handleIdentified(user);
         }, 2000);
       } else {
+        setTransferStep("search");
+        setShowTransfer(false);
         setTransferMsg(`${data.error ?? "Transfer failed."}`);
       }
     } catch {
+      setTransferStep("search");
+      setShowTransfer(false);
       setTransferMsg("Could not reach backend.");
     }
     setTransferLoading(false);
@@ -120,23 +167,6 @@ export default function CheckBalanceScreen({ onBack }: Props) {
         {!user ? (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16, width: "100%", maxWidth: 400 }}>
             <RFIDprompt onIdentified={handleIdentified} />
-            
-            {/* DEV BYPASS BUTTON FOR TESTING */}
-            <button
-              onClick={() => handleIdentified({
-                rfid: "TEST_RFID_123",
-                name: "Test Student (Dev)",
-                studentId: "2026-0001",
-                credits: 50
-              })}
-              style={{
-                padding: "10px 16px", borderRadius: 8, background: "#222",
-                border: "1px dashed #f0a500", color: "#f0a500", fontSize: 13,
-                cursor: "pointer", fontWeight: 600, width: "100%"
-              }}
-            >
-              ⚡ [Dev Bypass] Tap Test User Account
-            </button>
           </div>
         ) : (
             <div style={scrollWrap}>
@@ -159,7 +189,14 @@ export default function CheckBalanceScreen({ onBack }: Props) {
               {/* Action buttons (Transfer Credits) */}
               <div style={{ display: "flex", gap: 12 }}>
                 <button
-                  onClick={() => { setShowTransfer(true); setTransferMsg(""); setSearchQuery(""); setSelectedRecipient(null); setTransferAmount(""); }}
+                  onClick={() => { 
+                    setTransferStep("search"); 
+                    setShowTransfer(true); 
+                    setTransferMsg(""); 
+                    setSearchQuery(""); 
+                    setSelectedRecipient(null); 
+                    setTransferAmount(""); 
+                  }}
                   style={{
                     flex: 1, padding: "12px", borderRadius: 10, background: "#2a2a2a",
                     border: "1px solid #3a3a3a", color: "#f0a500", fontWeight: 700, fontSize: 14, cursor: "pointer"
@@ -199,11 +236,11 @@ export default function CheckBalanceScreen({ onBack }: Props) {
                       padding: "8px 0", borderBottom: i < history.length - 1 ? "1px solid #2a2a2a" : "none",
                     }}>
                       <div>
-                        <div style={{ fontSize: 13, color: "#ccc" }}>
-                          {h.type === "deposit" && `♻️ Bottle deposited (${h.size ?? "—"}, ${h.weight_g ?? 0}g)`}
-                          {h.type === "print" && `🖨️ Print job voucher`}
-                          {h.type === "transfer_out" && `Transferred credits`}
-                          {h.type === "transfer_in" && `Received credits`}
+                        <div style={{ fontSize: 13, color: "#ccc", display: "flex", alignItems: "center", gap: 7 }}>
+                          {h.type === "deposit" && <><RecyclingIcon size={16} color="#2ecc71" /> Bottle deposited ({h.size ?? "—"}, {h.weight_g ?? 0}g)</>}
+                          {h.type === "print" && <><PrintIcon size={16} color="#e74c3c" /> Print job voucher</>}
+                          {h.type === "transfer_out" && <>Transferred credits</>}
+                          {h.type === "transfer_in" && <>Received credits</>}
                         </div>
                         <div style={{ fontSize: 11, color: "#555", marginTop: 2 }}>{new Date(h.created_at).toLocaleString()}</div>
                       </div>
@@ -221,11 +258,10 @@ export default function CheckBalanceScreen({ onBack }: Props) {
         }
       </div>
 
-      {/* Transfer Credits Modal (Name Search Typing) */}
-      {showTransfer && (
+      {/* Step 1: Transfer Search & Amount Modal */}
+      {showTransfer && transferStep === "search" && (
         <div style={overlay}>
           <div style={modal}>
-            <div style={{ fontSize: 36, marginBottom: 12 }}></div>
             <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>Transfer Credits</div>
             <div style={{ fontSize: 13, color: "#666", marginBottom: 20 }}>Type recipient's name or student ID</div>
 
@@ -304,25 +340,60 @@ export default function CheckBalanceScreen({ onBack }: Props) {
 
             <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
               <button onClick={() => setShowTransfer(false)} style={ghostBtn}>Cancel</button>
-              <button onClick={handleTransfer} disabled={transferLoading || !selectedRecipient || !transferAmount} style={confirmBtn}>
-                {transferLoading ? "Sending..." : "Confirm Transfer"}
+              <button onClick={handleProceedToConfirm} disabled={!selectedRecipient || !transferAmount} style={confirmBtn}>
+                Continue
               </button>
             </div>
           </div>
         </div>
+      )}
+
+      {/* Step 2: Confirmation Prompt Modal ("Are you sure to transfer...") */}
+      {showTransfer && transferStep === "confirm" && (
+        <div style={overlay}>
+          <div style={modal}>
+            <div style={{ marginBottom: 12 }}><AlertTriangleIcon size={36} color="#f0a500" /></div>
+            <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 8 }}>Confirm Transfer</div>
+            <div style={{ fontSize: 14, color: "#ccc", marginBottom: 24, lineHeight: 1.5 }}>
+              Are you sure you want to transfer <strong style={{ color: "#f0a500" }}>{transferAmount} credits</strong> to <strong style={{ color: "#fff" }}>{selectedRecipient?.name}</strong>?
+            </div>
+
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setTransferStep("search")} style={ghostBtn}>Back</button>
+              <button onClick={handleProceedToPin} style={confirmBtn}>
+                Yes, Proceed
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Step 3: Secure PIN Pad overlay for executing transfer */}
+      {showTransfer && transferStep === "pin" && (
+        <PINpad
+          title="Enter PIN"
+          subtitle={`Enter your 6-digit PIN to finalize transfer`}
+          error={transferPinError}
+          disabled={transferLoading}
+          disabledMessage={transferLoading ? "Processing transfer..." : undefined}
+          onSubmit={handleVerifyPinAndTransfer}
+          onCancel={() => setTransferStep("confirm")}
+        />
       )}
     </div>
   );
 }
 
 const fullScreen: React.CSSProperties = {
-  width: 1024, height: 600, background: "#1a1a1a",
+  width: "100%", height: "100%", flex: 1, background: "#1a1a1a",
   display: "flex", flexDirection: "column", position: "relative",
   fontFamily: "'Inter', 'Segoe UI', sans-serif", overflow: "hidden",
+  boxSizing: "border-box",
 };
 const header: React.CSSProperties = {
   padding: "14px 24px", borderBottom: "1px solid #2a2a2a",
   display: "flex", alignItems: "center", gap: 12, paddingLeft: 80,
+  flexShrink: 0,
 };
 const headerTitle: React.CSSProperties = { fontWeight: 700, fontSize: 15, color: "#fff" };
 const headerSub: React.CSSProperties = { fontSize: 11, color: "#555" };
@@ -331,8 +402,8 @@ const body: React.CSSProperties = {
   overflow: "hidden",
 };
 const scrollWrap: React.CSSProperties = {
-  width: "100%", maxWidth: 580, maxHeight: 520, overflowY: "auto",
-  display: "flex", flexDirection: "column", gap: 16,
+  width: "100%", maxWidth: 580, maxHeight: "100%", overflowY: "auto",
+  display: "flex", flexDirection: "column", gap: 16, boxSizing: "border-box",
 };
 const profileCard: React.CSSProperties = {
   background: "#242424", border: "1px solid #333", borderRadius: 14,

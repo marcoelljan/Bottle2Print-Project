@@ -11,11 +11,10 @@ export type Screen = "home" | "print" | "balance" | "deposit" | "register" | "ad
 export default function App() {
   const [screen, setScreen] = useState<Screen>("home");
 
-  // Allow remote/direct admin access via ?screen=admin (e.g. over Tailscale),
-  // without exposing an Admin tile anywhere in the public kiosk UI.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (params.get("screen") === "admin") {
+    // If the URL specifies the admin screen OR includes a reset token from Gmail, open admin
+    if (params.get("screen") === "admin" || params.get("reset_token")) {
       setScreen("admin");
     }
   }, []);
@@ -24,13 +23,13 @@ export default function App() {
   const home = () => setScreen("home");
 
   return (
-    <>
+    <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
       {screen === "home"     && <HomeScreen onNavigate={go} />}
       {screen === "print"    && <PrintScreen onBack={home} />}
       {screen === "balance"  && <CheckBalanceScreen onBack={home} />}
       {screen === "deposit"  && <DepositScreen onBack={home} onNavigate={go} />}
       {screen === "register" && <RegisterScreen onBack={home} />}
       {screen === "admin"    && <AdminScreen onBack={home} />}
-    </>
+    </div>
   );
 }

@@ -1,20 +1,39 @@
 import { useEffect, useState } from "react";
 import BackButton from "../components/BackButton";
+import PINpad from "../components/Pinpad";
 import { API, WS_URL } from "../config";
 import { AccountCircleIcon, CreditCardIcon } from "../components/KioskIcons";
 
 interface Props { onBack: () => void; }
 
-type Step = "tap" | "form" | "saving" | "success" | "error" | "already";
+type Step = "tap" | "form" | "pin" | "confirm_pin" | "saving" | "success" | "error" | "already";
+
+// Helper function to capitalize the first letter of each word (Title Case)
+const formatTitleCase = (str: string) => {
+  return str
+    .toLowerCase()
+    .replace(/(?:^|\s)\S/g, (match) => match.toUpperCase());
+};
 
 export default function RegisterScreen({ onBack }: Props) {
   const [step, setStep]         = useState<Step>("tap");
   const [rfid, setRfid]         = useState("");
-  const [name, setName]         = useState("");
+  const [surname, setSurname]   = useState("");
+  const [firstname, setFirstname] = useState("");
+  const [middlename, setMiddlename] = useState("");
   const [studentId, setStudentId] = useState("");
   const [agreed, setAgreed]     = useState(false);
+  const [firstPin, setFirstPin] = useState("");
+  const [pinError, setPinError] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
   const [pulse, setPulse]       = useState(false);
+
+  // Student ID Regex Pattern: Matches format like 123-12345M (3 digits, hyphen, 5 digits, 1 uppercase letter)
+  const studentIdRegex = /^\d{3}-\d{5}[A-Z]$/;
+  const isStudentIdValid = studentIdRegex.test(studentId.trim());
+
+  // Only show the red error if they have typed a full length code (or more) and it's invalid
+  const showStudentIdError = studentId.trim().length >= 10 && !isStudentIdValid;
 
   useEffect(() => {
     const t = setInterval(() => setPulse(p => !p), 900);
@@ -52,25 +71,33 @@ export default function RegisterScreen({ onBack }: Props) {
           const msg = JSON.parse(e.data);
           if (handled || msg.type !== "state" || !msg.session?.rfid || msg.session.sessionId === 0) return;
 
-          if (msg.session.step === "already_registered") {
+          const scannedRfid = msg.session.rfid;
+
+          let userData = null;
+          try {
+            const userRes = await fetch(`${API}/api/user/${scannedRfid}`);
+            if (userRes.ok) {
+              userData = await userRes.json();
+            }
+          } catch {}
+
+          if (userData && userData.pin_hash) {
             handled = true;
             ws?.close();
-            setRfid(msg.session.rfid);
+            setRfid(scannedRfid);
             setStep("already");
             return;
           }
 
-          if (msg.session.step === "identified") {
-            handled = true;
-            ws?.close();
-            setRfid(msg.session.rfid);
-            setName(
-              msg.session.userName && msg.session.userName !== "User"
-                ? msg.session.userName : ""
-            );
-            setStep("form");
-            return;
-          }
+          handled = true;
+          ws?.close();
+          setRfid(scannedRfid);
+          setSurname(userData?.surname ? formatTitleCase(userData.surname) : "");
+          setFirstname(userData?.firstname ? formatTitleCase(userData.firstname) : "");
+          setMiddlename(userData?.middlename ? formatTitleCase(userData.middlename) : "");
+          setStudentId(userData?.studentId ? userData.studentId.toUpperCase() : "");
+          setStep("form");
+          return;
         } catch {}
       };
     })();
@@ -92,14 +119,40 @@ export default function RegisterScreen({ onBack }: Props) {
     };
   }, [step]);
 
-  const handleSave = async () => {
-    if (!name.trim() || !studentId.trim() || !agreed) return;
+  const handleProceedToPin = () => {
+    if (!surname.trim() || !firstname.trim() || !isStudentIdValid || !agreed) return;
+    setFirstPin("");
+    setPinError("");
+    setStep("pin");
+  };
+
+  const handleFirstPinSubmit = (enteredPin: string) => {
+    setFirstPin(enteredPin);
+    setPinError("");
+    setStep("confirm_pin");
+  };
+
+  const handleConfirmPinSubmit = async (confirmedPin: string) => {
+    if (confirmedPin !== firstPin) {
+      setPinError("PINs do not match. Please try again.");
+      setFirstPin("");
+      setStep("pin");
+      return;
+    }
+
     setStep("saving");
     try {
       const res = await fetch(`${API}/api/user/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rfid, name: name.trim(), studentId: studentId.trim() }),
+        body: JSON.stringify({ 
+          rfid, 
+          surname: surname.trim(), 
+          firstname: firstname.trim(), 
+          middlename: middlename.trim(), 
+          studentId: studentId.trim().toUpperCase(),
+          pin: confirmedPin 
+        }),
       });
       if (res.ok) {
         setStep("success");
@@ -114,7 +167,7 @@ export default function RegisterScreen({ onBack }: Props) {
     }
   };
 
-  const isFormValid = name.trim() && studentId.trim() && agreed;
+  const isFormValid = surname.trim() && firstname.trim() && isStudentIdValid && agreed;
 
   return (
     <div style={fullScreen}>
@@ -148,53 +201,67 @@ export default function RegisterScreen({ onBack }: Props) {
               <div style={{ fontSize: 13, color: "#555", marginTop: 6 }}>Hold your card near the reader to begin</div>
             </div>
 
-            {/* DEV BYPASS BUTTON FOR TESTING */}
-            <button
-              onClick={() => {
-                setRfid(`TEST_REG_${Math.floor(Math.random() * 90000 + 10000)}`);
-                setStep("form");
-              }}
-              style={{
-                padding: "10px 16px", borderRadius: 8, background: "#222",
-                border: "1px dashed #f0a500", color: "#f0a500", fontSize: 13,
-                cursor: "pointer", fontWeight: 600, marginTop: 10
-              }}
-            >
-              ⚡ [Dev Bypass] Tap Test Registration
-            </button>
           </div>
         )}
 
-        {/* form */}
+        {/* form without guidelines */}
         {step === "form" && (
           <div style={card}>
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Enter your details</div>
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2 }}>Enter your details</div>
               <div style={{ fontSize: 12, color: "#555" }}>RFID: {rfid}</div>
             </div>
 
             <div style={fieldGroup}>
-              <label style={fieldLabel}>Full name</label>
+              <label style={fieldLabel}>Surname (Last Name)</label>
               <input
-                value={name}
-                onChange={e => setName(e.target.value)}
-                placeholder="e.g. Juan dela Cruz"
+                value={surname}
+                onChange={e => setSurname(formatTitleCase(e.target.value))}
+                placeholder="e.g. Dela Cruz"
                 style={input}
               />
             </div>
 
             <div style={fieldGroup}>
-              <label style={fieldLabel}>Student ID</label>
+              <label style={fieldLabel}>Firstname</label>
               <input
-                value={studentId}
-                onChange={e => setStudentId(e.target.value)}
-                placeholder="e.g. 2023-00001"
+                value={firstname}
+                onChange={e => setFirstname(formatTitleCase(e.target.value))}
+                placeholder="e.g. Juan"
                 style={input}
               />
             </div>
 
+            <div style={fieldGroup}>
+              <label style={fieldLabel}>Middlename (Full or Initial, Optional)</label>
+              <input
+                value={middlename}
+                onChange={e => setMiddlename(formatTitleCase(e.target.value))}
+                placeholder="e.g. Santos or S."
+                style={input}
+              />
+            </div>
+
+            <div style={fieldGroup}>
+              <label style={fieldLabel}>Student ID Layout (e.g. 123-12345M)</label>
+              <input
+                value={studentId}
+                onChange={e => setStudentId(e.target.value.toUpperCase())}
+                placeholder="123-12345M"
+                style={{
+                  ...input,
+                  borderColor: showStudentIdError ? "#e74c3c" : "#3a3a3a"
+                }}
+              />
+              {showStudentIdError && (
+                <div style={{ fontSize: 10, color: "#e74c3c", marginTop: 4 }}>
+                  Invalid format. Expected layout: 123-12345M
+                </div>
+              )}
+            </div>
+
             {/* Data Privacy & Terms and Agreement Checkbox */}
-            <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 20, textAlign: "left" }}>
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 18, textAlign: "left" }}>
               <input
                 type="checkbox"
                 id="terms"
@@ -203,14 +270,14 @@ export default function RegisterScreen({ onBack }: Props) {
                 style={{ marginTop: 3, cursor: "pointer", accentColor: "#f0a500" }}
               />
               <label htmlFor="terms" style={{ fontSize: 11, color: "#888", lineHeight: 1.4, cursor: "pointer" }}>
-                I agree to the <strong style={{ color: "#aaa" }}>Data Privacy Policy</strong>. I consent to the collection of my student credentials and recycling metrics for credit tracking.
+                I agree to the <strong style={{ color: "#aaa" }}>Data Privacy Policy</strong>. I consent to the collection of my credentials and recycling metrics for tracking.
               </label>
             </div>
 
             <div style={{ display: "flex", gap: 12 }}>
               <button onClick={() => setStep("tap")} style={ghostBtn}>Cancel</button>
               <button
-                onClick={handleSave}
+                onClick={handleProceedToPin}
                 disabled={!isFormValid}
                 style={{
                   flex: 1, padding: "13px", borderRadius: 10, fontWeight: 700,
@@ -219,26 +286,48 @@ export default function RegisterScreen({ onBack }: Props) {
                   color: isFormValid ? "#000" : "#555",
                 }}
               >
-                Register
+                Continue
               </button>
             </div>
           </div>
         )}
 
+        {/* PIN creation modal (Step 1) */}
+        {step === "pin" && (
+          <PINpad
+            title="Create your 6-digit PIN"
+            subtitle="You will use this PIN to log in and transfer credits"
+            length={6}
+            error={pinError}
+            onSubmit={handleFirstPinSubmit}
+            onCancel={() => setStep("form")}
+          />
+        )}
+
+        {/* PIN confirmation modal (Step 2) */}
+        {step === "confirm_pin" && (
+          <PINpad
+            title="Confirm your 6-digit PIN"
+            subtitle="Re-enter your PIN to verify"
+            length={6}
+            error={pinError}
+            onSubmit={handleConfirmPinSubmit}
+            onCancel={() => setStep("pin")}
+          />
+        )}
+
         {/* saving */}
         {step === "saving" && (
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 48, marginBottom: 16 }}></div>
-            <div style={{ fontSize: 18, color: "#f0a500" }}>Saving...</div>
+            <div style={{ fontSize: 18, color: "#f0a500" }}>Saving account & PIN...</div>
           </div>
         )}
 
         {/* success */}
         {step === "success" && (
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 64, marginBottom: 16 }}></div>
             <div style={{ fontSize: 22, color: "#2ecc71", fontWeight: 700, marginBottom: 8 }}>Registered!</div>
-            <div style={{ fontSize: 14, color: "#aaa", marginBottom: 8 }}>{name}</div>
+            <div style={{ fontSize: 14, color: "#aaa", marginBottom: 4 }}>{surname}, {firstname} {middlename}</div>
             <div style={{ fontSize: 12, color: "#666", marginBottom: 24 }}>Student ID: {studentId}</div>
             <button onClick={onBack} style={doneBtn}>Done</button>
           </div>
@@ -247,7 +336,6 @@ export default function RegisterScreen({ onBack }: Props) {
         {/* already registered */}
         {step === "already" && (
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 64, marginBottom: 16 }}>ℹ️</div>
             <div style={{ fontSize: 20, color: "#f0a500", fontWeight: 700, marginBottom: 8 }}>Card already registered</div>
             <div style={{ fontSize: 14, color: "#aaa", marginBottom: 24 }}>
               This RFID card is already linked to an account.
@@ -259,7 +347,6 @@ export default function RegisterScreen({ onBack }: Props) {
         {/* error */}
         {step === "error" && (
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 64, marginBottom: 16 }}></div>
             <div style={{ fontSize: 20, color: "#e74c3c", fontWeight: 700, marginBottom: 8 }}>Registration failed</div>
             <div style={{ fontSize: 14, color: "#aaa", marginBottom: 24 }}>{errorMsg}</div>
             <button onClick={() => setStep("form")} style={doneBtn}>Try again</button>
@@ -271,29 +358,33 @@ export default function RegisterScreen({ onBack }: Props) {
 }
 
 const fullScreen: React.CSSProperties = {
-  width: 1024, height: 600, background: "#1a1a1a",
+  width: "100%", height: "100%", flex: 1, background: "#1a1a1a",
   display: "flex", flexDirection: "column", position: "relative",
   fontFamily: "'Inter', 'Segoe UI', sans-serif", overflow: "hidden",
+  boxSizing: "border-box",
 };
 const headerBar: React.CSSProperties = {
   padding: "14px 24px", borderBottom: "1px solid #2a2a2a",
   display: "flex", alignItems: "center", gap: 12, paddingLeft: 80,
+  flexShrink: 0,
 };
 const headerTitle: React.CSSProperties = { fontWeight: 700, fontSize: 15, color: "#fff" };
 const headerSub: React.CSSProperties = { fontSize: 11, color: "#555" };
 const body: React.CSSProperties = {
   flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 24,
+  overflow: "hidden",
 };
 const card: React.CSSProperties = {
   background: "#242424", border: "1px solid #333", borderRadius: 14,
-  padding: "24px 32px", width: "100%", maxWidth: 460,
+  padding: "20px 28px", width: "100%", maxWidth: 460,
+  maxHeight: "100%", overflowY: "auto", boxSizing: "border-box",
 };
-const fieldGroup: React.CSSProperties = { marginBottom: 14 };
-const fieldLabel: React.CSSProperties = { fontSize: 12, color: "#888", display: "block", marginBottom: 6 };
+const fieldGroup: React.CSSProperties = { marginBottom: 12 };
+const fieldLabel: React.CSSProperties = { fontSize: 11, color: "#888", display: "block", marginBottom: 4 };
 const input: React.CSSProperties = {
-  width: "100%", padding: "12px 14px", background: "#1e1e1e",
+  width: "100%", padding: "10px 12px", background: "#1e1e1e",
   border: "1px solid #3a3a3a", borderRadius: 8, color: "#fff",
-  fontSize: 15, outline: "none",
+  fontSize: 14, outline: "none", boxSizing: "border-box",
 };
 const ghostBtn: React.CSSProperties = {
   flex: 1, padding: "13px", borderRadius: 10, fontWeight: 600,

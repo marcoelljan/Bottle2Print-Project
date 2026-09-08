@@ -1,4 +1,16 @@
 import { useEffect, useState } from "react";
+import type { ReactNode } from "react";
+import {
+  AlertTriangleIcon,
+  CheckCircleIcon,
+  ClockIcon,
+  RecyclingIcon,
+  RulerIcon,
+  ScaleIcon,
+  SearchIcon,
+  SignalIcon,
+  XCircleIcon,
+} from "./KioskIcons";
 
 const WS_URL = `ws://${window.location.host}/ws`;
 
@@ -17,11 +29,11 @@ interface Session {
   errorMsg: string | null;
 }
 
-const STEP_ICONS: Record<string, string> = {
-  ir:         "📡",
-  capacitive: "🔎",
-  tof:        "📏",
-  loadcell:   "⚖️",
+const STEP_ICONS: Record<string, ReactNode> = {
+  ir:         <SignalIcon size={24} />,
+  capacitive: <SearchIcon size={24} />,
+  tof:        <RulerIcon size={24} />,
+  loadcell:   <ScaleIcon size={24} />,
 };
 
 const STATUS_COLOR: Record<StepStatus, string> = {
@@ -78,7 +90,7 @@ export default function DepositFlow() {
       {/* IDLE — waiting for RFID */}
       {step === "idle" && (
         <div style={{ textAlign: "center" }}>
-          <div style={{ fontSize: 64, marginBottom: 16 }}>♻️</div>
+          <div style={{ marginBottom: 16 }}><RecyclingIcon size={64} color="#f0a500" /></div>
           <h2 style={{ fontSize: 28, color: "#f0a500", marginBottom: 8 }}>Deposit Bottles</h2>
           <p style={{ color: "#aaa", fontSize: 16 }}>Tap your RFID card to open the gate</p>
         </div>
@@ -110,16 +122,16 @@ export default function DepositFlow() {
               border: `1.5px solid ${STATUS_COLOR[s.status]}`,
               transition: "border-color 0.3s",
             }}>
-              <span style={{ fontSize: 24 }}>{STEP_ICONS[s.id]}</span>
+              <span style={{ display: "flex", color: "#f0a500" }}>{STEP_ICONS[s.id]}</span>
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: 15, fontWeight: 600 }}>{s.label}</div>
                 {s.detail && <div style={{ fontSize: 12, color: "#aaa", marginTop: 2 }}>{s.detail}</div>}
               </div>
-              <div style={{ fontSize: 20 }}>
-                {s.status === "pending" && <span style={{ color: "#555" }}>○</span>}
-                {s.status === "running" && <span style={{ color: "#f0a500" }}>◌</span>}
-                {s.status === "pass"    && <span style={{ color: "#2ecc71" }}>✓</span>}
-                {s.status === "fail"    && <span style={{ color: "#e74c3c" }}>✗</span>}
+              <div style={{ display: "flex" }}>
+                {s.status === "pending" && <ClockIcon size={20} color="#555" />}
+                {s.status === "running" && <ClockIcon size={20} color="#f0a500" />}
+                {s.status === "pass"    && <CheckCircleIcon size={20} color="#2ecc71" />}
+                {s.status === "fail"    && <XCircleIcon size={20} color="#e74c3c" />}
               </div>
             </div>
           ))}
@@ -129,7 +141,7 @@ export default function DepositFlow() {
       {/* RESULT — accepted */}
       {step === "result" && session?.result === "accepted" && (
         <div style={{ textAlign: "center" }}>
-          <div style={{ fontSize: 72, marginBottom: 16 }}>✅</div>
+          <div style={{ marginBottom: 16 }}><CheckCircleIcon size={72} color="#2ecc71" /></div>
           <h2 style={{ fontSize: 26, color: "#2ecc71", marginBottom: 8 }}>Bottle accepted!</h2>
           <p style={{ color: "#ccc", fontSize: 16 }}>
             Size: <strong style={{ color: "#f0a500" }}>{session.size}</strong>
@@ -151,7 +163,7 @@ export default function DepositFlow() {
       {/* RESULT — rejected */}
       {step === "result" && session?.result === "rejected" && (
         <div style={{ textAlign: "center" }}>
-          <div style={{ fontSize: 72, marginBottom: 16 }}>❌</div>
+          <div style={{ marginBottom: 16 }}><XCircleIcon size={72} color="#e74c3c" /></div>
           <h2 style={{ fontSize: 26, color: "#e74c3c", marginBottom: 8 }}>Bottle rejected</h2>
           <p style={{ color: "#aaa", fontSize: 15, maxWidth: 420, margin: "0 auto" }}>
             {session.errorMsg}
@@ -162,7 +174,9 @@ export default function DepositFlow() {
 
       {/* TIMEOUT */}
       {step === "idle" && session?.errorMsg && (
-        <p style={{ color: "#e74c3c", fontSize: 14, marginTop: 16 }}>{session.errorMsg}</p>
+        <p style={{ color: "#e74c3c", fontSize: 14, marginTop: 16, display: "flex", alignItems: "center", gap: 6 }}>
+          <AlertTriangleIcon size={16} color="#e74c3c" /> {session.errorMsg}
+        </p>
       )}
 
     </div>

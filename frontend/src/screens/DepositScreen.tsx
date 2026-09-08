@@ -5,12 +5,20 @@ import FeedBackModal from "../components/FeedbackModal";
 import { API, WS_URL } from "../config";
 import type { Screen } from "../App";
 import {
+  AlertTriangleIcon,
+  CheckCircleIcon,
+  ClockIcon,
   RecyclingIcon,
   CreditCardIcon,
   CreditCardOffIcon,
+  RulerIcon,
+  ScaleIcon,
+  SearchIcon,
+  SignalIcon,
+  XCircleIcon,
 } from "../components/KioskIcons";
 
-interface Props { onBack: () => void; onNavigate: (s: Screen) => void; }
+interface Props { onBack: () => void; onNavigate: (s: Screen, params?: any) => void; }
 interface User { rfid: string; name: string; studentId: string; credits: number; }
 
 type StepStatus = "pending" | "running" | "pass" | "fail";
@@ -29,9 +37,8 @@ interface Session {
   errorMsg: string | null;
 }
 
-
-const STEP_ICONS: Record<string, string> = {
-  ir: "📡", capacitive: "🔎", tof: "📏", loadcell: "⚖️",
+const STEP_ICONS: Record<string, React.ReactNode> = {
+  ir: <SignalIcon size={22} />, capacitive: <SearchIcon size={22} />, tof: <RulerIcon size={22} />, loadcell: <ScaleIcon size={22} />,
 };
 const STATUS_COLOR: Record<StepStatus, string> = {
   pending: "#3a3a3a", running: "#f0a500", pass: "#2ecc71", fail: "#e74c3c",
@@ -45,48 +52,48 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
   const [guestMode, setGuestMode] = useState(false);
   const [showRfidPrompt, setShowRfidPrompt] = useState(false);
   const feedbackShownRef = useRef(false);
-  
 
   const step = session?.step ?? "idle";
 
- useEffect(() => {
-  fetch(`${API}/api/mode`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode: "deposit" }),
-  });
-  return () => {
+  useEffect(() => {
     fetch(`${API}/api/mode`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "idle" }),
+      body: JSON.stringify({ mode: "deposit" }),
     });
-  };
-}, []);
+    return () => {
+      fetch(`${API}/api/mode`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "idle" }),
+      });
+    };
+  }, []);
+
   useEffect(() => {
-  const ws = new WebSocket(WS_URL);
-  let shouldClose = false;
+    const ws = new WebSocket(WS_URL);
+    let shouldClose = false;
 
-  ws.onopen  = () => {
-    setConnected(true);
-    if (shouldClose) ws.close();
-  };
-  ws.onclose = () => setConnected(false);
-  ws.onmessage = (e) => {
-    try {
-      const msg = JSON.parse(e.data);
-      if (msg.type === "state") setSession(msg.session);
-    } catch {}
-  };
+    ws.onopen  = () => {
+      setConnected(true);
+      if (shouldClose) ws.close();
+    };
+    ws.onclose = () => setConnected(false);
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === "state") setSession(msg.session);
+      } catch {}
+    };
 
-  return () => {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.close();
-    } else if (ws.readyState === WebSocket.CONNECTING) {
-      shouldClose = true;
-    }
-  };
-}, []);
+    return () => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      } else if (ws.readyState === WebSocket.CONNECTING) {
+        shouldClose = true;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (step === "result" && session?.result === "accepted" && !feedbackShownRef.current) {
@@ -102,13 +109,12 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
       await fetch(`${API}/api/deposit/guest-start`, { method: "POST" });
       setGuestMode(true);
       setUser({ rfid: "GUEST", name: "Guest", studentId: "", credits: 0 });
-    } catch {
-      // optional: show an error state here
-    }
+    } catch {}
   };
 
   const handleDoneDepositing = () => {
-    onNavigate("print");
+    localStorage.setItem("guestCredits", String(session?.credits || 0));
+    onNavigate("print", { credits: session?.credits || 0, isGuest: true });
   };
 
   const inValidation = ["ir", "capacitive", "tof", "loadcell"].includes(step);
@@ -130,16 +136,12 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
       </div>
 
       <div style={body}>
-
-        {/* tap card first if not yet identified */}
-       {!user && !guestMode && !showRfidPrompt && (step === "idle" || step === "unregistered") && !session?.errorMsg && (
+        {!user && !guestMode && !showRfidPrompt && (step === "idle" || step === "unregistered") && !session?.errorMsg && (
           <div style={{ textAlign: "center", width: "100%", maxWidth: 760 }}>
             <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 18 }}>How would you like to deposit?</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, maxWidth: 640, margin: "0 auto" }}>
               <button onClick={() => setShowRfidPrompt(true)} style={choiceTileStyle}>
-                <div style={tileIconWrap}>
-                  <CreditCardIcon size={28} color="#f0a500" />
-                </div>
+                <div style={tileIconWrap}><CreditCardIcon size={28} color="#f0a500" /></div>
                 <div style={{ textAlign: "left" }}>
                   <div style={tileLabel}>Tap RFID Card</div>
                   <div style={tileSub}>Use your registered card</div>
@@ -147,9 +149,7 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
               </button>
 
               <button onClick={handleGuestStart} style={choiceTileStyle}>
-                <div style={tileIconWrap}>
-                  <CreditCardOffIcon size={28} color="#f0a500" />
-                </div>
+                <div style={tileIconWrap}><CreditCardOffIcon size={28} color="#f0a500" /></div>
                 <div style={{ textAlign: "left" }}>
                   <div style={tileLabel}>Continue as Guest</div>
                   <div style={tileSub}>No RFID card needed</div>
@@ -162,10 +162,10 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
         {!user && showRfidPrompt && (step === "idle" || step === "unregistered") && !session?.errorMsg && (
           <RFIDprompt onIdentified={handleIdentified} />
         )}
-        {/* gate open — insert bottle */}
+
         {user && step === "gate_open" && (
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 64, marginBottom: 16 }}></div>
+            <div style={{ marginBottom: 16 }}><RecyclingIcon size={64} color="#f0a500" /></div>
             <div style={{ fontSize: 22, color: "#f0a500", fontWeight: 700 }}>Gate open</div>
             <div style={{ fontSize: 15, color: "#ccc", marginTop: 8 }}>
               Welcome, <strong>{session?.userName ?? user.name}</strong>
@@ -180,7 +180,6 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
           </div>
         )}
 
-        {/* validation steps */}
         {inValidation && (
           <div style={{ width: "100%", maxWidth: 560 }}>
             <div style={{ textAlign: "center", marginBottom: 20 }}>
@@ -194,26 +193,25 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
                 border: `1.5px solid ${STATUS_COLOR[s.status]}`,
                 transition: "border-color 0.3s",
               }}>
-                <span style={{ fontSize: 22, width: 28, textAlign: "center" }}>{STEP_ICONS[s.id]}</span>
+                <span style={{ display: "flex", width: 28, justifyContent: "center", color: "#f0a500" }}>{STEP_ICONS[s.id]}</span>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 14, fontWeight: 600 }}>{s.label}</div>
                   {s.detail && <div style={{ fontSize: 11, color: "#aaa", marginTop: 2 }}>{s.detail}</div>}
                 </div>
-                <div style={{ fontSize: 20, width: 24, textAlign: "center" }}>
-                  {s.status === "pending" && <span style={{ color: "#444" }}>○</span>}
-                  {s.status === "running" && <span style={{ color: "#f0a500" }}>◌</span>}
-                  {s.status === "pass"    && <span style={{ color: "#2ecc71" }}>✓</span>}
-                  {s.status === "fail"    && <span style={{ color: "#e74c3c" }}>✗</span>}
+                <div style={{ display: "flex", width: 24, justifyContent: "center" }}>
+                  {s.status === "pending" && <ClockIcon size={20} color="#444" />}
+                  {s.status === "running" && <ClockIcon size={20} color="#f0a500" />}
+                  {s.status === "pass"    && <CheckCircleIcon size={20} color="#2ecc71" />}
+                  {s.status === "fail"    && <XCircleIcon size={20} color="#e74c3c" />}
                 </div>
               </div>
             ))}
           </div>
         )}
 
-        {/* result — accepted */}
         {step === "result" && session?.result === "accepted" && (
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 64, marginBottom: 12 }}>✅</div>
+            <div style={{ marginBottom: 12 }}><CheckCircleIcon size={64} color="#2ecc71" /></div>
             <div style={{ fontSize: 24, color: "#2ecc71", fontWeight: 700, marginBottom: 6 }}>Bottle accepted!</div>
             <div style={{ fontSize: 14, color: "#aaa", marginBottom: 20 }}>
               Size: <strong style={{ color: "#f0a500" }}>{session.size}</strong>
@@ -223,14 +221,20 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
               <div style={{ fontSize: 12, color: "#666" }}>Total credits</div>
               <div style={{ fontSize: 44, fontWeight: 800, color: "#f0a500" }}>{session.credits}</div>
             </div>
+            {guestMode && (
+              <div style={{ marginTop: 20 }}>
+                <button onClick={handleDoneDepositing} style={{ ...backBtn, maxWidth: 260 }}>
+                  Done — Go to Print ({session.credits} credits)
+                </button>
+              </div>
+            )}
             <div style={{ fontSize: 12, color: "#444", marginTop: 14 }}>Returning to home screen...</div>
           </div>
         )}
 
-        {/* result — rejected */}
         {step === "result" && session?.result === "rejected" && (
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 64, marginBottom: 12 }}>❌</div>
+            <div style={{ marginBottom: 12 }}><XCircleIcon size={64} color="#e74c3c" /></div>
             <div style={{ fontSize: 22, color: "#e74c3c", fontWeight: 700, marginBottom: 8 }}>Bottle rejected</div>
             <div style={{ fontSize: 14, color: "#aaa", maxWidth: 400, margin: "0 auto 20px" }}>
               {session.errorMsg}
@@ -239,10 +243,9 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
           </div>
         )}
 
-        {/* timeout */}
         {step === "idle" && session?.errorMsg && (
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 48, marginBottom: 12 }}>⏱️</div>
+            <div style={{ marginBottom: 12 }}><AlertTriangleIcon size={48} color="#e74c3c" /></div>
             <div style={{ fontSize: 16, color: "#e74c3c" }}>{session.errorMsg}</div>
             <button onClick={onBack} style={{ ...backBtn, marginTop: 20, maxWidth: 200 }}>Go back</button>
           </div>
@@ -261,18 +264,21 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
 }
 
 const fullScreen: React.CSSProperties = {
-  width: 1024, height: 600, background: "#1a1a1a",
+  width: "100%", height: "100%", flex: 1, background: "#1a1a1a",
   display: "flex", flexDirection: "column", position: "relative",
   fontFamily: "'Inter', 'Segoe UI', sans-serif", overflow: "hidden",
+  boxSizing: "border-box",
 };
 const headerBar: React.CSSProperties = {
   padding: "14px 24px", borderBottom: "1px solid #2a2a2a",
   display: "flex", alignItems: "center", gap: 12, paddingLeft: 80,
+  flexShrink: 0,
 };
 const headerTitle: React.CSSProperties = { fontWeight: 700, fontSize: 15, color: "#fff" };
 const headerSub: React.CSSProperties = { fontSize: 11, color: "#555" };
 const body: React.CSSProperties = {
   flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 24,
+  overflow: "hidden",
 };
 const creditBox: React.CSSProperties = {
   display: "inline-block", background: "#242424", border: "1.5px solid #2ecc71",
@@ -284,36 +290,14 @@ const backBtn: React.CSSProperties = {
   fontSize: 15, border: "none", cursor: "pointer",
 };
 const choiceTileStyle: React.CSSProperties = {
-  background: "#242424",
-  border: "1px solid #333",
-  borderRadius: 14,
-  padding: "20px 22px",
-  display: "flex",
-  alignItems: "center",
-  gap: 18,
-  cursor: "pointer",
-  textAlign: "left",
-  minHeight: 120,
-  boxShadow: "none",
+  background: "#242424", border: "1px solid #333", borderRadius: 14,
+  padding: "20px 22px", display: "flex", alignItems: "center",
+  gap: 18, cursor: "pointer", textAlign: "left", minHeight: 120, boxShadow: "none",
 };
 const tileIconWrap: React.CSSProperties = {
-  width: 52,
-  height: 52,
-  borderRadius: 12,
-  background: "#1a1a1a",
-  border: "1px solid #3a3a3a",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  flexShrink: 0,
+  width: 52, height: 52, borderRadius: 12, background: "#1a1a1a",
+  border: "1px solid #3a3a3a", display: "flex", alignItems: "center",
+  justifyContent: "center", flexShrink: 0,
 };
-const tileLabel: React.CSSProperties = {
-  fontSize: 18,
-  fontWeight: 700,
-  color: "#fff",
-  marginBottom: 4,
-};
-const tileSub: React.CSSProperties = {
-  fontSize: 12,
-  color: "#666",
-};
+const tileLabel: React.CSSProperties = { fontSize: 18, fontWeight: 700, color: "#fff", marginBottom: 4 };
+const tileSub: React.CSSProperties = { fontSize: 12, color: "#666" };

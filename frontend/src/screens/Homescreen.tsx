@@ -31,9 +31,10 @@ export default function HomeScreen({ onNavigate }: Props) {
   const [showFeedback, setShowFeedback] = useState(false);
   return (
     <div style={{
-      width: 1024, height: 600, background: "#1a1a1a",
+      width: "100%", height: "100%", flex: 1, background: "#1a1a1a",
       display: "flex", flexDirection: "column",
       fontFamily: "'Inter', 'Segoe UI', sans-serif",
+      boxSizing: "border-box", overflow: "hidden",
     }}>
 
       {/* header */}
@@ -41,6 +42,7 @@ export default function HomeScreen({ onNavigate }: Props) {
         padding: "14px 24px",
         borderBottom: "1px solid #2a2a2a",
         display: "flex", alignItems: "center", justifyContent: "space-between",
+        flexShrink: 0,
       }}>
         <div>
           <span style={{ fontWeight: 800, fontSize: 16, color: "#fff", letterSpacing: 1 }}>
@@ -57,7 +59,7 @@ export default function HomeScreen({ onNavigate }: Props) {
       </div>
 
       {/* main */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "16px 32px" }}>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "16px 32px", overflowY: "auto" }}>
         <p style={{ fontSize: 20, fontWeight: 600, marginBottom: 4 }}>Select a function to begin</p>
         <p style={{ fontSize: 13, color: "#666", marginBottom: 24 }}>Tap any option below</p>
 
@@ -100,10 +102,6 @@ export default function HomeScreen({ onNavigate }: Props) {
             </button>
           ))}
         </div>
-
-        {/* Admin Access tile intentionally removed from the public kiosk UI.
-            Admin is reached only via ?screen=admin (remote/Tailscale access)
-            or a hidden on-site gesture if you choose to add one later. */}
 
         <button
           onClick={() => setShowFeedback(true)}
