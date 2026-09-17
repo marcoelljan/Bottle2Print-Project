@@ -1,4 +1,5 @@
 import path from "path";
+import fs from "fs";
 import dotenv from "dotenv";
 dotenv.config();
 import express from "express";
@@ -124,23 +125,6 @@ function setStep(id: string, status: StepStatus, detail?: string) {
   if (s) { s.status = status; if (detail) s.detail = detail; }
 }
 
-const app = express();
-app.use(cors());
-app.use(express.json());
-
-type KioskMode = "deposit" | "register" | "balance" | "print" | "admin" | "idle";
-let kioskMode: KioskMode = "idle";
-
-const frontendDist = path.join(__dirname, "..", "..", "frontend", "dist");
-app.use(express.static(frontendDist));
-
-app.post("/api/mode", (req, res) => {
-  kioskMode = req.body.mode as KioskMode;
-  console.log("Kiosk mode:", kioskMode);
-  resetSession(true);
-  res.json({ success: true, mode: kioskMode });
-});
-
 function continueDepositLoop() {
   const stillActive = session.rfid === "GUEST" ? isGuestActive() : rfidDepositSessionActive;
 
@@ -168,6 +152,21 @@ function finalizeDepositSession() {
     if (session.step === "session_summary") resetSession(true);
   }, 15000);
 }
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+type KioskMode = "deposit" | "register" | "balance" | "print" | "admin" | "idle";
+let kioskMode: KioskMode = "idle";
+
+// ── 1. MOUNT API ROUTES FIRST ──────────────────────────────────────────────
+app.post("/api/mode", (req, res) => {
+  kioskMode = req.body.mode as KioskMode;
+  console.log("Kiosk mode:", kioskMode);
+  resetSession(true);
+  res.json({ success: true, mode: kioskMode });
+});
 
 app.get("/api/mode", (_req, res) => res.json({ mode: kioskMode }));
 
@@ -311,8 +310,6 @@ app.post("/api/deposit/guest-start", (_req, res) => {
   Object.assign(session, freshDepositTotals());
 
   broadcastState();
-  
-  // Correctly placed inside the endpoint
   sendToArduino("GUEST_START");
 
   res.json({ success: true, credits: getGuestCredits() });
@@ -330,13 +327,27 @@ app.post("/api/deposit/guest-stop", (_req, res) => {
 
 app.get("/api/session", (_req, res) => res.json(session));
 
+// Mount modular routers
 app.use(userRoutes);
 app.use(printRoutes);
 app.use(adminRoutes);
 app.use(feedbackRoutes);
 
+// ── 2. SERVE FRONTEND STATIC FILES SECOND ──────────────────────────────────
+const frontendDist = path.join(__dirname, "..", "..", "frontend", "dist");
+if (fs.existsSync(frontendDist)) {
+  app.use(express.static(frontendDist));
+} else {
+  console.warn(`[Warning] Frontend build directory not found at: ${frontendDist}. Run 'npm run build' in your frontend folder.`);
+}
+
+// ── 3. SPA CATCH-ALL FALLBACK LAST ─────────────────────────────────────────
 app.get(/^(?!\/api|\/upload).*/, (_req, res) => {
-  res.sendFile(path.join(frontendDist, "index.html"));
+  if (fs.existsSync(path.join(frontendDist, "index.html"))) {
+    res.sendFile(path.join(frontendDist, "index.html"));
+  } else {
+    res.status(404).send("Frontend build not found. Please build your frontend application.");
+  }
 });
 
 const httpServer = createServer(app);
