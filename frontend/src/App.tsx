@@ -13,8 +13,13 @@ export default function App() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    // If the URL specifies the admin screen OR includes a reset token from Gmail, open admin
-    if (params.get("screen") === "admin" || params.get("reset_token")) {
+    // If the URL specifies the admin screen, includes a reset token from Gmail,
+    // or the path is /admin, open admin directly
+    if (
+      params.get("screen") === "admin" ||
+      params.get("reset_token") ||
+      window.location.pathname === "/admin"
+    ) {
       setScreen("admin");
     }
   }, []);
