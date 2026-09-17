@@ -107,8 +107,10 @@ router.post("/api/admin/forgot-password", async (req, res) => {
   const expiresAt = Date.now() + 15 * 60 * 1000; // 15 mins
   resetTokens.set(token, { adminId: admin.id, expiresAt });
 
-  const resetLink = `http://localhost:5173/?reset_token=${token}`;
-
+  // Dynamically detect the host (works with Tailscale domain, IP, or localhost)
+  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+  const host = req.get('host'); // e.g., bottle2print.tail654e2a.ts.net:4000
+  const resetLink = `${protocol}://${host}/?reset_token=${token}`;
   try {
     await transporter.sendMail({
       from: `"Bottle2Print Kiosk" <${process.env.SMTP_USER}>`,
