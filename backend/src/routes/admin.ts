@@ -195,7 +195,7 @@ router.post("/api/admin/login", async (req, res) => {
   });
 });
 
-router.use(requireAuth);
+router.use("/api/admin", requireAuth);
 
 router.get("/api/admin/me", (req: any, res) => {
   const admin = db.prepare("SELECT email, password_changed FROM admins WHERE id = ?").get(req.admin.adminId) as any;
