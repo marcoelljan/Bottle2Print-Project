@@ -26,9 +26,17 @@ interface User {
   credits: number; created_at: string;
 }
 interface Transaction {
-  id: number; rfid: string; type: string; size?: string;
-  height_mm?: number; weight_g?: number; credits: number; created_at: string;
+  id: number; 
+  rfid: string; 
+  user_name?: string; // Added user name mapping
+  type: string; 
+  size?: string;
+  height_mm?: number; 
+  weight_g?: number; 
+  credits: number; 
+  created_at: string;
 }
+
 interface ActivityLog {
   id: number; admin_user: string; action: string; details: string; created_at: string;
 }
@@ -133,6 +141,15 @@ export default function AdminScreen({}: Props) {
   const [feedback, setFeedback]     = useState<Feedback[]>([]);
   const [admins, setAdmins]         = useState<AdminAccount[]>([]);
   const [loading, setLoading]       = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [filterValue, setFilterValue] = useState("all");
+  const [dateFilter, setDateFilter] = useState("");
+  // Clear search query whenever the active tab changes
+useEffect(() => {
+  setSearchQuery("");
+  setFilterValue("all");
+  setDateFilter("");
+}, [tab]);
 
   const [editUserModal, setEditUserModal] = useState<User | null>(null);
   const [editName, setEditName]       = useState("");
@@ -835,161 +852,329 @@ export default function AdminScreen({}: Props) {
       <div style={body}>
         {loading && <div style={{ color: "#666", fontSize: 14 }}>Loading...</div>}
 
+         {/* 1. ACTIVITY LOGS */}
         {!loading && tab === "logs" && (
-          <div style={tableWrap}>
-            <table style={table}>
-              <thead>
-                <tr>{["Time", "Admin User", "Action", "Details"].map(h => <th key={h} style={th}>{h}</th>)}</tr>
-              </thead>
-              <tbody>
-                {activityLogs.length === 0 && <tr><td colSpan={4} style={{ ...td, textAlign: "center", color: "#555" }}>No activity logs recorded yet</td></tr>}
-                {activityLogs.map(l => (
-                  <tr key={l.id} style={{ borderBottom: "1px solid #2a2a2a" }}>
-                    <td style={td}>{formatPhTime(l.created_at)}</td>
-                    <td style={{ ...td, fontWeight: 600, color: "#f0a500" }}>{l.admin_user}</td>
-                    <td style={td}>
-                      <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, background: "#2a2a2a", color: "#fff" }}>
-                        {l.action}
-                      </span>
-                    </td>
-                    <td style={td}>{l.details}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {!loading && tab === "users" && (
-          <div style={tableWrap}>
-            <table style={table}>
-              <thead>
-                <tr>{["Name", "Student ID", "RFID", "Credits", "Registered", "Actions"].map(h => <th key={h} style={th}>{h}</th>)}</tr>
-              </thead>
-              <tbody>
-                {users.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: "center", color: "#555" }}>No users yet</td></tr>}
-                {users.map(u => (
-                  <tr key={u.rfid} style={{ borderBottom: "1px solid #2a2a2a" }}>
-                    <td style={td}>{u.name}</td>
-                    <td style={td}>{u.studentId || <span style={{ color: "#444" }}>—</span>}</td>
-                    <td style={{ ...td, fontFamily: "monospace", fontSize: 11, color: "#666" }}>{u.rfid}</td>
-                    <td style={{ ...td, color: "#f0a500", fontWeight: 700 }}>{u.credits}</td>
-                    <td style={{ ...td, fontSize: 11, color: "#555" }}>{new Date(u.created_at).toLocaleDateString()}</td>
-                    <td style={td}>
-                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                        <button
-                          onClick={() => {
-                            setEditUserModal(u);
-                            setEditName(u.name);
-                            setEditStudentId(u.studentId);
-                            setEditMsg("");
-                          }}
-                          style={actionBtn("#1e293b", "#38bdf8")}
-                        >
-                          Edit
-                        </button>
-                        <button onClick={() => handleDeleteUser(u.rfid)} style={actionBtn("#3a1a1a", "#e74c3c")}>Delete</button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {!loading && tab === "transactions" && (
-          <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={tableWrap}>
+          <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 12, height: "100%", overflow: "hidden" }}>
+            <div style={{ display: "flex", gap: 10, flexShrink: 0, flexWrap: "wrap" }}>
+              <input
+                type="text"
+                placeholder="Search logs..."
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                style={{ ...inputStyle, maxWidth: 240, padding: "8px 12px", fontSize: 13 }}
+              />
+              <select
+                value={filterValue}
+                onChange={e => setFilterValue(e.target.value)}
+                style={{ ...inputStyle, maxWidth: 180, padding: "8px 12px", fontSize: 13, cursor: "pointer" }}
+              >
+                <option value="all">All Actions</option>
+                <option value="CREATE_ADMIN">Create Admin</option>
+                <option value="EDIT_ADMIN">Edit Admin</option>
+                <option value="DELETE_ADMIN">Delete Admin</option>
+                <option value="RESET_PASSWORD">Reset Password</option>
+              </select>
+              <input
+                type="date"
+                value={dateFilter}
+                onChange={e => setDateFilter(e.target.value)}
+                style={{ ...inputStyle, maxWidth: 140, padding: "8px 12px", fontSize: 13, colorScheme: "dark", cursor: "pointer" }}
+              />
+              {(searchQuery || filterValue !== "all" || dateFilter) && (
+                <button onClick={() => { setSearchQuery(""); setFilterValue("all"); setDateFilter(""); }} style={actionBtn("#2a2a2a", "#aaa")}>Clear</button>
+              )}
+            </div>
+            <div style={{ ...tableWrap, overflowY: "auto", flex: 1 }}>
               <table style={table}>
                 <thead>
-                  <tr>{["#", "Time", "RFID", "Type", "Size", "Credits"].map(h => <th key={h} style={th}>{h}</th>)}</tr>
+                  <tr>{["Time", "Admin User", "Action", "Details"].map(h => <th key={h} style={th}>{h}</th>)}</tr>
                 </thead>
                 <tbody>
-                  {txns.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: "center", color: "#555" }}>No transactions yet</td></tr>}
-                  {txns.map(t => (
-                    <tr key={t.id} style={{ borderBottom: "1px solid #2a2a2a" }}>
-                      <td style={{ ...td, color: "#555" }}>{t.id}</td>
-                      <td style={td}>{formatPhTime(t.created_at)}</td>
-                      <td style={{ ...td, fontFamily: "monospace", fontSize: 11, color: "#666" }}>{t.rfid}</td>
-                      <td style={td}>{t.type}</td>
-                      <td style={td}>{t.size ?? "—"}</td>
-                      <td style={{ ...td, color: t.type === "print" ? "#e74c3c" : "#2ecc71", fontWeight: 700 }}>
-                        {t.type === "print" ? `-${t.credits}` : `+${t.credits}`}
-                      </td>
-                    </tr>
+                  {activityLogs
+                    .filter(l => {
+                      const q = searchQuery.toLowerCase();
+                      const matchesSearch = l.admin_user.toLowerCase().includes(q) || l.action.toLowerCase().includes(q) || (l.details && l.details.toLowerCase().includes(q));
+                      const matchesFilter = filterValue === "all" || l.action === filterValue;
+                      const matchesDate = !dateFilter || l.created_at.startsWith(dateFilter);
+                      return matchesSearch && matchesFilter && matchesDate;
+                    })
+                    .map(l => (
+                      <tr key={l.id} style={{ borderBottom: "1px solid #2a2a2a" }}>
+                        <td style={td}>{formatPhTime(l.created_at)}</td>
+                        <td style={{ ...td, fontWeight: 600, color: "#f0a500" }}>{l.admin_user}</td>
+                        <td style={td}><span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, background: "#2a2a2a", color: "#fff" }}>{l.action}</span></td>
+                        <td style={td}>{l.details}</td>
+                      </tr>
                   ))}
+                  {activityLogs.length === 0 && <tr><td colSpan={4} style={{ ...td, textAlign: "center", color: "#555" }}>No activity logs recorded yet</td></tr>}
                 </tbody>
               </table>
             </div>
           </div>
         )}
+          {/* 2. MANAGE USERS */}
+        {!loading && tab === "users" && (
+          <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 12, height: "100%", overflow: "hidden" }}>
+            <div style={{ display: "flex", gap: 10, flexShrink: 0, flexWrap: "wrap" }}>
+              <input
+                type="text"
+                placeholder="Search users name, ID, RFID..."
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                style={{ ...inputStyle, maxWidth: 240, padding: "8px 12px", fontSize: 13 }}
+              />
+              <select
+                value={filterValue}
+                onChange={e => setFilterValue(e.target.value)}
+                style={{ ...inputStyle, maxWidth: 180, padding: "8px 12px", fontSize: 13, cursor: "pointer" }}
+              >
+                <option value="all">Default Order</option>
+                <option value="credits_asc">Credits: Low to High</option>
+                <option value="credits_desc">Credits: High to Low</option>
+              </select>
+              {(searchQuery || filterValue !== "all") && (
+                <button onClick={() => { setSearchQuery(""); setFilterValue("all"); }} style={actionBtn("#2a2a2a", "#aaa")}>Clear</button>
+              )}
+            </div>
+            <div style={{ ...tableWrap, overflowY: "auto", flex: 1 }}>
+              <table style={table}>
+                <thead>
+                  <tr>{["Name", "Student ID", "RFID", "Credits", "Registered", "Actions"].map(h => <th key={h} style={th}>{h}</th>)}</tr>
+                </thead>
+                <tbody>
+                  {users
+                    .filter(u => {
+                      const q = searchQuery.toLowerCase();
+                      return u.name.toLowerCase().includes(q) || (u.studentId && u.studentId.toLowerCase().includes(q)) || u.rfid.toLowerCase().includes(q);
+                    })
+                    .sort((a, b) => {
+                      if (filterValue === "credits_asc") return a.credits - b.credits;
+                      if (filterValue === "credits_desc") return b.credits - a.credits;
+                      return 0;
+                    })
+                    .map(u => (
+                      <tr key={u.rfid} style={{ borderBottom: "1px solid #2a2a2a" }}>
+                        <td style={td}>{u.name}</td>
+                        <td style={td}>{u.studentId || <span style={{ color: "#444" }}>—</span>}</td>
+                        <td style={{ ...td, fontFamily: "monospace", fontSize: 11, color: "#666" }}>{u.rfid}</td>
+                        <td style={{ ...td, color: "#f0a500", fontWeight: 700 }}>{u.credits}</td>
+                        <td style={{ ...td, fontSize: 11, color: "#555" }}>{new Date(u.created_at).toLocaleDateString()}</td>
+                        <td style={td}>
+                          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                            <button onClick={() => { setEditUserModal(u); setEditName(u.name); setEditStudentId(u.studentId); setEditMsg(""); }} style={actionBtn("#1e293b", "#38bdf8")}>Edit</button>
+                            <button onClick={() => handleDeleteUser(u.rfid)} style={actionBtn("#3a1a1a", "#e74c3c")}>Delete</button>
+                          </div>
+                        </td>
+                      </tr>
+                  ))}
+                  {users.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: "center", color: "#555" }}>No users yet</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+         {/* 3. TRANSACTIONS */}
+        {!loading && tab === "transactions" && (
+          <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 12, height: "100%", overflow: "hidden" }}>
+            <div style={{ display: "flex", gap: 10, flexShrink: 0, flexWrap: "wrap" }}>
+              <input
+                type="text"
+                placeholder="Search transactions by name, RFID..."
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                style={{ ...inputStyle, maxWidth: 240, padding: "8px 12px", fontSize: 13 }}
+              />
+              <select
+                value={filterValue}
+                onChange={e => setFilterValue(e.target.value)}
+                style={{ ...inputStyle, maxWidth: 190, padding: "8px 12px", fontSize: 13, cursor: "pointer" }}
+              >
+                <option value="all">All Transactions</option>
+                <option value="deposit">Bottle Deposits</option>
+                <option value="print">Print Jobs</option>
+                <option value="transfer">Credit Transfers</option>
+              </select>
+              <input
+                type="date"
+                value={dateFilter}
+                onChange={e => setDateFilter(e.target.value)}
+                style={{ ...inputStyle, maxWidth: 140, padding: "8px 12px", fontSize: 13, colorScheme: "dark", cursor: "pointer" }}
+              />
+              {(searchQuery || filterValue !== "all" || dateFilter) && (
+                <button onClick={() => { setSearchQuery(""); setFilterValue("all"); setDateFilter(""); }} style={actionBtn("#2a2a2a", "#aaa")}>Clear</button>
+              )}
+            </div>
+            <div style={{ ...tableWrap, overflowY: "auto", flex: 1 }}>
+              <table style={table}>
+                <thead>
+                  <tr>{["Name", "Time", "RFID", "Type", "Size", "Credits"].map(h => <th key={h} style={th}>{h}</th>)}</tr>
+                </thead>
+                <tbody>
+                  {txns
+                    .filter(t => {
+                      const q = searchQuery.toLowerCase();
+                      const matchesSearch = (t.user_name && t.user_name.toLowerCase().includes(q)) || t.rfid.toLowerCase().includes(q) || t.type.toLowerCase().includes(q) || (t.size && t.size.toLowerCase().includes(q));
+                      
+                      let matchesFilter = true;
+                      if (filterValue === "deposit") matchesFilter = t.type === "deposit";
+                      else if (filterValue === "print") matchesFilter = t.type === "print";
+                      else if (filterValue === "transfer") matchesFilter = t.type === "transfer_out" || t.type === "transfer_in";
 
+                      const matchesDate = !dateFilter || t.created_at.startsWith(dateFilter);
+                      return matchesSearch && matchesFilter && matchesDate;
+                    })
+                    .map(t => (
+                      <tr key={t.id} style={{ borderBottom: "1px solid #2a2a2a" }}>
+                        <td style={{ ...td, fontWeight: 600, color: "#fff" }}>{t.user_name ? t.user_name : <span style={{ color: "#e74c3c", fontStyle: "italic" }}>Unknown</span>}</td>
+                        <td style={td}>{formatPhTime(t.created_at)}</td>
+                        <td style={{ ...td, fontFamily: "monospace", fontSize: 11, color: "#666" }}>{t.rfid}</td>
+                        <td style={td}>
+                          <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, background: "#2a2a2a", color: "#fff" }}>
+                            {t.type}
+                          </span>
+                        </td>
+                        <td style={td}>{t.size ?? "—"}</td>
+                        <td style={{ ...td, color: t.type === "deposit" || t.type === "transfer_in" ? "#2ecc71" : "#e74c3c", fontWeight: 700 }}>
+                          {t.type === "deposit" || t.type === "transfer_in" ? `+${t.credits}` : `-${t.credits}`}
+                        </td>
+                      </tr>
+                  ))}
+                  {txns.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: "center", color: "#555" }}>No transactions yet</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+          {/* 4. FEEDBACK */}
         {!loading && tab === "feedback" && (
-          <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={tableWrap}>
+          <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 12, height: "100%", overflow: "hidden" }}>
+            <div style={{ display: "flex", gap: 10, flexShrink: 0, flexWrap: "wrap" }}>
+              <input
+                type="text"
+                placeholder="Search feedback context, comment..."
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                style={{ ...inputStyle, maxWidth: 240, padding: "8px 12px", fontSize: 13 }}
+              />
+              <select
+                value={filterValue}
+                onChange={e => setFilterValue(e.target.value)}
+                style={{ ...inputStyle, maxWidth: 170, padding: "8px 12px", fontSize: 13, cursor: "pointer" }}
+              >
+                <option value="all">All Ratings</option>
+                <option value="5">5 Stars</option>
+                <option value="4">4 Stars</option>
+                <option value="3">3 Stars</option>
+                <option value="1">1-2 Stars</option>
+              </select>
+              <input
+                type="date"
+                value={dateFilter}
+                onChange={e => setDateFilter(e.target.value)}
+                style={{ ...inputStyle, maxWidth: 140, padding: "8px 12px", fontSize: 13, colorScheme: "dark", cursor: "pointer" }}
+              />
+              {(searchQuery || filterValue !== "all" || dateFilter) && (
+                <button onClick={() => { setSearchQuery(""); setFilterValue("all"); setDateFilter(""); }} style={actionBtn("#2a2a2a", "#aaa")}>Clear</button>
+              )}
+            </div>
+            <div style={{ ...tableWrap, overflowY: "auto", flex: 1 }}>
               <table style={table}>
                 <thead>
                   <tr>{["Time", "Context", "Rating", "Comment", "RFID"].map(h => <th key={h} style={th}>{h}</th>)}</tr>
                 </thead>
                 <tbody>
-                  {feedback.length === 0 && <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "#555" }}>No feedback yet</td></tr>}
-                  {feedback.map(f => (
-                    <tr key={f.id} style={{ borderBottom: "1px solid #2a2a2a" }}>
-                      <td style={td}>{formatPhTime(f.created_at)}</td>
-                      <td style={td}>{f.context}</td>
-                      <td style={{ ...td, color: "#f0a500", fontWeight: 700, display: "flex", gap: 2 }}>
-                        {Array.from({ length: f.rating }, (_, i) => <StarIcon key={i} size={14} color="#f0a500" />)}
-                      </td>
-                      <td style={td}>{f.comment || "—"}</td>
-                      <td style={{ ...td, fontFamily: "monospace", fontSize: 11, color: "#666" }}>{f.rfid ?? "anon"}</td>
-                    </tr>
+                  {feedback
+                    .filter(f => {
+                      const q = searchQuery.toLowerCase();
+                      const matchesSearch = f.context.toLowerCase().includes(q) || (f.comment && f.comment.toLowerCase().includes(q)) || (f.rfid && f.rfid.toLowerCase().includes(q));
+                      const matchesFilter = filterValue === "all" || (filterValue === "1" ? f.rating <= 2 : f.rating.toString() === filterValue);
+                      const matchesDate = !dateFilter || f.created_at.startsWith(dateFilter);
+                      return matchesSearch && matchesFilter && matchesDate;
+                    })
+                    .map(f => (
+                      <tr key={f.id} style={{ borderBottom: "1px solid #2a2a2a" }}>
+                        <td style={td}>{formatPhTime(f.created_at)}</td>
+                        <td style={td}>{f.context}</td>
+                        <td style={{ ...td, color: "#f0a500", fontWeight: 700, display: "flex", gap: 2 }}>
+                          {Array.from({ length: f.rating }, (_, i) => <StarIcon key={i} size={14} color="#f0a500" />)}
+                        </td>
+                        <td style={td}>{f.comment || "—"}</td>
+                        <td style={{ ...td, fontFamily: "monospace", fontSize: 11, color: "#666" }}>{f.rfid ?? "anon"}</td>
+                      </tr>
                   ))}
+                  {feedback.length === 0 && <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "#555" }}>No feedback yet</td></tr>}
                 </tbody>
               </table>
             </div>
           </div>
         )}
-
+        {/* 5. MANAGE ADMINS TAB */}
         {!loading && tab === "admins" && isSuperAdmin && (
-          <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ display: "flex", justifyContent: "flex-end" }}>
+          <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 12, height: "100%", overflow: "hidden" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0, flexWrap: "wrap", gap: 10 }}>
+              <div style={{ display: "flex", gap: 10 }}>
+                <input
+                  type="text"
+                  placeholder="Search admins by username..."
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  style={{ ...inputStyle, maxWidth: 220, padding: "8px 12px", fontSize: 13 }}
+                />
+                <select
+                  value={filterValue}
+                  onChange={e => setFilterValue(e.target.value)}
+                  style={{ ...inputStyle, maxWidth: 150, padding: "8px 12px", fontSize: 13, cursor: "pointer" }}
+                >
+                  <option value="all">All Roles</option>
+                  <option value="super_admin">Super-admin</option>
+                  <option value="admin">Admin</option>
+                </select>
+                {(searchQuery || filterValue !== "all") && (
+                  <button onClick={() => { setSearchQuery(""); setFilterValue("all"); }} style={actionBtn("#2a2a2a", "#aaa")}>Clear</button>
+                )}
+              </div>
               <button onClick={openCreateAdmin} style={{ ...actionBtn("#1a3a2a", "#2ecc71"), padding: "8px 16px", fontSize: 12 }}>
                 + New Admin
               </button>
             </div>
-            <div style={tableWrap}>
+            <div style={{ ...tableWrap, overflowY: "auto", flex: 1 }}>
               <table style={table}>
                 <thead>
                   <tr>{["Username", "Gmail Notification", "Role", "Created", "Actions"].map(h => <th key={h} style={th}>{h}</th>)}</tr>
                 </thead>
                 <tbody>
-                  {admins.length === 0 && <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "#555" }}>No admins yet</td></tr>}
-                  {admins.map(a => (
-                    <tr key={a.id} style={{ borderBottom: "1px solid #2a2a2a" }}>
-                      <td style={td}>{a.username}</td>
-                      <td style={{ ...td, color: a.email ? "#38bdf8" : "#666" }}>{a.email || "Not set"}</td>
-                      <td style={td}>
-                        <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, background: a.role === "super_admin" ? "#3a2a1a" : "#1e1e1e", color: a.role === "super_admin" ? "#f0a500" : "#aaa" }}>
-                          {a.role}
-                        </span>
-                      </td>
-                      <td style={{ ...td, fontSize: 11, color: "#555" }}>{new Date(a.created_at).toLocaleDateString()}</td>
-                      <td style={td}>
-                        <div style={{ display: "flex", gap: 6 }}>
-                          <button onClick={() => openEditAdmin(a)} style={actionBtn("#1a2a3a", "#3498db")}>Edit</button>
-                          <button onClick={() => handleDeleteAdmin(a)} style={actionBtn("#3a1a1a", "#e74c3c")}>Delete</button>
-                        </div>
-                      </td>
-                    </tr>
+                  {admins
+                    .filter(a => {
+                      const q = searchQuery.toLowerCase();
+                      const matchesSearch = a.username.toLowerCase().includes(q) || (a.email && a.email.toLowerCase().includes(q));
+                      const matchesFilter = filterValue === "all" || a.role === filterValue;
+                      return matchesSearch && matchesFilter;
+                    })
+                    .map(a => (
+                      <tr key={a.id} style={{ borderBottom: "1px solid #2a2a2a" }}>
+                        <td style={td}>{a.username}</td>
+                        <td style={{ ...td, color: a.email ? "#38bdf8" : "#666" }}>{a.email || "Not set"}</td>
+                        <td style={td}>
+                          <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, background: a.role === "super_admin" ? "#3a2a1a" : "#1e1e1e", color: a.role === "super_admin" ? "#f0a500" : "#aaa" }}>
+                            {a.role}
+                          </span>
+                        </td>
+                        <td style={{ ...td, fontSize: 11, color: "#555" }}>{new Date(a.created_at).toLocaleDateString()}</td>
+                        <td style={td}>
+                          <div style={{ display: "flex", gap: 6 }}>
+                            <button onClick={() => openEditAdmin(a)} style={actionBtn("#1a2a3a", "#3498db")}>Edit</button>
+                            <button onClick={() => handleDeleteAdmin(a)} style={actionBtn("#3a1a1a", "#e74c3c")}>Delete</button>
+                          </div>
+                        </td>
+                      </tr>
                   ))}
+                  {admins.length === 0 && <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "#555" }}>No admins yet</td></tr>}
                 </tbody>
               </table>
             </div>
           </div>
         )}
-      </div>
-
+      </div>  
       {/* Account Settings Modal */}
       {showAccountModal && (
         <div style={overlay}>

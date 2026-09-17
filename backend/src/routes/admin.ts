@@ -287,7 +287,13 @@ router.get("/api/admin/users", (_req, res) => {
 });
 
 router.get("/api/admin/transactions", (_req, res) => {
-  res.json(db.prepare("SELECT * FROM transactions ORDER BY created_at DESC LIMIT 100").all());
+  res.json(db.prepare(`
+    SELECT t.*, u.name as user_name 
+    FROM transactions t 
+    LEFT JOIN users u ON t.rfid = u.rfid 
+    ORDER BY t.created_at DESC 
+    LIMIT 100
+  `).all());
 });
 
 router.get("/api/admin/activity-logs", requireAuth, (_req, res) => {

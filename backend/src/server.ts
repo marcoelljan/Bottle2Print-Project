@@ -40,14 +40,8 @@ const SIZE_CREDITS: Record<string, number> = {
 };
 
 function classifyBottleSecure(heightMm: number, weightG: number): SizeSpec | null {
-  // 🚫 ANTI-WATER / TAMPER GUARD:
-  // 1. Absolute ceiling: Standard empty bottles max out at 60g (XL). Anything above 68g is liquid/rocks.
   if (weightG > 68) return null;
-
-  // 2. Proportional sanity check: A short bottle (height < 100mm) cannot weigh more than 35g.
   if (heightMm < 100 && weightG > 35) return null;
-
-  // Match strictly to your tested weight tiers
   return SIZE_SPECS.find(
     s => weightG >= s.minWeight && weightG <= s.maxWeight
   ) ?? null;
@@ -57,7 +51,6 @@ function co2SavedGrams(weightG: number): number {
   return (weightG / 1000) * 3000;
 }
 
-// ── Validation state machine ──────────────────────────────────────────────────
 type StepStatus = "pending" | "running" | "pass" | "fail";
 interface ValidationStep { id: string; label: string; status: StepStatus; detail?: string; }
 
@@ -178,7 +171,6 @@ function finalizeDepositSession() {
 
 app.get("/api/mode", (_req, res) => res.json({ mode: kioskMode }));
 
-// ── PIN verification — handles reset flagging workflow ─────────────────────
 app.post("/api/session/verify-pin", async (req, res) => {
   const { pin } = req.body;
   if (!pin) return res.status(400).json({ error: "Missing pin." });
@@ -232,7 +224,6 @@ app.post("/api/session/verify-pin", async (req, res) => {
 
   db.prepare("UPDATE users SET pin_fail_count = 0, pin_locked_until = NULL WHERE rfid = ?").run(rfid);
 
-  // If user account was flagged by admin reset, force them to set a new PIN
   if (user.pin_needs_reset === 1) {
     session.step = "awaiting_new_pin";
     broadcastState();
@@ -253,7 +244,6 @@ app.post("/api/session/verify-pin", async (req, res) => {
   res.json({ success: true });
 });
 
-// ── Forced PIN update route after an admin reset ───────────────────────────
 app.post("/api/session/update-pin", async (req, res) => {
   const { pin } = req.body;
   if (!pin || !/^\d{6}$/.test(String(pin))) {
@@ -321,6 +311,10 @@ app.post("/api/deposit/guest-start", (_req, res) => {
   Object.assign(session, freshDepositTotals());
 
   broadcastState();
+  
+  // Correctly placed inside the endpoint
+  sendToArduino("GUEST_START");
+
   res.json({ success: true, credits: getGuestCredits() });
 });
 
@@ -490,10 +484,10 @@ parser.on("data", (raw: string) => {
   }
   if (line === "CAP:FAIL") {
     if (session.step === "result") return;
-    setStep("capacitive", "fail", "No bottle detected");
+    setStep("capacitive", "fail", "Invalid material or contaminant detected");
     session.step     = "result";
     session.result   = "rejected";
-    session.errorMsg = "Capacitive sensor found no bottle. Try again.";
+    session.errorMsg = "Contaminant detected. Only plastic bottles accepted.";
     broadcastState();
     sendToArduino("REJECT");
     setTimeout(() => continueDepositLoop(), 3000);
@@ -504,8 +498,7 @@ parser.on("data", (raw: string) => {
     if (session.step === "result") return;
     const heightMm = parseFloat(line.split(":")[2]);
     session.heightMm = heightMm;
-    
-    // TOF checks common bottle height bounds (40mm to 300mm)
+
     if (heightMm < 40 || heightMm > 300) {
       setStep("tof", "fail", `Height ${heightMm}mm out of range`);
       session.step     = "result";
@@ -528,8 +521,7 @@ parser.on("data", (raw: string) => {
 
     const weightG = parseFloat(line.split(":")[2]);
     session.weightG = weightG;
-    
-    // Secure classification: load cell categorizes size, TOF + ceiling acts as water/tamper guard
+
     const match = classifyBottleSecure(session.heightMm!, weightG);
 
     if (!match) {
