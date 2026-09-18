@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import BackButton from "../components/BackButton";
 import RFIDprompt from "../components/RFIDprompt";
 import PINpad from "../components/Pinpad";
@@ -83,7 +83,6 @@ export default function CheckBalanceScreen({ onBack }: Props) {
       setTransferMsg("Select a recipient.");
       return;
     }
-    // Clear message and transition to confirmation step
     setTransferMsg("");
     setTransferStep("confirm");
   };
@@ -101,7 +100,6 @@ export default function CheckBalanceScreen({ onBack }: Props) {
     setTransferPinError("");
 
     try {
-      // First verify PIN
       const pinRes = await fetch(`${API}/api/session/verify-pin`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -115,7 +113,6 @@ export default function CheckBalanceScreen({ onBack }: Props) {
         return;
       }
 
-      // PIN is correct, execute transfer
       const res = await fetch(`${API}/api/user/transfer`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -207,15 +204,21 @@ export default function CheckBalanceScreen({ onBack }: Props) {
               </div>
 
               {/* credit & impact info */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
                 <div style={statCard}>
                   <div style={statLabel}>Bottles deposited</div>
                   <div style={statVal}>{allTxns.filter(h => h.type === "deposit").length}</div>
                 </div>
                 <div style={statCard}>
-                  <div style={statLabel}>Plastic Deposited</div>
-                  <div style={{ ...statVal, fontSize: 20, color: "#2ecc71" }}>
+                  <div style={statLabel}>Plastic Deposited in kg</div>
+                  <div style={{ ...statVal, fontSize: 18, color: "#2ecc71" }}>
                     {(allTxns.filter(h => h.type === "deposit").reduce((a, h) => a + (h.weight_g ?? 0), 0) / 1000).toFixed(2)} kg
+                  </div>
+                </div>
+                <div style={statCard}>
+                  <div style={statLabel}>CO2 Saved</div>
+                  <div style={{ ...statVal, fontSize: 18, color: "#3498db" }}>
+                    {(allTxns.filter(h => h.type === "deposit").reduce((a, h) => a + (h.co2_saved_g ?? 0), 0)).toFixed(0)} g
                   </div>
                 </div>
                 <div style={statCard}>
@@ -244,8 +247,12 @@ export default function CheckBalanceScreen({ onBack }: Props) {
                         </div>
                         <div style={{ fontSize: 11, color: "#555", marginTop: 2 }}>{new Date(h.created_at).toLocaleString()}</div>
                       </div>
-                      <div style={{ fontWeight: 700, color: h.type === "deposit" || h.type === "transfer_in" ? "#2ecc71" : "#e74c3c", fontSize: 14 }}>
-                        {h.type === "deposit" || h.type === "transfer_in" ? `+${h.credits}` : `-${h.credits}`}
+                      <div style={{ 
+                        fontWeight: 700, 
+                        color: h.credits > 0 && (h.type === "deposit" || h.type === "transfer_in") ? "#2ecc71" : h.credits < 0 ? "#e74c3c" : "#aaa", 
+                        fontSize: 14 
+                      }}>
+                        {h.credits > 0 && (h.type === "deposit" || h.type === "transfer_in") ? `+${h.credits}` : h.credits < 0 ? `-${Math.abs(h.credits)}` : `0`}
                       </div>
                     </div>
                   ))}
@@ -348,7 +355,7 @@ export default function CheckBalanceScreen({ onBack }: Props) {
         </div>
       )}
 
-      {/* Step 2: Confirmation Prompt Modal ("Are you sure to transfer...") */}
+      {/* Step 2: Confirmation Prompt Modal */}
       {showTransfer && transferStep === "confirm" && (
         <div style={overlay}>
           <div style={modal}>

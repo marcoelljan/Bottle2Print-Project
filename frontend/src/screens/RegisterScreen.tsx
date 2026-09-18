@@ -8,7 +8,6 @@ interface Props { onBack: () => void; }
 
 type Step = "tap" | "form" | "pin" | "confirm_pin" | "saving" | "success" | "error" | "already";
 
-// Helper function to capitalize the first letter of each word (Title Case)
 const formatTitleCase = (str: string) => {
   return str
     .toLowerCase()
@@ -27,12 +26,10 @@ export default function RegisterScreen({ onBack }: Props) {
   const [pinError, setPinError] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
   const [pulse, setPulse]       = useState(false);
+  const [attemptedSubmit, setAttemptedSubmit] = useState(false);
 
-  // Student ID Regex Pattern: Matches format like 123-12345M (3 digits, hyphen, 5 digits, 1 uppercase letter)
   const studentIdRegex = /^\d{3}-\d{5}[A-Z]$/;
   const isStudentIdValid = studentIdRegex.test(studentId.trim());
-
-  // Only show the red error if they have typed a full length code (or more) and it's invalid
   const showStudentIdError = studentId.trim().length >= 10 && !isStudentIdValid;
 
   useEffect(() => {
@@ -72,31 +69,7 @@ export default function RegisterScreen({ onBack }: Props) {
           if (handled || msg.type !== "state" || !msg.session?.rfid || msg.session.sessionId === 0) return;
 
           const scannedRfid = msg.session.rfid;
-
-          let userData = null;
-          try {
-            const userRes = await fetch(`${API}/api/user/${scannedRfid}`);
-            if (userRes.ok) {
-              userData = await userRes.json();
-            }
-          } catch {}
-
-          if (userData && userData.pin_hash) {
-            handled = true;
-            ws?.close();
-            setRfid(scannedRfid);
-            setStep("already");
-            return;
-          }
-
-          handled = true;
-          ws?.close();
-          setRfid(scannedRfid);
-          setSurname(userData?.surname ? formatTitleCase(userData.surname) : "");
-          setFirstname(userData?.firstname ? formatTitleCase(userData.firstname) : "");
-          setMiddlename(userData?.middlename ? formatTitleCase(userData.middlename) : "");
-          setStudentId(userData?.studentId ? userData.studentId.toUpperCase() : "");
-          setStep("form");
+          handleCardDetected(scannedRfid, ws);
           return;
         } catch {}
       };
@@ -119,7 +92,36 @@ export default function RegisterScreen({ onBack }: Props) {
     };
   }, [step]);
 
+  const handleCardDetected = async (scannedRfid: string, socket?: WebSocket | null) => {
+    let userData = null;
+    try {
+      const userRes = await fetch(`${API}/api/user/${scannedRfid}`);
+      if (userRes.ok) {
+        userData = await userRes.json();
+      }
+    } catch {}
+
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.close();
+    }
+
+    if (userData && userData.pin_hash) {
+      setRfid(scannedRfid);
+      setStep("already");
+      return;
+    }
+
+    setRfid(scannedRfid);
+    setSurname(userData?.surname ? formatTitleCase(userData.surname) : "");
+    setFirstname(userData?.firstname ? formatTitleCase(userData.firstname) : "");
+    setMiddlename(userData?.middlename ? formatTitleCase(userData.middlename) : "");
+    setStudentId(userData?.studentId ? userData.studentId.toUpperCase() : "");
+    setAttemptedSubmit(false);
+    setStep("form");
+  };
+
   const handleProceedToPin = () => {
+    setAttemptedSubmit(true);
     if (!surname.trim() || !firstname.trim() || !isStudentIdValid || !agreed) return;
     setFirstPin("");
     setPinError("");
@@ -182,8 +184,6 @@ export default function RegisterScreen({ onBack }: Props) {
       </div>
 
       <div style={body}>
-
-        {/* tap card */}
         {step === "tap" && (
           <div style={{ textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: 20 }}>
             <div style={{
@@ -200,11 +200,9 @@ export default function RegisterScreen({ onBack }: Props) {
               <div style={{ fontSize: 18, color: "#f0a500", fontWeight: 600 }}>Tap your RFID card</div>
               <div style={{ fontSize: 13, color: "#555", marginTop: 6 }}>Hold your card near the reader to begin</div>
             </div>
-
           </div>
         )}
 
-        {/* form without guidelines */}
         {step === "form" && (
           <div style={card}>
             <div style={{ marginBottom: 14 }}>
@@ -213,23 +211,35 @@ export default function RegisterScreen({ onBack }: Props) {
             </div>
 
             <div style={fieldGroup}>
-              <label style={fieldLabel}>Surname (Last Name)</label>
+              <label style={fieldLabel}>Surname (Last Name) <span style={{ color: "#e74c3c" }}>*</span></label>
               <input
                 value={surname}
                 onChange={e => setSurname(formatTitleCase(e.target.value))}
                 placeholder="e.g. Dela Cruz"
-                style={input}
+                style={{
+                  ...input,
+                  borderColor: attemptedSubmit && !surname.trim() ? "#e74c3c" : "#3a3a3a"
+                }}
               />
+              {attemptedSubmit && !surname.trim() && (
+                <div style={{ fontSize: 10, color: "#e74c3c", marginTop: 3 }}>Surname is required.</div>
+              )}
             </div>
 
             <div style={fieldGroup}>
-              <label style={fieldLabel}>Firstname</label>
+              <label style={fieldLabel}>Firstname <span style={{ color: "#e74c3c" }}>*</span></label>
               <input
                 value={firstname}
                 onChange={e => setFirstname(formatTitleCase(e.target.value))}
                 placeholder="e.g. Juan"
-                style={input}
+                style={{
+                  ...input,
+                  borderColor: attemptedSubmit && !firstname.trim() ? "#e74c3c" : "#3a3a3a"
+                }}
               />
+              {attemptedSubmit && !firstname.trim() && (
+                <div style={{ fontSize: 10, color: "#e74c3c", marginTop: 3 }}>Firstname is required.</div>
+              )}
             </div>
 
             <div style={fieldGroup}>
@@ -243,24 +253,25 @@ export default function RegisterScreen({ onBack }: Props) {
             </div>
 
             <div style={fieldGroup}>
-              <label style={fieldLabel}>Student ID Layout (e.g. 123-12345M)</label>
+              <label style={fieldLabel}>Student ID Layout (e.g. 123-12345M) <span style={{ color: "#e74c3c" }}>*</span></label>
               <input
                 value={studentId}
                 onChange={e => setStudentId(e.target.value.toUpperCase())}
                 placeholder="123-12345M"
                 style={{
                   ...input,
-                  borderColor: showStudentIdError ? "#e74c3c" : "#3a3a3a"
+                  borderColor: (attemptedSubmit && !studentId.trim()) || showStudentIdError ? "#e74c3c" : "#3a3a3a"
                 }}
               />
-              {showStudentIdError && (
-                <div style={{ fontSize: 10, color: "#e74c3c", marginTop: 4 }}>
+              {attemptedSubmit && !studentId.trim() ? (
+                <div style={{ fontSize: 10, color: "#e74c3c", marginTop: 3 }}>Student ID is required.</div>
+              ) : showStudentIdError && (
+                <div style={{ fontSize: 10, color: "#e74c3c", marginTop: 3 }}>
                   Invalid format. Expected layout: 123-12345M
                 </div>
               )}
             </div>
 
-            {/* Data Privacy & Terms and Agreement Checkbox */}
             <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 18, textAlign: "left" }}>
               <input
                 type="checkbox"
@@ -269,8 +280,8 @@ export default function RegisterScreen({ onBack }: Props) {
                 onChange={e => setAgreed(e.target.checked)}
                 style={{ marginTop: 3, cursor: "pointer", accentColor: "#f0a500" }}
               />
-              <label htmlFor="terms" style={{ fontSize: 11, color: "#888", lineHeight: 1.4, cursor: "pointer" }}>
-                I agree to the <strong style={{ color: "#aaa" }}>Data Privacy Policy</strong>. I consent to the collection of my credentials and recycling metrics for tracking.
+              <label htmlFor="terms" style={{ fontSize: 11, color: attemptedSubmit && !agreed ? "#e74c3c" : "#888", lineHeight: 1.4, cursor: "pointer" }}>
+                I agree to the <strong style={{ color: "#aaa" }}>Data Privacy Policy</strong>. I consent to the collection of my credentials and recycling metrics for tracking. <span style={{ color: "#e74c3c" }}>*</span>
               </label>
             </div>
 
@@ -278,12 +289,11 @@ export default function RegisterScreen({ onBack }: Props) {
               <button onClick={() => setStep("tap")} style={ghostBtn}>Cancel</button>
               <button
                 onClick={handleProceedToPin}
-                disabled={!isFormValid}
                 style={{
                   flex: 1, padding: "13px", borderRadius: 10, fontWeight: 700,
-                  fontSize: 15, border: "none", cursor: isFormValid ? "pointer" : "not-allowed",
-                  background: isFormValid ? "#f0a500" : "#333",
-                  color: isFormValid ? "#000" : "#555",
+                  fontSize: 15, border: "none", cursor: "pointer",
+                  background: isFormValid ? "#f0a500" : "#f0a500",
+                  color: "black",
                 }}
               >
                 Continue
@@ -292,7 +302,6 @@ export default function RegisterScreen({ onBack }: Props) {
           </div>
         )}
 
-        {/* PIN creation modal (Step 1) */}
         {step === "pin" && (
           <PINpad
             title="Create your 6-digit PIN"
@@ -304,7 +313,6 @@ export default function RegisterScreen({ onBack }: Props) {
           />
         )}
 
-        {/* PIN confirmation modal (Step 2) */}
         {step === "confirm_pin" && (
           <PINpad
             title="Confirm your 6-digit PIN"
@@ -316,14 +324,12 @@ export default function RegisterScreen({ onBack }: Props) {
           />
         )}
 
-        {/* saving */}
         {step === "saving" && (
           <div style={{ textAlign: "center" }}>
             <div style={{ fontSize: 18, color: "#f0a500" }}>Saving account & PIN...</div>
           </div>
         )}
 
-        {/* success */}
         {step === "success" && (
           <div style={{ textAlign: "center" }}>
             <div style={{ fontSize: 22, color: "#2ecc71", fontWeight: 700, marginBottom: 8 }}>Registered!</div>
@@ -333,7 +339,6 @@ export default function RegisterScreen({ onBack }: Props) {
           </div>
         )}
 
-        {/* already registered */}
         {step === "already" && (
           <div style={{ textAlign: "center" }}>
             <div style={{ fontSize: 20, color: "#f0a500", fontWeight: 700, marginBottom: 8 }}>Card already registered</div>
@@ -344,7 +349,6 @@ export default function RegisterScreen({ onBack }: Props) {
           </div>
         )}
 
-        {/* error */}
         {step === "error" && (
           <div style={{ textAlign: "center" }}>
             <div style={{ fontSize: 20, color: "#e74c3c", fontWeight: 700, marginBottom: 8 }}>Registration failed</div>

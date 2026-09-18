@@ -89,7 +89,6 @@ router.post("/api/admin/check-username", (req, res) => {
   res.json({ exists: true });
 });
 
-// ── Secure Forgot Password Route (Exact Email Validation) ──────────────────
 router.post("/api/admin/forgot-password", async (req, res) => {
   const { username, email } = req.body;
   if (!username || !email) {
@@ -97,20 +96,16 @@ router.post("/api/admin/forgot-password", async (req, res) => {
   }
 
   const admin = db.prepare("SELECT * FROM admins WHERE username = ?").get(username.trim()) as any;
-  
-  // Verify user exists and the provided email matches the exact email saved in their account
   if (!admin || !admin.email || admin.email.toLowerCase() !== email.trim().toLowerCase()) {
     return res.status(400).json({ error: "Username or registered email does not match our records." });
   }
 
   const token = crypto.randomBytes(32).toString("hex");
-  const expiresAt = Date.now() + 15 * 60 * 1000; // 15 mins
+  const expiresAt = Date.now() + 15 * 60 * 1000;
   resetTokens.set(token, { adminId: admin.id, expiresAt });
 
-  // Dynamically detect the host (works with Tailscale domain, IP, or localhost)
-  const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
-  const host = req.get('host'); // e.g., bottle2print.tail654e2a.ts.net:4000
-  const resetLink = `${protocol}://${host}/?reset_token=${token}`;
+  const baseUrl = process.env.FRONTEND_URL || `${req.headers['x-forwarded-proto'] || req.protocol || 'http'}://${req.get('host')}`;
+  const resetLink = `${baseUrl}/?reset_token=${token}`;
   try {
     await transporter.sendMail({
       from: `"Bottle2Print Kiosk" <${process.env.SMTP_USER}>`,
@@ -217,6 +212,221 @@ router.post("/api/admin/me/password", async (req: any, res) => {
   res.json({ success: true });
 });
 
+// ── Overall System Statistics Route ────────────────────────────────────────
+router.get("/api/admin/stats", requireAuth, (_req, res) => {
+  try {
+    const totals = db.prepare(`
+      SELECT 
+        SUM(CASE WHEN type = 'deposit' THEN 1 ELSE 0 END) as total_bottles,
+        SUM(CASE WHEN type = 'deposit' THEN COALESCE(weight_g, 0) ELSE 0 END) as total_weight_g,
+        SUM(CASE WHEN type = 'deposit' THEN COALESCE(co2_saved_g, 0) ELSE 0 END) as total_co2_g,
+        SUM(CASE WHEN type = 'print' THEN 1 ELSE 0 END) as total_prints,
+        COUNT(DISTINCT rfid) as total_users
+      FROM transactions
+    `).get() as any;
+
+    res.json({
+      totalBottles: totals.total_bottles || 0,
+      totalPlasticKg: ((totals.total_weight_g || 0) / 1000).toFixed(2),
+      totalCo2G: totals.total_co2_g || 0,
+      totalPrints: totals.total_prints || 0,
+      totalUsers: totals.total_users || 0,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch system stats: " + err.message });
+  }
+});
+
+// ── Encrypted Backup Route (Super Admin Only) ──────────────────────────────
+router.get("/api/admin/backup", requireSuperAdmin, (req: any, res) => {
+  try {
+    const rawData = {
+      users: db.prepare("SELECT * FROM users").all(),
+      transactions: db.prepare("SELECT * FROM transactions").all(),
+      feedback: db.prepare("SELECT * FROM feedback").all(),
+      activity_logs: db.prepare("SELECT * FROM activity_logs").all(),
+      version: 1,
+      exported_at: new Date().toISOString()
+    };
+
+    const plaintext = JSON.stringify(rawData);
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv("aes-256-gcm", BACKUP_SECRET_KEY, iv);
+    
+    const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+    const authTag = cipher.getAuthTag();
+
+    const payload = JSON.stringify({
+      iv: iv.toString("hex"),
+      encrypted: encrypted.toString("hex"),
+      tag: authTag.toString("hex")
+    });
+
+    logActivity(req.admin.username, "EXPORT_BACKUP", "Downloaded encrypted system backup");
+    res.setHeader("Content-Type", "application/json");
+    res.send(payload);
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to generate backup: " + err.message });
+  }
+});
+
+// ── Encrypted Restore Route (Super Admin Only) ─────────────────────────────
+router.post("/api/admin/restore", requireSuperAdmin, (req: any, res) => {
+  const { iv, encrypted, tag } = req.body;
+  if (!iv || !encrypted || !tag) {
+    return res.status(400).json({ error: "Invalid backup file structure." });
+  }
+
+  try {
+    const decipher = crypto.createDecipheriv(
+      "aes-256-gcm", 
+      BACKUP_SECRET_KEY, 
+      Buffer.from(iv, "hex")
+    );
+    decipher.setAuthTag(Buffer.from(tag, "hex"));
+
+    const decrypted = Buffer.concat([
+      decipher.update(Buffer.from(encrypted, "hex")),
+      decipher.final()
+    ]);
+
+    const data = JSON.parse(decrypted.toString("utf8"));
+
+    db.transaction(() => {
+      db.prepare("DELETE FROM activity_logs").run();
+      db.prepare("DELETE FROM feedback").run();
+      db.prepare("DELETE FROM transactions").run();
+      db.prepare("DELETE FROM users").run();
+
+      if (Array.isArray(data.users) && data.users.length > 0) {
+        const sample = data.users[0];
+        const cols = Object.keys(sample);
+        const placeholders = cols.map(() => "?").join(", ");
+        const stmt = db.prepare(`INSERT INTO users (${cols.join(", ")}) VALUES (${placeholders})`);
+        for (const row of data.users) {
+          stmt.run(cols.map(c => row[c]));
+        }
+      }
+
+      if (Array.isArray(data.transactions) && data.transactions.length > 0) {
+        const sample = data.transactions[0];
+        const cols = Object.keys(sample);
+        const placeholders = cols.map(() => "?").join(", ");
+        const stmt = db.prepare(`INSERT INTO transactions (${cols.join(", ")}) VALUES (${placeholders})`);
+        for (const row of data.transactions) {
+          stmt.run(cols.map(c => row[c]));
+        }
+      }
+
+      if (Array.isArray(data.feedback) && data.feedback.length > 0) {
+        const sample = data.feedback[0];
+        const cols = Object.keys(sample);
+        const placeholders = cols.map(() => "?").join(", ");
+        const stmt = db.prepare(`INSERT INTO feedback (${cols.join(", ")}) VALUES (${placeholders})`);
+        for (const row of data.feedback) {
+          stmt.run(cols.map(c => row[c]));
+        }
+      }
+
+      if (Array.isArray(data.activity_logs) && data.activity_logs.length > 0) {
+        const sample = data.activity_logs[0];
+        const cols = Object.keys(sample);
+        const placeholders = cols.map(() => "?").join(", ");
+        const stmt = db.prepare(`INSERT INTO activity_logs (${cols.join(", ")}) VALUES (${placeholders})`);
+        for (const row of data.activity_logs) {
+          stmt.run(cols.map(c => row[c]));
+        }
+      }
+    })();
+
+    logActivity(req.admin.username, "RESTORE_BACKUP", "Successfully restored system state from backup file");
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(400).json({ error: "Restore failed (file may be corrupted or secret key mismatch): " + err.message });
+  }
+});
+
+// ── User Management Routes ────────────────────────────────────────────────
+router.get("/api/admin/users", (_req, res) => {
+  res.json(db.prepare(`
+    SELECT *, 
+    TRIM(COALESCE(firstname, '') || ' ' || CASE WHEN middlename = '' THEN '' ELSE middlename || ' ' END || COALESCE(surname, '')) as name 
+    FROM users 
+    ORDER BY created_at DESC
+  `).all());
+});
+
+router.patch("/api/admin/user/:rfid", requireAuth, (req: any, res) => {
+  const { rfid } = req.params;
+  const { name, studentId } = req.body;
+
+  const user = db.prepare("SELECT * FROM users WHERE rfid = ?").get(rfid);
+  if (!user) return res.status(404).json({ error: "User not found." });
+
+  const nameParts = (name || "").trim().split(/\s+/);
+  const firstname = nameParts[0] || "";
+  const surname = nameParts.length > 1 ? nameParts[nameParts.length - 1] : "";
+  const middlename = nameParts.length > 2 ? nameParts.slice(1, -1).join(" ") : "";
+
+  db.prepare("UPDATE users SET firstname = ?, middlename = ?, surname = ?, studentId = ? WHERE rfid = ?")
+    .run(firstname, middlename, surname, studentId || "", rfid);
+
+  logActivity(req.admin.username, "EDIT_USER", `Updated user RFID ${rfid} (${name})`);
+  res.json({ success: true });
+});
+
+router.delete("/api/admin/user/:rfid", requireAuth, (req: any, res) => {
+  const { rfid } = req.params;
+  const user = db.prepare("SELECT * FROM users WHERE rfid = ?").get(rfid);
+  if (!user) return res.status(404).json({ error: "User not found." });
+
+  db.prepare("DELETE FROM users WHERE rfid = ?").run(rfid);
+  logActivity(req.admin.username, "DELETE_USER", `Deleted user RFID ${rfid}`);
+  res.json({ success: true });
+});
+
+router.get("/api/admin/transactions", (_req, res) => {
+  res.json(db.prepare(`
+    SELECT t.*, 
+    TRIM(COALESCE(u.firstname, '') || ' ' || CASE WHEN u.middlename = '' THEN '' ELSE u.middlename || ' ' END || COALESCE(u.surname, '')) as user_name 
+    FROM transactions t 
+    LEFT JOIN users u ON t.rfid = u.rfid 
+    WHERE t.type != 'register'
+    ORDER BY t.created_at DESC 
+    LIMIT 100
+  `).all());
+});
+
+// Automatically blend registration transactions into the Activity Logs feed
+router.get("/api/admin/activity-logs", requireAuth, (_req, res) => {
+  try {
+    const logs = db.prepare("SELECT id, admin_user, action, details, created_at FROM activity_logs").all() as any[];
+
+    const registrations = db.prepare(`
+      SELECT 
+        t.id + 100000 AS id, 
+        'System Kiosk' AS admin_user, 
+        'REGISTER_USER' AS action, 
+        COALESCE(t.size, 'New user registered (RFID: ' || t.rfid || ')') AS details, 
+        t.created_at 
+      FROM transactions t 
+      WHERE t.type = 'register'
+    `).all() as any[];
+
+    const combined = [...logs, ...registrations].sort((a, b) => 
+      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+    );
+
+    res.json(combined.slice(0, 100));
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch activity logs: " + err.message });
+  }
+});
+
+router.get("/api/admin/feedback", (_req, res) => {
+  res.json(db.prepare("SELECT * FROM feedback ORDER BY created_at DESC LIMIT 100").all());
+});
+
 router.get("/api/admin/admins", requireSuperAdmin, (_req, res) => {
   res.json(db.prepare("SELECT id, username, email, role, password_changed, created_at FROM admins ORDER BY created_at ASC").all());
 });
@@ -275,35 +485,13 @@ router.patch("/api/admin/admins/:id", requireAuth, async (req: any, res) => {
   res.json({ success: true });
 });
 
-router.delete("/api/admin/admins/:id", requireSuperAdmin, (req: any, res) => {
+router.delete("/api/admin/admins/:id", requireSuperAdmin, (req: any, res: any) => {
   const id = parseInt(req.params.id);
   if (id === req.admin.adminId) return res.status(400).json({ error: "Cannot delete your own account." });
 
   db.prepare("DELETE FROM admins WHERE id = ?").run(id);
   logActivity(req.admin.username, "DELETE_ADMIN", `Deleted admin account ID ${id}`);
   res.json({ success: true });
-});
-
-router.get("/api/admin/users", (_req, res) => {
-  res.json(db.prepare("SELECT * FROM users ORDER BY created_at DESC").all());
-});
-
-router.get("/api/admin/transactions", (_req, res) => {
-  res.json(db.prepare(`
-    SELECT t.*, u.name as user_name 
-    FROM transactions t 
-    LEFT JOIN users u ON t.rfid = u.rfid 
-    ORDER BY t.created_at DESC 
-    LIMIT 100
-  `).all());
-});
-
-router.get("/api/admin/activity-logs", requireAuth, (_req, res) => {
-  res.json(db.prepare("SELECT * FROM activity_logs ORDER BY created_at DESC LIMIT 100").all());
-});
-
-router.get("/api/admin/feedback", (_req, res) => {
-  res.json(db.prepare("SELECT * FROM feedback ORDER BY created_at DESC LIMIT 100").all());
 });
 
 export default router;

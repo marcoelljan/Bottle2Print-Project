@@ -28,7 +28,7 @@ interface User {
 interface Transaction {
   id: number; 
   rfid: string; 
-  user_name?: string; // Added user name mapping
+  user_name?: string;
   type: string; 
   size?: string;
   height_mm?: number; 
@@ -89,7 +89,6 @@ export default function AdminScreen({}: Props) {
   const [pwError, setPwError]       = useState("");
   const [pwLoading, setPwLoading]   = useState(false);
 
-  // Forgot password exact match fields
   const [forgotUsername, setForgotUsername] = useState("");
   const [forgotEmail, setForgotEmail]       = useState("");
   const [forgotMsg, setForgotMsg]           = useState("");
@@ -100,6 +99,15 @@ export default function AdminScreen({}: Props) {
   const [resetConfirmPass, setResetConfirmPass] = useState("");
   const [showResetPass, setShowResetPass]   = useState(false);
   const [resetMsg, setResetMsg]             = useState("");
+
+  // Overall System Stats State
+  const [stats, setStats] = useState({
+    totalBottles: 0,
+    totalPlasticKg: "0.00",
+    totalCo2G: 0,
+    totalPrints: 0,
+    totalUsers: 0,
+  });
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -144,12 +152,12 @@ export default function AdminScreen({}: Props) {
   const [searchQuery, setSearchQuery] = useState("");
   const [filterValue, setFilterValue] = useState("all");
   const [dateFilter, setDateFilter] = useState("");
-  // Clear search query whenever the active tab changes
-useEffect(() => {
-  setSearchQuery("");
-  setFilterValue("all");
-  setDateFilter("");
-}, [tab]);
+
+  useEffect(() => {
+    setSearchQuery("");
+    setFilterValue("all");
+    setDateFilter("");
+  }, [tab]);
 
   const [editUserModal, setEditUserModal] = useState<User | null>(null);
   const [editName, setEditName]       = useState("");
@@ -387,6 +395,12 @@ useEffect(() => {
   const fetchData = async () => {
     setLoading(true);
     try {
+      const statsRes = await authFetch(`/api/admin/stats`);
+      if (statsRes.ok) {
+        const statsData = await statsRes.json();
+        setStats(statsData);
+      }
+
       if (tab === "logs") {
         const r = await authFetch(`/api/admin/activity-logs`);
         setActivityLogs(await r.json());
@@ -850,6 +864,26 @@ useEffect(() => {
       </div>
 
       <div style={body}>
+        {/* Overall System Impact Dashboard */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 16, flexShrink: 0 }}>
+          <div style={adminStatCard}>
+            <div style={adminStatLabel}>Total Bottles Deposited</div>
+            <div style={adminStatVal}>{stats.totalBottles}</div>
+          </div>
+          <div style={adminStatCard}>
+            <div style={adminStatLabel}>Plastic Recycled</div>
+            <div style={{ ...adminStatVal, color: "#2ecc71", fontSize: 22 }}>{stats.totalPlasticKg} kg</div>
+          </div>
+          <div style={adminStatCard}>
+            <div style={adminStatLabel}>CO2 Saved</div>
+            <div style={{ ...adminStatVal, color: "#3498db", fontSize: 22 }}>{stats.totalCo2G} g</div>
+          </div>
+          <div style={adminStatCard}>
+            <div style={adminStatLabel}>Print Jobs Done</div>
+            <div style={adminStatVal}>{stats.totalPrints}</div>
+          </div>
+        </div>
+
         {loading && <div style={{ color: "#666", fontSize: 14 }}>Loading...</div>}
 
          {/* 1. ACTIVITY LOGS */}
@@ -863,16 +897,22 @@ useEffect(() => {
                 onChange={e => setSearchQuery(e.target.value)}
                 style={{ ...inputStyle, maxWidth: 240, padding: "8px 12px", fontSize: 13 }}
               />
-              <select
+             <select
                 value={filterValue}
                 onChange={e => setFilterValue(e.target.value)}
-                style={{ ...inputStyle, maxWidth: 180, padding: "8px 12px", fontSize: 13, cursor: "pointer" }}
+                style={{ ...inputStyle, maxWidth: 200, padding: "8px 12px", fontSize: 13, cursor: "pointer" }}
               >
                 <option value="all">All Actions</option>
+                <option value="REGISTER_USER">Register User</option>
                 <option value="CREATE_ADMIN">Create Admin</option>
                 <option value="EDIT_ADMIN">Edit Admin</option>
                 <option value="DELETE_ADMIN">Delete Admin</option>
+                <option value="EDIT_USER">Edit User</option>
+                <option value="DELETE_USER">Delete User</option>
+                <option value="REQUEST_PASSWORD_RESET">Request Password Reset</option>
                 <option value="RESET_PASSWORD">Reset Password</option>
+                <option value="EXPORT_BACKUP">Export Backup</option>
+                <option value="RESTORE_BACKUP">Restore Backup</option>
               </select>
               <input
                 type="date"
@@ -905,14 +945,14 @@ useEffect(() => {
                         <td style={td}><span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, background: "#2a2a2a", color: "#fff" }}>{l.action}</span></td>
                         <td style={td}>{l.details}</td>
                       </tr>
-                  ))}
+                    ))}
                   {activityLogs.length === 0 && <tr><td colSpan={4} style={{ ...td, textAlign: "center", color: "#555" }}>No activity logs recorded yet</td></tr>}
                 </tbody>
               </table>
             </div>
           </div>
         )}
-          {/* 2. MANAGE USERS */}
+         {/* 2. MANAGE USERS */}
         {!loading && tab === "users" && (
           <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 12, height: "100%", overflow: "hidden" }}>
             <div style={{ display: "flex", gap: 10, flexShrink: 0, flexWrap: "wrap" }}>
@@ -966,7 +1006,7 @@ useEffect(() => {
                           </div>
                         </td>
                       </tr>
-                  ))}
+                    ))}
                   {users.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: "center", color: "#555" }}>No users yet</td></tr>}
                 </tbody>
               </table>
@@ -1034,18 +1074,19 @@ useEffect(() => {
                           </span>
                         </td>
                         <td style={td}>{t.size ?? "—"}</td>
-                        <td style={{ ...td, color: t.type === "deposit" || t.type === "transfer_in" ? "#2ecc71" : "#e74c3c", fontWeight: 700 }}>
-                          {t.type === "deposit" || t.type === "transfer_in" ? `+${t.credits}` : `-${t.credits}`}
-                        </td>
+                       <td style={{  ...td,   color: t.credits > 0 && (t.type === "deposit" || t.type === "transfer_in") ? "#2ecc71" : t.credits < 0 ? "#e74c3c" : "#f0a500",  
+                       fontWeight: 700 }}>
+                          {t.credits > 0 && (t.type === "deposit" || t.type === "transfer_in") ? `+${t.credits}` : t.credits < 0 ? `-${Math.abs(t.credits)}` : `0`}
+                    </td>
                       </tr>
-                  ))}
+                    ))}
                   {txns.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: "center", color: "#555" }}>No transactions yet</td></tr>}
                 </tbody>
               </table>
             </div>
           </div>
         )}
-          {/* 4. FEEDBACK */}
+         {/* 4. FEEDBACK */}
         {!loading && tab === "feedback" && (
           <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 12, height: "100%", overflow: "hidden" }}>
             <div style={{ display: "flex", gap: 10, flexShrink: 0, flexWrap: "wrap" }}>
@@ -1101,14 +1142,14 @@ useEffect(() => {
                         <td style={td}>{f.comment || "—"}</td>
                         <td style={{ ...td, fontFamily: "monospace", fontSize: 11, color: "#666" }}>{f.rfid ?? "anon"}</td>
                       </tr>
-                  ))}
+                    ))}
                   {feedback.length === 0 && <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "#555" }}>No feedback yet</td></tr>}
                 </tbody>
               </table>
             </div>
           </div>
         )}
-        {/* 5. MANAGE ADMINS TAB */}
+         {/* 5. MANAGE ADMINS TAB */}
         {!loading && tab === "admins" && isSuperAdmin && (
           <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 12, height: "100%", overflow: "hidden" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0, flexWrap: "wrap", gap: 10 }}>
@@ -1167,7 +1208,7 @@ useEffect(() => {
                           </div>
                         </td>
                       </tr>
-                  ))}
+                    ))}
                   {admins.length === 0 && <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "#555" }}>No admins yet</td></tr>}
                 </tbody>
               </table>
@@ -1175,6 +1216,7 @@ useEffect(() => {
           </div>
         )}
       </div>  
+
       {/* Account Settings Modal */}
       {showAccountModal && (
         <div style={overlay}>
@@ -1219,7 +1261,7 @@ useEffect(() => {
                     type="button"
                     onClick={() => setShowSettingsPass(!showSettingsPass)}
                     style={{
-                      position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)",
+                      position: "absolute", right: 12, top: "50%", transform: "translateY(-50% )",
                       background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: 13
                     }}
                   >
@@ -1525,3 +1567,9 @@ const ghostBtn: React.CSSProperties = {
 const confirmBtn: React.CSSProperties = {
   flex: 1, padding: "11px", borderRadius: 8, fontWeight: 700, fontSize: 14, background: "#f0a500", color: "#000", border: "none", cursor: "pointer",
 };
+const adminStatCard: React.CSSProperties = {
+  background: "#242424", border: "1px solid #333", borderRadius: 12,
+  padding: "14px 18px", boxSizing: "border-box",
+};
+const adminStatLabel: React.CSSProperties = { fontSize: 11, color: "#666", marginBottom: 4, fontWeight: 600, textTransform: "uppercase" };
+const adminStatVal: React.CSSProperties = { fontSize: 24, fontWeight: 800, color: "#fff" };
