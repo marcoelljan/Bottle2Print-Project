@@ -89,3 +89,6 @@ try {
 try {
   db.exec(`ALTER TABLE admins ADD COLUMN email TEXT DEFAULT '';`);
 } catch (e) {}
+// ── Transaction rejection stage & reason migration ─────────────────────────
+try { db.exec(`ALTER TABLE transactions ADD COLUMN reject_stage TEXT;`); } catch (e) {}
+try { db.exec(`ALTER TABLE transactions ADD COLUMN reject_reason TEXT;`); } catch (e) {}

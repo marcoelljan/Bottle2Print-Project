@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef} from "react";
 import BackButton from "../components/BackButton";
 import RFIDprompt from "../components/RFIDprompt";
 import PINpad from "../components/Pinpad";
@@ -53,6 +53,7 @@ export default function CheckBalanceScreen({ onBack }: Props) {
     } catch {}
   };
 
+  // Search users as you type name/ID (Fixed with correct "?" parameter separator)
   // Search users as you type name/ID
   useEffect(() => {
     if (!searchQuery.trim() || !user) {
@@ -61,13 +62,35 @@ export default function CheckBalanceScreen({ onBack }: Props) {
     }
     const timer = setTimeout(async () => {
       try {
-        const res = await fetch(`${API}/api/user/search?query=${encodeURIComponent(searchQuery)}&senderRfid=${user.rfid}`);
+        // Explicitly build the URL with the correct query parameter name "?"
+        const searchUrl = `${API}/api/user/search?query=${encodeURIComponent(searchQuery)}&senderRfid=${user.rfid}`;
+        const res = await fetch(searchUrl);
         const data = await res.json();
         setSearchResults(data);
-      } catch {}
+      } catch (err) {
+        console.error("Search fetch failed:", err);
+      }
     }, 300);
     return () => clearTimeout(timer);
   }, [searchQuery, user]);
+
+   const creditsRef = useRef<number | null>(null);
+  useEffect(() => { creditsRef.current = user?.credits ?? null; }, [user?.credits]);
+
+  // Keep the balance fresh while the user is on this screen (picks up admin adjustments and incoming transfers)
+  useEffect(() => {
+    if (!user) return;
+    const rfid = user.rfid;
+    const id = setInterval(async () => {
+      try {
+        const r = await fetch(`${API}/api/user/${rfid}`);
+        if (!r.ok) return;
+        const fresh = await r.json();
+        if (fresh.credits !== creditsRef.current) handleIdentified(fresh);
+      } catch {}
+    }, 5000);
+    return () => clearInterval(id);
+  }, [user?.rfid]);
 
   const handleProceedToConfirm = () => {
     const amount = parseInt(transferAmount);
@@ -92,7 +115,7 @@ export default function CheckBalanceScreen({ onBack }: Props) {
     setTransferStep("pin");
   };
 
-  const handleVerifyPinAndTransfer = async (pin: string) => {
+    const handleVerifyPinAndTransfer = async (pin: string) => {
     if (!user || !selectedRecipient) return;
     const amount = parseInt(transferAmount);
 
@@ -100,19 +123,6 @@ export default function CheckBalanceScreen({ onBack }: Props) {
     setTransferPinError("");
 
     try {
-      const pinRes = await fetch(`${API}/api/session/verify-pin`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pin }),
-      });
-      const pinData = await pinRes.json();
-
-      if (!pinRes.ok || pinData.success === false) {
-        setTransferPinError(pinData.error || "Incorrect PIN.");
-        setTransferLoading(false);
-        return;
-      }
-
       const res = await fetch(`${API}/api/user/transfer`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -120,6 +130,7 @@ export default function CheckBalanceScreen({ onBack }: Props) {
           senderRfid: user.rfid,
           recipientRfid: selectedRecipient.rfid,
           amount,
+          pin,
         }),
       });
       const data = await res.json();
@@ -133,12 +144,14 @@ export default function CheckBalanceScreen({ onBack }: Props) {
           setSelectedRecipient(null);
           setTransferAmount("");
           setTransferMsg("");
-          handleIdentified(user);
+          handleIdentified({ ...user, credits: data.newCredits });
         }, 2000);
+      } else if (res.status === 401 || res.status === 423) {
+        setTransferPinError(data.error ?? "Incorrect PIN.");   // stay on the PIN pad
       } else {
         setTransferStep("search");
         setShowTransfer(false);
-        setTransferMsg(`${data.error ?? "Transfer failed."}`);
+        setTransferMsg(data.error ?? "Transfer failed.");
       }
     } catch {
       setTransferStep("search");
@@ -183,6 +196,13 @@ export default function CheckBalanceScreen({ onBack }: Props) {
                 </div>
               </div>
 
+                               {!showTransfer && transferMsg && (
+                <div style={{ fontSize: 13, fontWeight: 600, padding: "10px 14px", borderRadius: 8,
+                  color: transferMsg.startsWith("Successfully") ? "#2ecc71" : "#e74c3c",
+                  border: `1px solid ${transferMsg.startsWith("Successfully") ? "#2ecc71" : "#e74c3c"}` }}>
+                  {transferMsg}
+                </div>
+              )}
               {/* Action buttons (Transfer Credits) */}
               <div style={{ display: "flex", gap: 12 }}>
                 <button
@@ -244,15 +264,15 @@ export default function CheckBalanceScreen({ onBack }: Props) {
                           {h.type === "print" && <><PrintIcon size={16} color="#e74c3c" /> Print job voucher</>}
                           {h.type === "transfer_out" && <>Transferred credits</>}
                           {h.type === "transfer_in" && <>Received credits</>}
+                          {h.type === "adjust" && <>Admin adjustment</>}
                         </div>
                         <div style={{ fontSize: 11, color: "#555", marginTop: 2 }}>{new Date(h.created_at).toLocaleString()}</div>
                       </div>
-                      <div style={{ 
-                        fontWeight: 700, 
-                        color: h.credits > 0 && (h.type === "deposit" || h.type === "transfer_in") ? "#2ecc71" : h.credits < 0 ? "#e74c3c" : "#aaa", 
-                        fontSize: 14 
+                      <div style={{
+                        fontWeight: 700, fontSize: 14,
+                        color: signedCredits(h) > 0 ? "#2ecc71" : signedCredits(h) < 0 ? "#e74c3c" : "#aaa",
                       }}>
-                        {h.credits > 0 && (h.type === "deposit" || h.type === "transfer_in") ? `+${h.credits}` : h.credits < 0 ? `-${Math.abs(h.credits)}` : `0`}
+                        {signedCredits(h) > 0 ? `+${signedCredits(h)}` : signedCredits(h) < 0 ? `-${Math.abs(signedCredits(h))}` : `0`}
                       </div>
                     </div>
                   ))}
@@ -282,7 +302,7 @@ export default function CheckBalanceScreen({ onBack }: Props) {
                   }}>
                     <div>
                       <div style={{ fontWeight: 700, color: "#fff", fontSize: 14 }}>{selectedRecipient.name}</div>
-                      <div style={{ fontSize: 11, color: "#aaa" }}>ID: {selectedRecipient.studentId || "None"} · Balance: {selectedRecipient.credits}</div>
+                      <div style={{ fontSize: 11, color: "#aaa" }}>ID: {selectedRecipient.studentId || "None"}</div>
                     </div>
                     <button 
                       onClick={() => { setSelectedRecipient(null); setSearchQuery(""); }} 
@@ -335,12 +355,25 @@ export default function CheckBalanceScreen({ onBack }: Props) {
                     style={inputStyle}
                     autoFocus
                   />
+                  <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>
+                    Available balance: <strong style={{ color: "#f0a500" }}>{user?.credits ?? 0} credits</strong>
+                  </div>
                 </div>
               )}
             </div>
 
             {transferMsg && (
-              <div style={{ fontSize: 13, color: transferMsg.startsWith("Successfully") ? "#2ecc71" : "#e74c3c", marginTop: 12 }}>
+              <div style={{ 
+                background: transferMsg.startsWith("Successfully") ? "rgba(46, 204, 113, 0.1)" : "rgba(231, 76, 60, 0.15)",
+                border: `1px solid ${transferMsg.startsWith("Successfully") ? "#2ecc71" : "#e74c3c"}`,
+                borderRadius: 8,
+                padding: "10px 14px",
+                fontSize: 13, 
+                color: transferMsg.startsWith("Successfully") ? "#2ecc71" : "#e74c3c", 
+                marginTop: 12,
+                textAlign: "left",
+                fontWeight: 600
+              }}>
                 {transferMsg}
               </div>
             )}
@@ -390,6 +423,10 @@ export default function CheckBalanceScreen({ onBack }: Props) {
     </div>
   );
 }
+const signedCredits = (h: any) =>
+  h.type === "transfer_out" ? -Math.abs(h.credits)
+  : h.type === "deposit" || h.type === "transfer_in" || h.type === "adjust" ? h.credits
+  : h.credits < 0 ? h.credits : 0;
 
 const fullScreen: React.CSSProperties = {
   width: "100%", height: "100%", flex: 1, background: "#1a1a1a",

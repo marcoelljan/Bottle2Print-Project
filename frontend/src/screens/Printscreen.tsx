@@ -19,6 +19,7 @@ interface User { rfid: string; name: string; studentId: string; credits: number;
 
 type Step = "choice" | "rfid" | "qr" | "confirm" | "guest-deposit" | "printing" | "success" | "error";
 type PaperSize = "A4" | "Letter" | "Long";
+type Layout = "portrait" | "landscape";
 
 type SensorStepStatus = "pending" | "running" | "pass" | "fail";
 interface SensorStep { id: string; label: string; status: SensorStepStatus; detail?: string; }
@@ -65,8 +66,10 @@ export default function PrintScreen({ onBack }: Props) {
   const [qrImage, setQrImage] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [pageCount, setPageCount] = useState<number | null>(null);
+  const [supportsLandscape, setSupportsLandscape] = useState<boolean>(false);
   const [colorMode, setColorMode] = useState<"bw" | "color">("bw");
   const [paperSize, setPaperSize] = useState<PaperSize>("Letter");
+  const [layout, setLayout] = useState<Layout>("portrait");
   const [pageRange, setPageRange] = useState<"all" | string>("all");
   const [customRange, setCustomRange] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
@@ -100,6 +103,13 @@ export default function PrintScreen({ onBack }: Props) {
         if (msg.type === "qr-upload" && msg.sessionId === sessionId) {
           setFileName(msg.fileName);
           setPageCount(msg.pageCount ?? 1);
+
+          // Determine if file supports landscape (e.g. check if it's not a certificate or portrait-bound document)
+          const nameLower = (msg.fileName ?? "").toLowerCase();
+          const isPortraitOnly = nameLower.includes("certificate") || nameLower.includes("registration");
+          setSupportsLandscape(!isPortraitOnly);
+          setLayout("portrait");
+
           setColorMode("bw");
           setPaperSize("Letter");
           setPageRange("all");
@@ -133,7 +143,6 @@ export default function PrintScreen({ onBack }: Props) {
     })();
   }, []);
 
-  // When RFID card is tapped and PIN is verified successfully via RFIDprompt
   const handleIdentified = async (u: User) => {
     setUser(u);
     try {
@@ -211,6 +220,7 @@ export default function PrintScreen({ onBack }: Props) {
         body: JSON.stringify({
           colorMode,
           paperSize,
+          layout: supportsLandscape ? layout : "portrait",
           pageRange: pageRange === "all" ? "all" : customRange,
         }),
       });
@@ -221,6 +231,7 @@ export default function PrintScreen({ onBack }: Props) {
           pagesPrinted: data.pagesPrinted ?? selectedPageCount,
           colorMode: data.colorMode ?? colorMode,
           paperSize: data.paperSize ?? paperSize,
+          layout: supportsLandscape ? layout : "portrait",
           output: data.output ?? "",
         });
         setStep("success");
@@ -253,14 +264,6 @@ export default function PrintScreen({ onBack }: Props) {
     setStep("confirm");
   };
 
-  const toggleBtn = (active: boolean): React.CSSProperties => ({
-    padding: "6px 14px", borderRadius: 8, fontSize: 12, fontWeight: 700,
-    border: active ? "1.5px solid #f0a500" : "1px solid #3a3a3a",
-    background: active ? "#2a2410" : "transparent",
-    color: active ? "#f0a500" : "#888",
-    cursor: "pointer",
-  });
-
   return (
     <div style={fullScreen}>
       <BackButton onBack={onBack} />
@@ -291,7 +294,6 @@ export default function PrintScreen({ onBack }: Props) {
           </div>
         )}
 
-        {/* Integrated secure RFID prompt with PIN verification */}
         {step === "rfid" && (
           <RFIDprompt 
             onIdentified={handleIdentified} 
@@ -300,99 +302,131 @@ export default function PrintScreen({ onBack }: Props) {
         )}
 
         {step === "confirm" && (
-          <div style={card}>
-            <div style={{ textAlign: "center", marginBottom: 16 }}>
-              <div style={{ fontSize: 18, fontWeight: 700 }}>Confirm print job</div>
-            </div>
-
-            {sessionId && (
-              <div style={{
-                width: "100%", height: 160, marginBottom: 14,
-                background: "#fff", borderRadius: 10, overflow: "hidden",
-                border: "1px solid #333", flexShrink: 0,
-              }}>
-                <iframe
-                  src={`${API}/api/print/preview/${sessionId}`}
-                  title="Print preview"
-                  style={{ width: "100%", height: "100%", border: "none" }}
-                />
+          <div style={splitContainer}>
+            {/* Left Column: Live Preview with toolbar/navbars hidden */}
+            <div style={previewPane}>
+              <div style={{ fontSize: 13, color: "#aaa", marginBottom: 6, fontWeight: 600 }}>
+                {selectedPageCount ?? 0} sheet{(selectedPageCount ?? 0) === 1 ? "" : "s"} of paper preview
               </div>
-            )}
-
-            <div style={infoRow}>
-              <span style={infoLabel}>File</span>
-              <span style={{ ...infoVal, maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{fileName}</span>
+              {sessionId && (
+                <div style={previewFrameWrapper}>
+                  <iframe
+                    src={`${API}/api/print/preview/${sessionId}#toolbar=0&navpanes=0`}
+                    title="Print preview"
+                    style={{
+                      width: "100%",
+                      height: "100%",
+                      border: "none",
+                    }}
+                  />
+                </div>
+              )}
             </div>
-            <div style={infoRow}>
-              <span style={infoLabel}>Pages</span>
-              <span style={infoVal}>{pageCount}</span>
-            </div>
 
-            <div style={{ ...infoRow, alignItems: "center" }}>
-              <span style={infoLabel}>Print type</span>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={() => setColorMode("bw")} style={toggleBtn(colorMode === "bw")}>B&amp;W · 3/pg</button>
-                <button onClick={() => setColorMode("color")} style={toggleBtn(colorMode === "color")}>Color · 8/pg</button>
+            {/* Right Column: Touch-Optimized Settings Pane */}
+            <div style={settingsPane}>
+              <div style={{ fontSize: 16, fontWeight: 700, textAlign: "center" }}>Print Settings</div>
+
+              <div style={infoRow}>
+                <span style={infoLabel}>File</span>
+                <span style={{ ...infoVal, maxWidth: 190, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{fileName}</span>
               </div>
-            </div>
 
-            <div style={{ ...infoRow, alignItems: "center" }}>
-              <span style={infoLabel}>Paper size</span>
-              <div style={{ display: "flex", gap: 8 }}>
-                {PAPER_SIZES.map(ps => (
-                  <button key={ps.value} onClick={() => setPaperSize(ps.value)} style={toggleBtn(paperSize === ps.value)} title={ps.sub}>
-                    {ps.label}
-                  </button>
-                ))}
+              <div style={{ ...infoRow, alignItems: "center" }}>
+                <span style={infoLabel}>Pages</span>
+                <select
+                  value={pageRange === "all" ? "all" : "custom"}
+                  onChange={e => setPageRange(e.target.value === "all" ? "all" : "custom")}
+                  style={selectStyle}
+                >
+                  <option value="all">All ({pageCount})</option>
+                  <option value="custom">Custom range</option>
+                </select>
               </div>
-            </div>
 
-            <div style={{ ...infoRow, flexDirection: "column", alignItems: "stretch", gap: 8 }}>
-              <span style={infoLabel}>What to print</span>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={() => setPageRange("all")} style={toggleBtn(pageRange === "all")}>All {pageCount} pages</button>
-                <button onClick={() => setPageRange("custom")} style={toggleBtn(pageRange !== "all")}>Custom range</button>
-              </div>
               {pageRange !== "all" && (
-                <div>
+                <div style={{ padding: "4px 0", borderBottom: "1px solid #2a2a2a" }}>
                   <input
                     value={customRange}
                     onChange={e => setCustomRange(e.target.value)}
                     placeholder={`e.g. 1-3,5 (out of ${pageCount})`}
                     style={{
-                      width: "100%", padding: "8px 10px", background: "#1e1e1e",
+                      width: "100%", padding: "5px 8px", background: "#1e1e1e",
                       border: `1px solid ${customRange && !rangeIsValid ? "#e74c3c" : "#3a3a3a"}`,
-                      borderRadius: 6, color: "#fff", fontSize: 13, outline: "none",
+                      borderRadius: 6, color: "#fff", fontSize: 12, outline: "none",
+                      boxSizing: "border-box",
                     }}
                   />
                   {customRange && !rangeIsValid && (
-                    <div style={{ fontSize: 11, color: "#e74c3c", marginTop: 4 }}>
-                      Invalid range — this document has {pageCount} page(s).
+                    <div style={{ fontSize: 10, color: "#e74c3c", marginTop: 2 }}>
+                      Invalid range ({pageCount} pages max).
                     </div>
                   )}
                 </div>
               )}
-            </div>
 
-            <div style={infoRow}>
-              <span style={infoLabel}>Total cost</span>
-              <span style={{ ...infoVal, color: "#e74c3c", fontWeight: 700 }}>{creditCost} credits</span>
-            </div>
+              {/* Conditional Layout Row: Only appears if supportsLandscape is true */}
+              {supportsLandscape && (
+                <div style={{ ...infoRow, alignItems: "center" }}>
+                  <span style={infoLabel}>Layout</span>
+                  <select
+                    value={layout}
+                    onChange={e => setLayout(e.target.value as Layout)}
+                    style={selectStyle}
+                  >
+                    <option value="portrait">Portrait</option>
+                    <option value="landscape">Landscape</option>
+                  </select>
+                </div>
+              )}
 
-            <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
-              <button onClick={() => setStep("qr")} style={ghostBtn}>Back</button>
-              <button
-                onClick={() => setStep("rfid")}
-                style={primaryBtn(true)}
-              >
-                Pay with RFID &amp; PIN
-              </button>
-              <button
-                onClick={handleGuestChoice}
-                style={{ ...primaryBtn(true), background: "#2ecc71", color: "#000" }}
-              >
-                Non-RFID (Insert bottles)
-              </button>
+              <div style={{ ...infoRow, alignItems: "center" }}>
+                <span style={infoLabel}>Paper size</span>
+                <select
+                  value={paperSize}
+                  onChange={e => setPaperSize(e.target.value as PaperSize)}
+                  style={selectStyle}
+                >
+                  {PAPER_SIZES.map(ps => (
+                    <option key={ps.value} value={ps.value}>{ps.label} ({ps.sub})</option>
+                  ))}
+                </select>
+              </div>
+
+              <div style={{ ...infoRow, alignItems: "center" }}>
+                <span style={infoLabel}>Print type</span>
+                <select
+                  value={colorMode}
+                  onChange={e => setColorMode(e.target.value as "bw" | "color")}
+                  style={selectStyle}
+                >
+                  <option value="bw">B&amp;W · 3/pg</option>
+                  <option value="color">Color · 8/pg</option>
+                </select>
+              </div>
+
+              <div style={{ ...infoRow, borderBottom: "none" }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#ccc" }}>Total Cost</span>
+                <span style={{ fontSize: 15, color: "#e74c3c", fontWeight: 700 }}>{creditCost} credits</span>
+              </div>
+
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => setStep("qr")} style={ghostBtn}>Cancel</button>
+                <button
+                  onClick={() => setStep("rfid")}
+                  style={primaryBtn(rangeIsValid)}
+                  disabled={!rangeIsValid}
+                >
+                  RFID &amp; PIN
+                </button>
+                <button
+                  onClick={handleGuestChoice}
+                  style={{ ...primaryBtn(rangeIsValid), background: rangeIsValid ? "#2ecc71" : "#333", color: rangeIsValid ? "#000" : "#555" }}
+                  disabled={!rangeIsValid}
+                >
+                  Non-RFID (Bottles)
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -498,18 +532,37 @@ const card: React.CSSProperties = {
   background: "#242424", border: "1px solid #333", borderRadius: 14,
   padding: "24px 28px", width: "100%", maxWidth: 520, maxHeight: "100%", overflowY: "auto", boxSizing: "border-box",
 };
+const splitContainer: React.CSSProperties = {
+  display: "flex", gap: 20, width: "100%", maxWidth: 960, height: "100%", maxHeight: 540, boxSizing: "border-box",
+};
+const previewPane: React.CSSProperties = {
+  flex: 1.2, display: "flex", flexDirection: "column", background: "#242424", border: "1px solid #333", borderRadius: 14, padding: 16, boxSizing: "border-box", overflow: "hidden",
+};
+const previewFrameWrapper: React.CSSProperties = {
+  flex: 1, background: "#fff", borderRadius: 8, overflow: "hidden", border: "1px solid #333", width: "100%",
+};
+const settingsPane: React.CSSProperties = {
+  flex: 1, background: "#242424", border: "1px solid #333", borderRadius: 14, padding: "16px 20px", display: "flex", flexDirection: "column", justifyContent: "space-between", height: "100%", boxSizing: "border-box",
+};
 const label: React.CSSProperties = { fontSize: 14, fontWeight: 600, marginBottom: 6, color: "#ccc" };
 const infoRow: React.CSSProperties = {
-  display: "flex", justifyContent: "space-between", borderBottom: "1px solid #2a2a2a", padding: "10px 0",
+  display: "flex", justifyContent: "space-between", borderBottom: "1px solid #2a2a2a", padding: "6px 0", alignItems: "center",
 };
-const infoLabel: React.CSSProperties = { fontSize: 13, color: "#666" };
-const infoVal: React.CSSProperties = { fontSize: 13, color: "#fff" };
+const infoLabel: React.CSSProperties = { fontSize: 12, color: "#666" };
+const infoVal: React.CSSProperties = { fontSize: 12, color: "#fff" };
+const selectStyle: React.CSSProperties = {
+  padding: "4px 8px", borderRadius: "6px", fontSize: 12, fontWeight: 600,
+  background: "#1e1e1e", color: "#fff", border: "1px solid #3a3a3a",
+  cursor: "pointer", outline: "none",
+};
 const primaryBtn = (active: boolean): React.CSSProperties => ({
-  flex: 1, padding: "12px", borderRadius: 10, fontWeight: 700, fontSize: 13,
+  flex: 1.2, padding: "12px 6px", borderRadius: 8, fontWeight: 700, fontSize: 12,
   background: active ? "#f0a500" : "#333", color: active ? "#000" : "#555",
-  cursor: active ? "pointer" : "not-allowed", border: "none", marginTop: 8,
+  cursor: active ? "pointer" : "not-allowed", border: "none",
+  textAlign: "center", whiteSpace: "nowrap",
 });
 const ghostBtn: React.CSSProperties = {
-  flex: 1, padding: "12px", borderRadius: 10, fontWeight: 600, fontSize: 13,
+  flex: 0.8, padding: "12px 6px", borderRadius: 8, fontWeight: 600, fontSize: 12,
   background: "transparent", color: "#aaa", border: "1px solid #3a3a3a", cursor: "pointer",
+  textAlign: "center", whiteSpace: "nowrap",
 };

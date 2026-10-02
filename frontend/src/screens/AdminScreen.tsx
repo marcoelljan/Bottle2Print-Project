@@ -18,7 +18,7 @@ import {
 import { API } from "../config";
 
 interface Props { onBack: () => void; }
-type Tab = "logs" | "users" | "transactions" | "feedback" | "admins";
+type Tab = "logs" | "users" | "transactions" | "feedback" | "admins" | "sensors";
 type Role = "admin" | "super_admin";
 
 interface User {
@@ -35,6 +35,8 @@ interface Transaction {
   weight_g?: number; 
   credits: number; 
   created_at: string;
+  reject_stage?: string;
+  reject_reason?: string;
 }
 
 interface ActivityLog {
@@ -47,6 +49,53 @@ interface Feedback {
 interface AdminAccount {
   id: number; username: string; email: string; role: Role; created_at: string;
 }
+
+interface SensorStatus {
+  overall: "online" | "unresponsive" | "offline";
+  serial: {
+    status: "connected" | "disconnected" | "error";
+    error: string | null;
+    connectedSince: number | null;
+    lastHeartbeat: number | null;
+  };
+       sensors: Record<string, { lastSeen: number | null; lastDetail: string | null; state: "ok" | "fault" | "unknown" }>;
+    bin?: { distanceCm: number | null; updatedAt: number | null; fillPercent: number | null };
+}
+interface SizeSpec { label: string; minWeight: number; maxWeight: number; credits: number; minHeight?: number; maxHeight?: number; }
+interface SensorCalibration {
+  tofMinMm: number;
+  tofMaxMm: number;
+  weightMaxRejectG: number;
+  shortBottleHeightMm: number;
+  shortBottleWeightMaxG: number;
+  binEmptyCm: number;
+  binFullCm: number;
+  tofMountMm: number;
+  sizes: SizeSpec[];
+}
+const formatAgo = (secs: number | null) => {
+  if (secs === null) return "No activity yet";
+  if (secs < 60) return `${secs}s ago`;
+  const m = Math.floor(secs / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${m % 60}m ago`;
+  return `${Math.floor(h / 24)}d ${h % 24}h ago`;
+};
+const SENSOR_ORDER = ["rfid", "ir", "capacitive", "tof", "loadcell", "servo", "photoelectric", "ultrasonic"];
+const SENSOR_LABELS: Record<string, string> = {
+  rfid: "RFID", ir: "IR intake", capacitive: "Capacitive", tof: "ToF height", loadcell: "Load cell",
+  servo: "Servo gate", photoelectric: "Photoelectric", ultrasonic: "Ultrasonic (bin)",
+};
+const IDLE_MONITORED = ["rfid", "tof", "loadcell", "ultrasonic"];
+const LOG_GROUPS: Record<string, { label: string; actions: string[] }> = {
+  users:    { label: "Users",               actions: ["REGISTER_USER", "EDIT_USER", "DELETE_USER", "ADJUST_CREDITS"] },
+  admins:   { label: "Admin Accounts",      actions: ["CREATE_ADMIN", "EDIT_ADMIN", "DELETE_ADMIN"] },
+  security: { label: "Password & Security", actions: ["REQUEST_PASSWORD_RESET", "RESET_PASSWORD"] },
+  backup:   { label: "Backup & Restore",    actions: ["EXPORT_BACKUP", "RESTORE_BACKUP"] },
+  system:   { label: "System Control",      actions: ["SHUTDOWN_PI", "REBOOT_PI", "UPDATE_SENSOR_CONFIG"] },
+  hardware: { label: "Hardware Alerts",     actions: ["SENSOR_FAULT", "SENSOR_RECOVERED", "ARDUINO_OFFLINE", "ARDUINO_UNRESPONSIVE", "ARDUINO_ONLINE"] },
+};
 
 const formatPhTime = (dateString: string) => {
   if (!dateString) return "—";
@@ -66,6 +115,7 @@ const formatPhTime = (dateString: string) => {
     return dateString;
   }
 };
+const ZERO_BADGES: Record<Tab, number> = { logs: 0, users: 0, transactions: 0, feedback: 0, admins: 0, sensors: 0 };
 
 export default function AdminScreen({}: Props) {
   const [token, setToken]           = useState<string | null>(null);
@@ -153,6 +203,16 @@ export default function AdminScreen({}: Props) {
   const [filterValue, setFilterValue] = useState("all");
   const [dateFilter, setDateFilter] = useState("");
 
+  const [sensorStatus, setSensorStatus] = useState<SensorStatus | null>(null);
+  const [calForm, setCalForm]           = useState<SensorCalibration | null>(null);
+  const [calMsg, setCalMsg]             = useState("");
+  const [calSaving, setCalSaving]       = useState(false);
+  const [tofCalBusy, setTofCalBusy] = useState(false);
+  const [badges, setBadges] = useState<Record<Tab, number>>(ZERO_BADGES);
+ const seenSensorRef = useRef<number | null>(null);
+  const tabRef = useRef<Tab>("logs");
+useEffect(() => { tabRef.current = tab; }, [tab]);
+
   useEffect(() => {
     setSearchQuery("");
     setFilterValue("all");
@@ -163,6 +223,9 @@ export default function AdminScreen({}: Props) {
   const [editName, setEditName]       = useState("");
   const [editStudentId, setEditStudentId] = useState("");
   const [editMsg, setEditMsg]         = useState("");
+  const [creditAmount, setCreditAmount] = useState("");
+  const [creditReason, setCreditReason] = useState("");
+  const [creditMsg, setCreditMsg]       = useState("");
 
   const [adminModal, setAdminModal] = useState<null | { mode: "create" } | { mode: "edit"; admin: AdminAccount }>(null);
   const [adminForm, setAdminForm]   = useState({ username: "", email: "", password: "", role: "admin" as Role });
@@ -179,6 +242,40 @@ export default function AdminScreen({}: Props) {
 
   const [showMaintenanceModal, setShowMaintenanceModal] = useState(false);
 
+  // Power control (shutdown / reboot) waiting screen
+  const SHUTDOWN_WAIT_SECONDS = 30;
+  const [powerState, setPowerState] = useState<null | { action: "shutdown" | "reboot"; startedAt: number }>(null);
+  const [powerElapsed, setPowerElapsed] = useState(0);
+  const [rebootBackOnline, setRebootBackOnline] = useState(false);
+
+  useEffect(() => {
+    if (!powerState) return;
+    setPowerElapsed(0);
+    setRebootBackOnline(false);
+
+    const clock = setInterval(() => {
+      setPowerElapsed(Math.floor((Date.now() - powerState.startedAt) / 1000));
+    }, 1000);
+
+    // For reboots only: watch the API go down, then come back up.
+    let sawDown = false;
+    const poll = powerState.action === "reboot"
+      ? setInterval(async () => {
+          try {
+            const r = await fetch(`${API}/api/mode`, { signal: AbortSignal.timeout(2500) });
+            if (r.ok && sawDown) setRebootBackOnline(true);
+          } catch {
+            sawDown = true;
+          }
+        }, 3000)
+      : null;
+
+    return () => {
+      clearInterval(clock);
+      if (poll) clearInterval(poll);
+    };
+  }, [powerState]);
+
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
@@ -189,15 +286,15 @@ export default function AdminScreen({}: Props) {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const authFetch = (path: string, options: RequestInit = {}) => {
-    return fetch(`${API}${path}`, {
-      ...options,
-      headers: {
-        ...(options.headers ?? {}),
-        Authorization: `Bearer ${token}`,
-      },
-    });
-  };
+  const authFetch = (path: string, options: RequestInit = {}, tk: string | null = token) => {
+  return fetch(`${API}${path}`, {
+    ...options,
+    headers: {
+      ...(options.headers ?? {}),
+      Authorization: `Bearer ${tk}`,
+    },
+  });
+};
 
   useEffect(() => {
     fetch(`${API}/api/mode`, {
@@ -261,6 +358,10 @@ export default function AdminScreen({}: Props) {
         setPasswordChanged(data.passwordChanged);
         setPwInput("");
         setLockoutUntil(null);
+        seenSensorRef.current = null;
+        if (data.passwordChanged) {
+          loadAll(data.token, data.role === "super_admin").then(() => syncBadges(data.token));
+        }
       } else {
         setPwError(data.error ?? "Incorrect username or password.");
       }
@@ -336,6 +437,7 @@ export default function AdminScreen({}: Props) {
       const data = await res.json();
       if (data.success) {
         setPasswordChanged(true);
+        loadAll(token, isSuperAdmin).then(() => syncBadges(token));
       } else {
         setForceMsg(data.error ?? "Failed to update password.");
       }
@@ -388,42 +490,110 @@ export default function AdminScreen({}: Props) {
     }
   };
 
-  useEffect(() => {
-    if (verified && passwordChanged) fetchData();
-  }, [verified, passwordChanged, tab]);
-
-  const fetchData = async () => {
-    setLoading(true);
+ useEffect(() => {
+  if (!verified || !passwordChanged || tab !== "sensors") return;
+  const id = setInterval(async () => {
     try {
-      const statsRes = await authFetch(`/api/admin/stats`);
-      if (statsRes.ok) {
-        const statsData = await statsRes.json();
-        setStats(statsData);
-      }
-
-      if (tab === "logs") {
-        const r = await authFetch(`/api/admin/activity-logs`);
-        setActivityLogs(await r.json());
-      }
-      if (tab === "users") {
-        const r = await authFetch(`/api/admin/users`);
-        setUsers(await r.json());
-      }
-      if (tab === "transactions") {
-        const r = await authFetch(`/api/admin/transactions`);
-        setTxns(await r.json());
-      }
-      if (tab === "feedback") {
-        const r = await authFetch(`/api/admin/feedback`);
-        setFeedback(await r.json());
-      }
-      if (tab === "admins" && isSuperAdmin) {
-        const r = await authFetch(`/api/admin/admins`);
-        setAdmins(await r.json());
-      }
+      const r = await authFetch(`/api/admin/sensors/status`);
+      if (r.ok) setSensorStatus(await r.json());
     } catch {}
-    setLoading(false);
+  }, 5000);
+  return () => clearInterval(id);
+}, [verified, passwordChanged, tab, token]);
+
+useEffect(() => {
+  if (!verified || !passwordChanged) return;
+  const id = setInterval(async () => {
+    await loadAll(token, isSuperAdmin);
+    await syncBadges(token);
+  }, 10000);
+  return () => clearInterval(id);
+}, [verified, passwordChanged, token, isSuperAdmin]);
+
+const measureEmpty = async () => {
+  if (!window.confirm("Make sure the chamber is EMPTY, then press OK.")) return;
+  setTofCalBusy(true);
+  setCalMsg("Measuring... about 3 seconds");
+  try {
+    const res = await authFetch(`/api/admin/sensors/tof-calibrate`, { method: "POST" });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      setCalForm(prev => (prev ? { ...prev, tofMountMm: data.config.tofMountMm } : prev));
+      setCalMsg(`Saved: empty reading ${data.mean} mm (spread ${data.spread} mm)`);
+    } else {
+      setCalMsg(data.error ?? "Measurement failed.");
+    }
+  } catch { setCalMsg("Could not reach backend."); }
+  setTofCalBusy(false);
+};
+// ── Badge handling ─────────────────────────────────────────────────────────
+ const markSeen = (t: Tab, tk: string | null = token) =>
+  authFetch(`/api/admin/badges/seen`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tab: t }),
+  }, tk).catch(() => {});
+
+const syncBadges = async (tk: string | null = token) => {
+  try {
+    const r = await authFetch(`/api/admin/badges`, {}, tk);
+    if (!r.ok) return;
+    const data = await r.json();
+    const open = tabRef.current;
+    setBadges(b => ({ ...b, ...data, [open]: 0 })); // the open tab never shows a badge
+    if (open !== "sensors") markSeen(open, tk);
+  } catch {}
+};
+
+const loadAll = async (tk: string | null, superAdmin: boolean) => {
+  const get = async (path: string) => {
+    const r = await authFetch(path, {}, tk);
+    if (!r.ok) throw new Error(`${path} returned ${r.status}`);
+    return r.json();
   };
+  const jobs: Promise<any>[] = [
+    get(`/api/admin/stats`).then(setStats),
+    get(`/api/admin/activity-logs`).then(setActivityLogs),
+    get(`/api/admin/users`).then(setUsers),
+    get(`/api/admin/transactions`).then(setTxns),
+    get(`/api/admin/feedback`).then(setFeedback),
+    Promise.all([get(`/api/admin/sensors/status`), get(`/api/admin/sensors/config`)]).then(([status, config]) => {
+      setSensorStatus(status);
+      setCalForm(prev => prev ?? config); // never overwrite what you're editing
+    }),
+  ];
+  if (superAdmin) jobs.push(get(`/api/admin/admins`).then(setAdmins));
+  (await Promise.allSettled(jobs)).forEach(r => { if (r.status === "rejected") console.error(r.reason); });
+};
+
+// Same name as before, so Refresh and your edit/delete handlers keep working
+const fetchData = async (tkOverride?: string) => {
+  setLoading(true);
+  await loadAll(tkOverride ?? token, isSuperAdmin);
+  await syncBadges(tkOverride ?? token);
+  setLoading(false);
+};
+
+const adjustCredits = async (mode: "add" | "remove") => {
+  if (!editUserModal) return;
+  const amount = parseInt(creditAmount, 10);
+  if (!Number.isFinite(amount) || amount <= 0) { setCreditMsg("Enter a whole number above 0."); return; }
+  if (!window.confirm(`${mode === "add" ? "Add" : "Remove"} ${amount} credits ${mode === "add" ? "to" : "from"} ${editUserModal.name}?`)) return;
+  try {
+    const res = await authFetch(`/api/admin/user/${editUserModal.rfid}/credits`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ amount, mode, reason: creditReason }),
+    });
+    const data = await res.json();
+    if (res.ok && data.success) {
+      setEditUserModal({ ...editUserModal, credits: data.credits });
+      setCreditAmount(""); setCreditReason("");
+      setCreditMsg(`Done. New balance: ${data.credits}`);
+      fetchData();
+    } else setCreditMsg(data.error ?? "Failed.");
+  } catch { setCreditMsg("Could not reach backend."); }
+};
 
   const handleDeleteUser = async (rfid: string) => {
     if (!window.confirm("Are you sure you want to delete this user?")) return;
@@ -490,6 +660,26 @@ export default function AdminScreen({}: Props) {
     fetchData();
   };
 
+  const handlePower = async (action: "shutdown" | "reboot") => {
+    const prompt = action === "shutdown"
+      ? "Shut down the Raspberry Pi?\n\nThe kiosk will stay OFF until someone physically reconnects power."
+      : "Reboot the Raspberry Pi?\n\nThe kiosk will be unavailable for about a minute, and all admins will be logged out.";
+    if (!window.confirm(prompt)) return;
+
+    try {
+      const res = await authFetch(`/api/admin/system/${action}`, { method: "POST" });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setShowMaintenanceModal(false);
+        setPowerState({ action, startedAt: Date.now() });
+      } else {
+        alert(data.error ?? `Failed to ${action}.`);
+      }
+    } catch {
+      alert("Could not reach backend.");
+    }
+  };
+
   const handleLogout = () => {
     if (window.confirm("Log out of the admin panel?")) {
       setToken(null);
@@ -500,6 +690,9 @@ export default function AdminScreen({}: Props) {
       setShowDropdown(false);
       setShowAccountModal(false);
       setShowMaintenanceModal(false);
+      setCalForm(null);
+      setBadges(ZERO_BADGES);
+      seenSensorRef.current = null;
     }
   };
 
@@ -841,24 +1034,33 @@ export default function AdminScreen({}: Props) {
             </div>
           )}
 
-          <button onClick={fetchData} style={refreshBtn}>↻ Refresh</button>
+          <button onClick={() => fetchData()} style={refreshBtn}>↻ Refresh</button>
         </div>
       </div>
 
-      <div style={tabBar}>
+           <div style={tabBar}>
         {([
           ["logs", <><PrintIcon size={15} /> Activity Logs</>],
           ["users", <><AccountCircleIcon size={15} /> Manage Users</>],
           ["transactions", <><RecyclingIcon size={15} /> Transactions</>],
           ["feedback", <><ChatIcon size={15} /> Feedback</>],
+          ["sensors", <><WrenchIcon size={15} /> Sensors</>],
           ...(isSuperAdmin ? [["admins", <><LockPersonIcon size={15} /> Manage Admins</>] as [Tab, React.ReactNode]] : []),
         ] as [Tab, React.ReactNode][]).map(([t, label]) => (
-          <button key={t} onClick={() => setTab(t)} style={{
+          <button key={t} onClick={() => {
+            tabRef.current = t;                                   // so an in-flight poll can't bring the badge back
+            setTab(t);
+            setBadges(b => (b[t] === 0 ? b : { ...b, [t]: 0 })); // clears instantly
+            if (t !== "sensors") markSeen(t);                     // tells the server you've seen it
+            }} style={{
             ...tabBtn,
             color: tab === t ? "#f0a500" : "#666",
             borderBottom: tab === t ? "2px solid #f0a500" : "2px solid transparent",
           }}>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>{label}</span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              {label}
+              {badges[t] > 0 && <span style={badgeStyle}>{badges[t] > 99 ? "99+" : badges[t]}</span>}
+            </span>
           </button>
         ))}
       </div>
@@ -903,16 +1105,9 @@ export default function AdminScreen({}: Props) {
                 style={{ ...inputStyle, maxWidth: 200, padding: "8px 12px", fontSize: 13, cursor: "pointer" }}
               >
                 <option value="all">All Actions</option>
-                <option value="REGISTER_USER">Register User</option>
-                <option value="CREATE_ADMIN">Create Admin</option>
-                <option value="EDIT_ADMIN">Edit Admin</option>
-                <option value="DELETE_ADMIN">Delete Admin</option>
-                <option value="EDIT_USER">Edit User</option>
-                <option value="DELETE_USER">Delete User</option>
-                <option value="REQUEST_PASSWORD_RESET">Request Password Reset</option>
-                <option value="RESET_PASSWORD">Reset Password</option>
-                <option value="EXPORT_BACKUP">Export Backup</option>
-                <option value="RESTORE_BACKUP">Restore Backup</option>
+                {Object.entries(LOG_GROUPS).map(([key, g]) => (
+                  <option key={key} value={key}>{g.label}</option>
+                   ))}
               </select>
               <input
                 type="date"
@@ -934,7 +1129,7 @@ export default function AdminScreen({}: Props) {
                     .filter(l => {
                       const q = searchQuery.toLowerCase();
                       const matchesSearch = l.admin_user.toLowerCase().includes(q) || l.action.toLowerCase().includes(q) || (l.details && l.details.toLowerCase().includes(q));
-                      const matchesFilter = filterValue === "all" || l.action === filterValue;
+                      const matchesFilter = filterValue === "all" || (LOG_GROUPS[filterValue]?.actions.includes(l.action) ?? false);
                       const matchesDate = !dateFilter || l.created_at.startsWith(dateFilter);
                       return matchesSearch && matchesFilter && matchesDate;
                     })
@@ -1001,7 +1196,7 @@ export default function AdminScreen({}: Props) {
                         <td style={{ ...td, fontSize: 11, color: "#555" }}>{new Date(u.created_at).toLocaleDateString()}</td>
                         <td style={td}>
                           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                            <button onClick={() => { setEditUserModal(u); setEditName(u.name); setEditStudentId(u.studentId); setEditMsg(""); }} style={actionBtn("#1e293b", "#38bdf8")}>Edit</button>
+                            <button onClick={() => { setEditUserModal(u); setEditName(u.name); setEditStudentId(u.studentId); setEditMsg("");setCreditAmount(""); setCreditReason(""); setCreditMsg(""); }} style={actionBtn("#1e293b", "#38bdf8")}>Edit</button>
                             <button onClick={() => handleDeleteUser(u.rfid)} style={actionBtn("#3a1a1a", "#e74c3c")}>Delete</button>
                           </div>
                         </td>
@@ -1033,6 +1228,7 @@ export default function AdminScreen({}: Props) {
                 <option value="deposit">Bottle Deposits</option>
                 <option value="print">Print Jobs</option>
                 <option value="transfer">Credit Transfers</option>
+                <option value="reject">Rejected Bottles</option>
               </select>
               <input
                 type="date"
@@ -1047,7 +1243,7 @@ export default function AdminScreen({}: Props) {
             <div style={{ ...tableWrap, overflowY: "auto", flex: 1 }}>
               <table style={table}>
                 <thead>
-                  <tr>{["Name", "Time", "RFID", "Type", "Size", "Credits"].map(h => <th key={h} style={th}>{h}</th>)}</tr>
+                  <tr>{["Name", "Time", "RFID", "Type", "Details", "Credits"].map(h => <th key={h} style={th}>{h}</th>)}</tr>
                 </thead>
                 <tbody>
                   {txns
@@ -1059,25 +1255,53 @@ export default function AdminScreen({}: Props) {
                       if (filterValue === "deposit") matchesFilter = t.type === "deposit";
                       else if (filterValue === "print") matchesFilter = t.type === "print";
                       else if (filterValue === "transfer") matchesFilter = t.type === "transfer_out" || t.type === "transfer_in";
+                      else if (filterValue === "reject") matchesFilter = t.type === "reject";
 
                       const matchesDate = !dateFilter || t.created_at.startsWith(dateFilter);
-                      return matchesSearch && matchesFilter && matchesDate;
+                      return matchesSearch && matchesFilter && matchesDate || (t.reject_reason && t.reject_reason.toLowerCase().includes(q));
                     })
                     .map(t => (
                       <tr key={t.id} style={{ borderBottom: "1px solid #2a2a2a" }}>
-                        <td style={{ ...td, fontWeight: 600, color: "#fff" }}>{t.user_name ? t.user_name : <span style={{ color: "#e74c3c", fontStyle: "italic" }}>Unknown</span>}</td>
+                        <td style={{ ...td, fontWeight: 600, color: "#fff" }}>{t.user_name ? t.user_name : t.rfid === "GUEST" ? <span style={{ color: "#aaa" }}>Guest</span> : <span style={{ color: "#e74c3c", fontStyle: "italic" }}>Unknown</span>}</td>
                         <td style={td}>{formatPhTime(t.created_at)}</td>
                         <td style={{ ...td, fontFamily: "monospace", fontSize: 11, color: "#666" }}>{t.rfid}</td>
                         <td style={td}>
-                          <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, background: "#2a2a2a", color: "#fff" }}>
+                          <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11,
+                            background: t.type === "reject" ? "#3a1a1a" : "#2a2a2a",
+                            color: t.type === "reject" ? "#e74c3c" : "#fff" }}>
                             {t.type}
                           </span>
                         </td>
-                        <td style={td}>{t.size ?? "—"}</td>
-                       <td style={{  ...td,   color: t.credits > 0 && (t.type === "deposit" || t.type === "transfer_in") ? "#2ecc71" : t.credits < 0 ? "#e74c3c" : "#f0a500",  
-                       fontWeight: 700 }}>
-                          {t.credits > 0 && (t.type === "deposit" || t.type === "transfer_in") ? `+${t.credits}` : t.credits < 0 ? `-${Math.abs(t.credits)}` : `0`}
-                    </td>
+                        <td style={td}>
+  {(() => {
+    const h = t.height_mm != null ? `${t.height_mm} mm` : "—";
+    const w = t.weight_g != null ? `${t.weight_g} g` : "—";
+    const sub = <div style={{ fontSize: 11, color: "#666", marginTop: 2 }}>Height {h} · Weight {w}</div>;
+    if (t.type === "reject") {
+      const labels: Record<string, string> = {
+        capacitive: "Capacitive", tof: "ToF", loadcell: "Load cell", "loadcell+tof": "Load cell + ToF",
+      };
+      return (
+        <div>
+          <div style={{ color: "#e74c3c", fontWeight: 600 }}>
+            Failed at {labels[t.reject_stage ?? ""] ?? "unknown"}: {t.reject_reason ?? "no reason recorded"}
+          </div>
+          {sub}
+        </div>
+      );
+    }
+    if (t.type === "deposit") return <div><div>{t.size ?? "—"}</div>{sub}</div>;
+    return t.size ?? "—";
+  })()}
+</td>
+                      <td style={{
+  ...td, fontWeight: 700,
+  color: t.credits > 0 && (t.type === "deposit" || t.type === "transfer_in" || t.type === "adjust") ? "#2ecc71"
+       : t.type === "transfer_out" || t.credits < 0 ? "#e74c3c" : "#f0a500",
+}}>
+  {t.credits > 0 && (t.type === "deposit" || t.type === "transfer_in" || t.type === "adjust") ? `+${t.credits}`
+    : t.type === "transfer_out" || t.credits < 0 ? `-${Math.abs(t.credits)}` : `0`}
+</td>
                       </tr>
                     ))}
                   {txns.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: "center", color: "#555" }}>No transactions yet</td></tr>}
@@ -1149,7 +1373,271 @@ export default function AdminScreen({}: Props) {
             </div>
           </div>
         )}
-         {/* 5. MANAGE ADMINS TAB */}
+         {/* 5. SENSORS (any admin) */}
+        {!loading && tab === "sensors" && (
+          <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 16, height: "100%", overflowY: "auto" }}>
+
+            {/* Live connection status */}
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#888", marginBottom: 8 }}>ARDUINO CONNECTION</div>
+              {sensorStatus && (() => {
+                const cfg: Record<string, { label: string; color: string }> = {
+                  online:       { label: "Online",       color: "#2ecc71" },
+                  unresponsive: { label: "Unresponsive", color: "#f0a500" },
+                  offline:      { label: "Offline",      color: "#e74c3c" },
+                };
+                const c = cfg[sensorStatus.overall];
+                return (
+                  <div style={{
+                    display: "inline-flex", alignItems: "center", gap: 8, padding: "8px 14px",
+                    borderRadius: 8, background: "#242424", border: `1px solid ${c.color}`,
+                  }}>
+                    {sensorStatus.overall === "online"
+                      ? <CheckCircleIcon size={16} color={c.color} />
+                      : <XCircleIcon size={16} color={c.color} />}
+                    <span style={{ fontSize: 13, fontWeight: 700, color: c.color }}>{c.label}</span>
+                    {sensorStatus.serial.error && <span style={{ fontSize: 12, color: "#e74c3c" }}>— {sensorStatus.serial.error}</span>}
+                  </div>
+                );
+              })()}
+            </div>
+
+                       {/* Per-sensor last activity */}
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#888", marginBottom: 8 }}>SENSOR ACTIVITY</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
+                {sensorStatus && SENSOR_ORDER.filter(id => sensorStatus.sensors[id]).map(id => {
+                  const h = sensorStatus.sensors[id];
+                  const faulted = h.state === "fault";
+                  const secs = h.lastSeen ? Math.max(0, Math.round((Date.now() - h.lastSeen) / 1000)) : null;
+                  const ago = formatAgo(secs);
+                  const monitored = IDLE_MONITORED.includes(id);
+                  const active = monitored && !faulted && secs !== null && secs <= 20;
+                  const pct = sensorStatus.bin?.fillPercent ?? null;
+                  const binColor = pct === null ? "#666" : pct >= 95 ? "#e74c3c" : pct >= 80 ? "#f0a500" : "#2ecc71";
+                  return (
+                                        <div key={id} style={{ ...adminStatCard, textAlign: "left", ...(faulted ? { border: "1px solid #e74c3c" } : {}) }}>
+                      <div style={adminStatLabel}>{SENSOR_LABELS[id] ?? id}</div>
+                      <div style={{ fontSize: 12, marginTop: 4, color: faulted ? "#e74c3c" : (active || (!monitored && h.lastSeen)) ? "#2ecc71" : "#888" }}>
+                        {faulted ? `Problem · ${ago}` : active ? `Active · ${ago}` : ago}
+                      </div>
+                      {h.lastDetail && <div style={{ fontSize: 11, color: "#555", marginTop: 2 }}>{h.lastDetail}</div>}
+                      {id === "servo" && (
+                        <div style={{ fontSize: 10, color: "#444", marginTop: 4 }}>Last action only. The gate has no feedback.</div>
+                      )}
+                      {id === "ultrasonic" && pct !== null && (
+                        <div style={{ marginTop: 8 }}>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: binColor }}>Bin {pct}% full</div>
+                          <div style={{ height: 6, background: "#333", borderRadius: 3, marginTop: 4, overflow: "hidden" }}>
+                            <div style={{ width: `${pct}%`, height: "100%", background: binColor }} />
+                          </div>
+                          <div style={{ fontSize: 10, color: "#444", marginTop: 4 }}>Checked every few seconds while idle</div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Calibration */}
+            {calForm && (
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#888", marginBottom: 8 }}>CALIBRATION</div>
+                <div style={{ background: "#242424", border: "1px solid #333", borderRadius: 10, padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
+
+                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                    <label style={calLabel}>ToF sanity min (mm)
+                      <input type="number" value={calForm.tofMinMm} onChange={e => setCalForm({ ...calForm, tofMinMm: +e.target.value })} style={inputStyle} />
+                    </label>
+                    <label style={calLabel}>ToF sanity max (mm)
+                      <input type="number" value={calForm.tofMaxMm} onChange={e => setCalForm({ ...calForm, tofMaxMm: +e.target.value })} style={inputStyle} />
+                    </label>
+                    <label style={calLabel}>Reject weight above (g)
+                      <input type="number" value={calForm.weightMaxRejectG} onChange={e => setCalForm({ ...calForm, weightMaxRejectG: +e.target.value })} style={inputStyle} />
+                    </label>
+                  </div>
+
+                                   <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                    <label style={calLabel}>"Short bottle" height gate (mm)
+                      <input type="number" value={calForm.shortBottleHeightMm} onChange={e => setCalForm({ ...calForm, shortBottleHeightMm: +e.target.value })} style={inputStyle} />
+                    </label>
+                    <label style={calLabel}>Max weight if short (g)
+                      <input type="number" value={calForm.shortBottleWeightMaxG} onChange={e => setCalForm({ ...calForm, shortBottleWeightMaxG: +e.target.value })} style={inputStyle} />
+                    </label>
+                  </div>
+
+                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                    <label style={calLabel}>Bin empty distance (cm)
+                      <input type="number" value={calForm.binEmptyCm} onChange={e => setCalForm({ ...calForm, binEmptyCm: +e.target.value })} style={inputStyle} />
+                    </label>
+                    <label style={calLabel}>Bin full distance (cm)
+                      <input type="number" value={calForm.binFullCm} onChange={e => setCalForm({ ...calForm, binFullCm: +e.target.value })} style={inputStyle} />
+                    </label>
+                  </div>
+                                    <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                    <div style={{ fontSize: 13, color: "#ccc" }}>
+                      Empty chamber reading: <strong style={{ color: "#f0a500" }}>{calForm.tofMountMm} mm</strong>
+                    </div>
+                    <button
+                      onClick={measureEmpty}
+                      disabled={tofCalBusy}
+                      style={{ ...actionBtn("#1e293b", "#38bdf8"), padding: "8px 14px", fontSize: 12, opacity: tofCalBusy ? 0.5 : 1 }}
+                    >
+                      {tofCalBusy ? "Measuring..." : "Measure empty chamber"}
+                    </button>
+                  </div>
+
+                {(() => {
+  const hasH  = (s: SizeSpec) => s.minHeight != null && s.maxHeight != null;
+  const total = calForm.sizes.length;
+  const withH = calForm.sizes.filter(hasH).length;
+  const allH  = total > 0 && withH === total;
+
+  const lc  = sensorStatus?.sensors?.loadcell?.state ?? "unknown";
+  const tof = sensorStatus?.sensors?.tof?.state ?? "unknown";
+
+  let color = "#666";
+  let text  = "Waiting for the first bottle to check sensor status.";
+
+  if (sensorStatus && sensorStatus.overall !== "online") {
+    color = "#e74c3c";
+    text  = `Arduino is ${sensorStatus.overall}: no bottle can be validated until it reconnects.`;
+  } else if (lc === "ok" && tof === "ok") {
+    if (withH > 0) { color = "#2ecc71"; text = "Load cell + ToF both active: dual validation. Weight and height must agree" + (allH ? "." : " on bands that have a height range."); }
+    else           { color = "#f0a500"; text = "Both sensors active, but no band has a height range yet, so weight alone decides."; }
+  } else if (lc === "fault" && tof !== "fault") {
+    if (withH > 0) { color = "#f0a500"; text = "Load cell not responding: height only. ToF decides the size" + (allH ? "." : ` (only ${withH}/${total} bands have a height range).`); }
+    else           { color = "#e74c3c"; text = "Load cell not responding and no height ranges saved: bottles will be rejected."; }
+  } else if (tof === "fault" && lc !== "fault") {
+    color = "#f0a500"; text = "ToF not responding: weight only. The load cell decides the size.";
+  } else if (lc === "fault" && tof === "fault") {
+    color = "#e74c3c"; text = "Both sensors not responding: bottles will be rejected.";
+  } else if (lc === "ok") {
+    color = "#f0a500"; text = "Load cell active, ToF has no data yet: weight only until a bottle reports a height.";
+  } else if (tof === "ok") {
+    color = "#f0a500"; text = "ToF active, load cell has no data yet.";
+  }
+
+  return (
+    <div style={{ marginTop: -6 }}>
+      <div style={{ fontSize: 11, lineHeight: 1.6, color }}>{text}</div>
+      <div style={{ fontSize: 11, lineHeight: 1.6, color: "#666" }}>Height ranges saved: {withH}/{total} bands</div>
+    </div>
+  );
+})()}
+                  {calForm.sizes.map((s, i) => (
+                    <div key={i} style={{ display: "flex", flexDirection: "column", gap: 8, padding: "10px 0", borderBottom: "1px solid #2a2a2a" }}>
+                      <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+                        <label style={calLabel}>Label
+                          <input type="text" value={s.label} onChange={e => {
+                            const sizes = [...calForm.sizes]; sizes[i] = { ...s, label: e.target.value };
+                            setCalForm({ ...calForm, sizes });
+                          }} style={{ ...inputStyle, width: 150 }} />
+                        </label>
+                        <label style={calLabel}>Min (g)
+                          <input type="number" value={s.minWeight} onChange={e => {
+                            const sizes = [...calForm.sizes]; sizes[i] = { ...s, minWeight: +e.target.value };
+                            setCalForm({ ...calForm, sizes });
+                          }} style={inputStyle} />
+                        </label>
+                        <label style={calLabel}>Max (g)
+                          <input type="number" value={s.maxWeight} onChange={e => {
+                            const sizes = [...calForm.sizes]; sizes[i] = { ...s, maxWeight: +e.target.value };
+                            setCalForm({ ...calForm, sizes });
+                          }} style={inputStyle} />
+                        </label>
+                        <label style={calLabel}>Credits
+                          <input type="number" value={s.credits} onChange={e => {
+                            const sizes = [...calForm.sizes]; sizes[i] = { ...s, credits: +e.target.value };
+                            setCalForm({ ...calForm, sizes });
+                          }} style={inputStyle} />
+                        </label>
+                        <button
+                          onClick={() => {
+                            if (calForm.sizes.length <= 1) return;
+                            setCalForm({ ...calForm, sizes: calForm.sizes.filter((_, idx) => idx !== i) });
+                          }}
+                          disabled={calForm.sizes.length <= 1}
+                          title={calForm.sizes.length <= 1 ? "At least one band is required" : "Remove this band"}
+                          style={{
+                            ...actionBtn("#3a1a1a", "#e74c3c"), height: 40, padding: "0 14px",
+                            opacity: calForm.sizes.length <= 1 ? 0.4 : 1,
+                            cursor: calForm.sizes.length <= 1 ? "not-allowed" : "pointer",
+                          }}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                      <div style={{ display: "flex", gap: 10, alignItems: "flex-end", paddingLeft: 4 }}>
+                        <span style={{ fontSize: 11, color: "#666", width: 140 }}>↳ Height range (mm)</span>
+                        <label style={calLabel}>Min height
+                          <input
+                            type="number"
+                            value={s.minHeight ?? ""}
+                            placeholder="blank = skip"
+                            onChange={e => {
+                              const v = e.target.value === "" ? undefined : +e.target.value;
+                              const sizes = [...calForm.sizes]; sizes[i] = { ...s, minHeight: v };
+                              setCalForm({ ...calForm, sizes });
+                            }}
+                            style={inputStyle}
+                          />
+                        </label>
+                        <label style={calLabel}>Max height
+                          <input
+                            type="number"
+                            value={s.maxHeight ?? ""}
+                            placeholder="blank = skip"
+                            onChange={e => {
+                              const v = e.target.value === "" ? undefined : +e.target.value;
+                              const sizes = [...calForm.sizes]; sizes[i] = { ...s, maxHeight: v };
+                              setCalForm({ ...calForm, sizes });
+                            }}
+                            style={inputStyle}
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  ))}
+                  <button
+                    onClick={() => setCalForm({
+                      ...calForm,
+                      sizes: [...calForm.sizes, { label: "New Band", minWeight: 0, maxWeight: 0, credits: 1 }],
+                    })}
+                    style={{ ...ghostBtn, flex: "unset", alignSelf: "flex-start", padding: "8px 16px", fontSize: 12 }}
+                  >
+                    + Add Band
+                  </button>
+
+                  {calMsg && <div style={{ fontSize: 12, color: calMsg.startsWith("Saved") ? "#2ecc71" : "#e74c3c" }}>{calMsg}</div>}
+
+                  <button
+                    disabled={calSaving}
+                    onClick={async () => {
+                      setCalSaving(true); setCalMsg("");
+                      try {
+                        const res = await authFetch(`/api/admin/sensors/config`, {
+                          method: "PATCH",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify(calForm),
+                        });
+                        const data = await res.json();
+                        if (res.ok && data.success) { setCalForm(data.config); setCalMsg("Saved calibration."); }
+                        else setCalMsg(data.error ?? "Failed to save.");
+                      } catch { setCalMsg("Could not reach backend."); }
+                      setCalSaving(false);
+                    }}
+                    style={{ ...confirmBtn, alignSelf: "flex-start", padding: "10px 24px" }}
+                  >
+                    {calSaving ? "Saving..." : "Save Calibration"}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+         {/* 6. MANAGE ADMINS TAB */}
         {!loading && tab === "admins" && isSuperAdmin && (
           <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 12, height: "100%", overflow: "hidden" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexShrink: 0, flexWrap: "wrap", gap: 10 }}>
@@ -1335,6 +1823,28 @@ export default function AdminScreen({}: Props) {
                   Restore Backup
                 </button>
               </div>
+
+              <div style={{ height: 1, background: "#333", margin: "8px 0 4px" }} />
+
+              <div style={{ fontSize: 12, color: "#888", lineHeight: 1.4 }}>
+                Power control. Both are refused while a deposit is in progress. Shutting down leaves the
+                kiosk off until someone physically reconnects power.
+              </div>
+
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={() => handlePower("reboot")}
+                  style={{ ...confirmBtn, background: "#2a2a2a", color: "#f0a500", border: "1px solid #3a3a3a" }}
+                >
+                  Reboot Pi
+                </button>
+                <button
+                  onClick={() => handlePower("shutdown")}
+                  style={{ ...confirmBtn, background: "#3a1a1a", color: "#e74c3c", border: "1px solid #5a2a2a" }}
+                >
+                  Shut Down Pi
+                </button>
+              </div>
             </div>
 
             <div style={{ display: "flex", marginTop: 24 }}>
@@ -1370,7 +1880,20 @@ export default function AdminScreen({}: Props) {
                 />
               </div>
             </div>
-
+                           <div style={{ borderTop: "1px solid #333", marginTop: 14, paddingTop: 12, textAlign: "left" }}>
+              <div style={{ fontSize: 12, color: "#888", marginBottom: 6 }}>
+                Credits · current balance: <strong style={{ color: "#f0a500" }}>{editUserModal.credits}</strong>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input type="number" min={1} value={creditAmount} onChange={e => setCreditAmount(e.target.value)} placeholder="Amount" style={{ ...inputStyle, width: 100 }} />
+                <input value={creditReason} onChange={e => setCreditReason(e.target.value)} placeholder="Reason (optional)" style={inputStyle} />
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                <button onClick={() => adjustCredits("add")} style={{ ...actionBtn("#1a3a2a", "#2ecc71"), flex: 1, padding: "8px" }}>+ Add</button>
+                <button onClick={() => adjustCredits("remove")} style={{ ...actionBtn("#3a1a1a", "#e74c3c"), flex: 1, padding: "8px" }}>− Remove</button>
+              </div>
+              {creditMsg && <div style={{ fontSize: 12, marginTop: 6, color: creditMsg.startsWith("Done") ? "#2ecc71" : "#e74c3c" }}>{creditMsg}</div>}
+            </div>
             {editMsg && <div style={{ fontSize: 13, color: editMsg.startsWith("Updated") ? "#2ecc71" : "#e74c3c", marginTop: 12, display: "flex", alignItems: "center", gap: 6 }}>
               {editMsg.startsWith("Updated") ? <CheckCircleIcon size={15} color="#2ecc71" /> : <XCircleIcon size={15} color="#e74c3c" />} {editMsg}
             </div>}
@@ -1405,6 +1928,49 @@ export default function AdminScreen({}: Props) {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Shutdown / Reboot waiting screen */}
+      {powerState && (
+        <div style={{ ...overlay, background: "#1a1a1a", zIndex: 500, flexDirection: "column", gap: 14, textAlign: "center", padding: 24 }}>
+          {powerState.action === "shutdown" ? (
+            <>
+              <WrenchIcon size={40} color="#f0a500" />
+              <div style={{ fontSize: 22, fontWeight: 700, color: "#fff" }}>Shutting down the Pi…</div>
+              {powerElapsed < SHUTDOWN_WAIT_SECONDS ? (
+                <div style={{ fontSize: 15, color: "#f0a500" }}>
+                  Please wait {SHUTDOWN_WAIT_SECONDS - powerElapsed}s. Do not unplug yet.
+                </div>
+              ) : (
+                <div style={{ fontSize: 15, color: "#2ecc71", maxWidth: 440, lineHeight: 1.5 }}>
+                  Check the Pi. Once the green light has stopped blinking, it is safe to unplug.
+                </div>
+              )}
+              <div style={{ fontSize: 12, color: "#666", maxWidth: 440, lineHeight: 1.5 }}>
+                This page cannot confirm the shutdown finished, because the server stops before it can
+                report back. The green light on the Pi is the real signal. The kiosk stays off until
+                power is reconnected.
+              </div>
+            </>
+          ) : rebootBackOnline ? (
+            <>
+              <CheckCircleIcon size={40} color="#2ecc71" />
+              <div style={{ fontSize: 22, fontWeight: 700, color: "#fff" }}>The Pi is back online</div>
+              <div style={{ fontSize: 13, color: "#aaa" }}>All admin sessions were cleared by the reboot. Log in again to continue.</div>
+              <button onClick={() => window.location.reload()} style={{ ...confirmBtn, flex: "unset", padding: "12px 28px", marginTop: 8 }}>
+                Reload and log in
+              </button>
+            </>
+          ) : (
+            <>
+              <WrenchIcon size={40} color="#f0a500" />
+              <div style={{ fontSize: 22, fontWeight: 700, color: "#fff" }}>Rebooting the Pi…</div>
+              <div style={{ fontSize: 15, color: "#f0a500" }}>
+                Waiting for it to come back ({powerElapsed}s). This usually takes about a minute.
+              </div>
+            </>
+          )}
         </div>
       )}
 
@@ -1573,3 +2139,11 @@ const adminStatCard: React.CSSProperties = {
 };
 const adminStatLabel: React.CSSProperties = { fontSize: 11, color: "#666", marginBottom: 4, fontWeight: 600, textTransform: "uppercase" };
 const adminStatVal: React.CSSProperties = { fontSize: 24, fontWeight: 800, color: "#fff" };
+const calLabel: React.CSSProperties = {
+  display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: "#888", fontWeight: 600,
+};
+const badgeStyle: React.CSSProperties = {
+  minWidth: 18, height: 18, padding: "0 5px", borderRadius: 9,
+  background: "#e74c3c", color: "#fff", fontSize: 10, fontWeight: 700,
+  display: "inline-flex", alignItems: "center", justifyContent: "center", boxSizing: "border-box",
+};

@@ -17,6 +17,10 @@ const VALID_PAPER_SIZES = ["A4", "Letter", "Long"] as const;
 type PaperSize = typeof VALID_PAPER_SIZES[number];
 const DEFAULT_PAPER_SIZE: PaperSize = "Letter";
 
+const VALID_LAYOUTS = ["portrait", "landscape"] as const;
+type Layout = typeof VALID_LAYOUTS[number];
+const DEFAULT_LAYOUT: Layout = "portrait";
+
 function sanitizePaperSize(input: unknown): PaperSize {
   if (typeof input === "string" && VALID_PAPER_SIZES.includes(input as PaperSize)) {
     return input as PaperSize;
@@ -24,11 +28,23 @@ function sanitizePaperSize(input: unknown): PaperSize {
   return DEFAULT_PAPER_SIZE;
 }
 
+function sanitizeLayout(input: unknown): Layout {
+  if (typeof input === "string" && VALID_LAYOUTS.includes(input as Layout)) {
+    return input as Layout;
+  }
+  return DEFAULT_LAYOUT;
+}
+
 function getCupsMediaString(size: PaperSize): string {
   if (size === "A4") return "A4";
   if (size === "Letter") return "Letter";
   if (size === "Long") return "Custom.8.5x13in";
   return "Letter";
+}
+
+function getCupsOrientationFlag(layout: Layout): string {
+  // IPP orientation-requested: 3 = portrait, 4 = landscape
+  return layout === "landscape" ? "-o orientation-requested=4" : "-o orientation-requested=3";
 }
 
 async function ensurePdf(
@@ -128,19 +144,24 @@ router.get("/upload/:sessionId", (req, res) => {
     <head>
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
       <title>Bottle2Print Upload</title>
+      <style>
+        body { font-family: sans-serif; text-align: center; padding: 40px 20px; background: #1a1a1a; color: #fff; margin: 0; }
+        input[type="file"] { margin: 20px 0; color: #aaa; }
+        button { padding: 12px 24px; font-size: 16px; background-color: #f0a500; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; color: #000; }
+        button:disabled { opacity: 0.7; cursor: not-allowed; }
+      </style>
     </head>
-    <body style="font-family:sans-serif;text-align:center;padding:40px 20px;">
-      
+    <body>
       <div id="upload-section">
         <h2>Upload your file to print</h2>
-        <input type="file" id="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.jpg,.jpeg,.png" style="margin:20px 0;"/><br/>
-        <button id="btn" style="padding:12px 24px;font-size:16px; background-color: #f0a500; border: none; border-radius: 8px; font-weight: bold; cursor: pointer;">Upload</button>
-        <p id="status" style="margin-top: 15px; color: #555;"></p>
+        <input type="file" id="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.jpg,.jpeg,.png"/><br/>
+        <button id="btn">Upload</button>
+        <p id="status" style="margin-top: 15px; color: #777;"></p>
       </div>
 
       <div id="success-section" style="display:none; margin-top: 40px;">
         <h2 style="color: #2ecc71; margin-bottom: 10px;">File uploaded successfully!</h2>
-        <p style="font-size: 16px; color: #333; line-height: 1.5; padding: 0 15px;">
+        <p style="font-size: 16px; color: #ccc; line-height: 1.5; padding: 0 15px;">
           Your file is ready. Please look at the kiosk screen to choose your payment method and continue.
         </p>
       </div>
@@ -158,7 +179,6 @@ router.get("/upload/:sessionId", (req, res) => {
           
           btn.innerText = 'Uploading...';
           btn.disabled = true;
-          btn.style.opacity = '0.7';
           status.innerText = 'Sending to kiosk...';
           
           try {
@@ -173,14 +193,12 @@ router.get("/upload/:sessionId", (req, res) => {
               status.style.color = '#e74c3c';
               btn.innerText = 'Upload';
               btn.disabled = false;
-              btn.style.opacity = '1';
             }
           } catch {
             status.innerText = 'Could not reach server.';
             status.style.color = '#e74c3c';
             btn.innerText = 'Upload';
             btn.disabled = false;
-            btn.style.opacity = '1';
           }
         };
       </script>
@@ -249,6 +267,7 @@ router.post("/api/print/qr-confirm/:sessionId", (req, res) => {
 
   const colorMode: "bw" | "color" = req.body.colorMode === "color" ? "color" : "bw";
   const paperSize = sanitizePaperSize(req.body.paperSize);
+  const layout = sanitizeLayout(req.body.layout);
   const rangeInput: string = (req.body.pageRange ?? "all").trim();
 
   let selectedPages: number[];
@@ -296,7 +315,8 @@ router.post("/api/print/qr-confirm/:sessionId", (req, res) => {
 
   const cupsColorFlag = colorMode === "color" ? "RGB" : "Gray";
   const cupsMediaString = getCupsMediaString(paperSize);
-  const cmd = `lp ${cupsRangeFlag} -o ColorModel=${cupsColorFlag} -o media=${cupsMediaString} "${pdfPath}"`;
+  const cupsOrientationFlag = getCupsOrientationFlag(layout);
+  const cmd = `lp ${cupsRangeFlag} -o ColorModel=${cupsColorFlag} -o media=${cupsMediaString} ${cupsOrientationFlag} "${pdfPath}"`;
 
   exec(cmd, (error, stdout, stderr) => {
     if (filePath && filePath !== pdfPath) fs.unlink(filePath, () => {});
@@ -320,6 +340,7 @@ router.post("/api/print/qr-confirm/:sessionId", (req, res) => {
       pagesPrinted: selectedPages.length,
       colorMode,
       paperSize,
+      layout,
     });
   });
 });

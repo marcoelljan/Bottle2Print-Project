@@ -3,6 +3,11 @@ import bcrypt from "bcrypt";
 import crypto from "crypto";
 import nodemailer from "nodemailer";
 import { db } from "../db";
+import { exec } from "child_process";
+import { isKioskBusy } from "../kioskState";
+import { getSensorStatus } from "../sensorHealth";
+import { getCalibration, updateCalibration, invalidateCalibrationCache } from "../sensorConfig";
+import { requestTofCal } from "../tofCal";
 
 const router = Router();
 
@@ -192,6 +197,32 @@ router.post("/api/admin/login", async (req, res) => {
 
 router.use("/api/admin", requireAuth);
 
+// ── Badge Count Routes ─────────────────────────────────────────────────────
+router.get("/api/admin/badges", (req: any, res) => {
+  const { adminId, username, role } = req.admin;
+  const seedStmt = db.prepare("INSERT OR IGNORE INTO admin_seen (admin_id, tab) VALUES (?, ?)");
+  const out: Record<string, number> = {};
+
+  for (const [tab, sql] of Object.entries(BADGE_SQL)) {
+    if (tab === "admins" && role !== "super_admin") { out[tab] = 0; continue; }
+    seedStmt.run(adminId, tab); // first time ever: starts at "now", no flood
+    const { seen_at } = db.prepare("SELECT seen_at FROM admin_seen WHERE admin_id = ? AND tab = ?").get(adminId, tab) as any;
+    const params = tab === "logs" ? { since: seen_at, me: username } : { since: seen_at };
+    out[tab] = (db.prepare(sql).get(params) as any).n;
+  }
+  res.json(out);
+});
+
+router.post("/api/admin/badges/seen", (req: any, res) => {
+  const { tab } = req.body;
+  if (!BADGE_SQL[tab]) return res.status(400).json({ error: "Unknown tab." });
+  db.prepare(`
+    INSERT INTO admin_seen (admin_id, tab, seen_at) VALUES (?, ?, datetime('now'))
+    ON CONFLICT(admin_id, tab) DO UPDATE SET seen_at = datetime('now')
+  `).run(req.admin.adminId, tab);
+  res.json({ success: true });
+});
+
 router.get("/api/admin/me", (req: any, res) => {
   const admin = db.prepare("SELECT email, password_changed FROM admins WHERE id = ?").get(req.admin.adminId) as any;
   res.json({ username: req.admin.username, email: admin ? admin.email : "", role: req.admin.role, passwordChanged: admin ? admin.password_changed === 1 : true });
@@ -212,6 +243,25 @@ router.post("/api/admin/me/password", async (req: any, res) => {
   res.json({ success: true });
 });
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS admin_seen (
+    admin_id INTEGER NOT NULL,
+    tab      TEXT NOT NULL,
+    seen_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (admin_id, tab)
+  );
+`);
+
+const BADGE_SQL: Record<string, string> = {
+  logs: `SELECT (SELECT COUNT(*) FROM activity_logs WHERE created_at > @since AND admin_user != @me)
+              + (SELECT COUNT(*) FROM transactions WHERE type = 'register' AND created_at > @since) AS n`,
+  users: `SELECT COUNT(*) AS n FROM users WHERE created_at > @since`,
+  transactions: `SELECT COUNT(*) AS n FROM transactions WHERE type != 'register' AND created_at > @since`,
+  feedback: `SELECT COUNT(*) AS n FROM feedback WHERE created_at > @since`,
+  admins: `SELECT COUNT(*) AS n FROM admins WHERE created_at > @since`,
+};
+
+
 // ── Overall System Statistics Route ────────────────────────────────────────
 router.get("/api/admin/stats", requireAuth, (_req, res) => {
   try {
@@ -221,7 +271,7 @@ router.get("/api/admin/stats", requireAuth, (_req, res) => {
         SUM(CASE WHEN type = 'deposit' THEN COALESCE(weight_g, 0) ELSE 0 END) as total_weight_g,
         SUM(CASE WHEN type = 'deposit' THEN COALESCE(co2_saved_g, 0) ELSE 0 END) as total_co2_g,
         SUM(CASE WHEN type = 'print' THEN 1 ELSE 0 END) as total_prints,
-        COUNT(DISTINCT rfid) as total_users
+        COUNT(DISTINCT CASE WHEN type != 'reject' AND rfid != 'GUEST' THEN rfid END) as total_users
       FROM transactions
     `).get() as any;
 
@@ -237,6 +287,78 @@ router.get("/api/admin/stats", requireAuth, (_req, res) => {
   }
 });
 
+// ── Sensor Status (any authenticated admin) ────────────────────────────────
+router.get("/api/admin/sensors/status", (_req, res) => {
+  res.json(getSensorStatus());
+});
+
+// ── Sensor Calibration (any authenticated admin) ───────────────────────────
+router.get("/api/admin/sensors/config", (_req, res) => {
+  res.json(getCalibration());
+});
+
+router.patch("/api/admin/sensors/config", (req: any, res) => {
+  try {
+    const updated = updateCalibration(req.body);
+    logActivity(req.admin.username, "UPDATE_SENSOR_CONFIG", "Updated sensor calibration thresholds");
+    res.json({ success: true, config: updated });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || "Invalid calibration data." });
+  }
+});
+router.post("/api/admin/sensors/tof-calibrate", async (req: any, res) => {
+  if (isKioskBusy()) return res.status(409).json({ error: "A deposit is in progress. Try again when the kiosk is idle." });
+  const r = await requestTofCal();
+  if (!r.ok) return res.status(500).json({ error: "No reading from the Arduino. Check the ToF sensor and that the kiosk is idle." });
+  if (r.spread > 25) return res.status(422).json({ error: `Readings are unstable (spread ${r.spread} mm). Check the mount and try again.` });
+  try {
+    const config = updateCalibration({ tofMountMm: r.mean });
+    logActivity(req.admin.username, "UPDATE_SENSOR_CONFIG", `Recalibrated ToF empty reading to ${r.mean} mm (spread ${r.spread} mm)`);
+    res.json({ success: true, mean: r.mean, spread: r.spread, config });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// ── Power Control (Super Admin Only) ───────────────────────────────────────
+const POWER_ARGS = {
+  shutdown: "/usr/sbin/shutdown -h now",
+  reboot:   "/usr/sbin/shutdown -r now",
+} as const;
+
+function handlePower(action: "shutdown" | "reboot") {
+  return (req: any, res: any) => {
+    if (isKioskBusy()) {
+      return res.status(409).json({ error: "A deposit is in progress. Wait until the kiosk is idle and try again." });
+    }
+
+    // Pre-flight: confirm the sudoers rule exists BEFORE telling the panel it's shutting down.
+    exec(`sudo -n -l ${POWER_ARGS[action]}`, (checkErr) => {
+      if (checkErr) {
+        return res.status(500).json({ error: "Power control isn't set up on this Pi (sudoers rule missing or path mismatch)." });
+      }
+
+      // Log first: once the command runs, this process is killed.
+      logActivity(
+        req.admin.username,
+        action === "shutdown" ? "SHUTDOWN_PI" : "REBOOT_PI",
+        `Requested ${action} from the admin panel`
+      );
+
+      // Reply first, then run the command after a short delay so the reply actually reaches the browser.
+      res.json({ success: true, action });
+      setTimeout(() => {
+        exec(`sudo -n ${POWER_ARGS[action]}`, (err, _stdout, stderr) => {
+          if (err) console.error(`[power] ${action} failed:`, stderr || err.message);
+        });
+      }, 2000);
+    });
+  };
+}
+
+router.post("/api/admin/system/shutdown", requireSuperAdmin, handlePower("shutdown"));
+router.post("/api/admin/system/reboot",   requireSuperAdmin, handlePower("reboot"));
+
 // ── Encrypted Backup Route (Super Admin Only) ──────────────────────────────
 router.get("/api/admin/backup", requireSuperAdmin, (req: any, res) => {
   try {
@@ -245,6 +367,7 @@ router.get("/api/admin/backup", requireSuperAdmin, (req: any, res) => {
       transactions: db.prepare("SELECT * FROM transactions").all(),
       feedback: db.prepare("SELECT * FROM feedback").all(),
       activity_logs: db.prepare("SELECT * FROM activity_logs").all(),
+      sensor_config: db.prepare("SELECT * FROM sensor_config").all(),
       version: 1,
       exported_at: new Date().toISOString()
     };
@@ -297,6 +420,7 @@ router.post("/api/admin/restore", requireSuperAdmin, (req: any, res) => {
       db.prepare("DELETE FROM feedback").run();
       db.prepare("DELETE FROM transactions").run();
       db.prepare("DELETE FROM users").run();
+      db.prepare("DELETE FROM sensor_config").run();
 
       if (Array.isArray(data.users) && data.users.length > 0) {
         const sample = data.users[0];
@@ -337,7 +461,19 @@ router.post("/api/admin/restore", requireSuperAdmin, (req: any, res) => {
           stmt.run(cols.map(c => row[c]));
         }
       }
+
+      if (Array.isArray(data.sensor_config) && data.sensor_config.length > 0) {
+        const sample = data.sensor_config[0];
+        const cols = Object.keys(sample);
+        const placeholders = cols.map(() => "?").join(", ");
+        const stmt = db.prepare(`INSERT INTO sensor_config (${cols.join(", ")}) VALUES (${placeholders})`);
+        for (const row of data.sensor_config) {
+          stmt.run(cols.map(c => row[c]));
+        }
+      }
     })();
+
+    invalidateCalibrationCache();
 
     logActivity(req.admin.username, "RESTORE_BACKUP", "Successfully restored system state from backup file");
     res.json({ success: true });
@@ -349,7 +485,7 @@ router.post("/api/admin/restore", requireSuperAdmin, (req: any, res) => {
 // ── User Management Routes ────────────────────────────────────────────────
 router.get("/api/admin/users", (_req, res) => {
   res.json(db.prepare(`
-    SELECT *, 
+    SELECT rfid, surname, firstname, middlename, studentId, credits, created_at, 
     TRIM(COALESCE(firstname, '') || ' ' || CASE WHEN middlename = '' THEN '' ELSE middlename || ' ' END || COALESCE(surname, '')) as name 
     FROM users 
     ORDER BY created_at DESC
@@ -375,6 +511,36 @@ router.patch("/api/admin/user/:rfid", requireAuth, (req: any, res) => {
   res.json({ success: true });
 });
 
+router.post("/api/admin/user/:rfid/credits", (req: any, res) => {
+  const { rfid } = req.params;
+  const amount = Math.floor(Number(req.body.amount));
+  const mode = req.body.mode === "remove" ? "remove" : "add";
+  const reason = String(req.body.reason ?? "").trim().slice(0, 80);
+
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 10000) {
+    return res.status(400).json({ error: "Enter a whole number of credits above 0." });
+  }
+  const user = db.prepare("SELECT credits FROM users WHERE rfid = ?").get(rfid) as any;
+  if (!user) return res.status(404).json({ error: "User not found." });
+  if (mode === "remove" && user.credits < amount) {
+    return res.status(400).json({ error: `User only has ${user.credits} credits.` });
+  }
+
+  const delta = mode === "add" ? amount : -amount;
+  const note = `Admin ${mode === "add" ? "added" : "removed"} credits${reason ? ": " + reason : ""} (by ${req.admin.username})`;
+  try {
+    db.transaction(() => {
+      db.prepare("UPDATE users SET credits = credits + ? WHERE rfid = ?").run(delta, rfid);
+      db.prepare("INSERT INTO transactions (rfid, type, size, credits) VALUES (?, 'adjust', ?, ?)").run(rfid, note, delta);
+    })();
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+  const updated = db.prepare("SELECT credits FROM users WHERE rfid = ?").get(rfid) as any;
+  logActivity(req.admin.username, "ADJUST_CREDITS", `${delta > 0 ? "+" : ""}${delta} credits for RFID ${rfid}${reason ? " (" + reason + ")" : ""}`);
+  res.json({ success: true, credits: updated.credits });
+});
+
 router.delete("/api/admin/user/:rfid", requireAuth, (req: any, res) => {
   const { rfid } = req.params;
   const user = db.prepare("SELECT * FROM users WHERE rfid = ?").get(rfid);
@@ -393,7 +559,7 @@ router.get("/api/admin/transactions", (_req, res) => {
     LEFT JOIN users u ON t.rfid = u.rfid 
     WHERE t.type != 'register'
     ORDER BY t.created_at DESC 
-    LIMIT 100
+    LIMIT 1000
   `).all());
 });
 
@@ -417,7 +583,7 @@ router.get("/api/admin/activity-logs", requireAuth, (_req, res) => {
       new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     );
 
-    res.json(combined.slice(0, 100));
+    res.json(combined.slice(0, 1000));
   } catch (err: any) {
     res.status(500).json({ error: "Failed to fetch activity logs: " + err.message });
   }
