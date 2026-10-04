@@ -7,8 +7,9 @@ import QRCode from "qrcode";
 import { db } from "../db";
 import { upload } from "../upload";
 import { createSession, getSession, updateSession, deleteSession } from "../qrSessions";
-import { getGuestCredits, deductGuestCredits, endGuestSession } from "../guestSession";
+import { getGuestCredits, deductGuestCredits, endGuestSession, addGuestCredit } from "../guestSession";
 import { broadcast } from "../wsHub";
+import { isVerified } from "../pinAuth";
 
 const router = Router();
 const PI_IP = process.env.PI_IP || "localhost";
@@ -64,7 +65,7 @@ async function ensurePdf(
   }
 
   await new Promise<void>((resolve, reject) => {
-    exec(`soffice --headless --convert-to pdf --outdir "${outDir}" "${filePath}"`, (err) => {
+    exec(`soffice --headless --convert-to pdf --outdir "${outDir}" "${filePath}"`, { timeout: 60000 }, (err) => {
       if (err) reject(err); else resolve();
     });
   });
@@ -101,6 +102,12 @@ function parsePageRange(range: string, totalPages: number): number[] | null {
   return pages.size > 0 ? Array.from(pages).sort((a, b) => a - b) : null;
 }
 
+function mayUseCard(rfid: unknown): boolean {
+  if (typeof rfid !== "string" || !rfid) return false;
+  if (rfid === "GUEST") return true;   // guests spend the shared bottle-credit pool, not anyone's account
+  return isVerified(rfid);             // card users: PIN entered at the kiosk in the last 10 minutes
+}
+
 router.post("/api/count-pages", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file." });
   try {
@@ -117,6 +124,9 @@ router.post("/api/count-pages", upload.single("file"), async (req, res) => {
 
 router.post("/api/print/qr-session", async (req, res) => {
   const { rfid } = req.body;
+    if (rfid && rfid !== "UNASSIGNED" && !mayUseCard(rfid)) {
+    return res.status(403).json({ error: "Card not verified. Enter your PIN at the kiosk first." });
+  }
   const sessionId = createSession(rfid ?? "UNASSIGNED");
   const uploadUrl = `http://${PI_IP}:4000/upload/${sessionId}`;
   const qrImage = await QRCode.toDataURL(uploadUrl);
@@ -127,6 +137,9 @@ router.post("/api/print/qr-attach/:sessionId", async (req, res) => {
   const { sessionId } = req.params;
   const { rfid } = req.body;
   if (!rfid) return res.status(400).json({ error: "Missing rfid." });
+  if (rfid && rfid !== "UNASSIGNED" && !mayUseCard(rfid)) {
+    return res.status(403).json({ error: "Card not verified. Enter your PIN at the kiosk first." });
+  }
   const s = updateSession(sessionId, { rfid });
   if (!s) return res.status(404).json({ error: "Session not found." });
   try { broadcast({ type: "state", session: s }); } catch {}
@@ -264,6 +277,9 @@ router.post("/api/print/qr-confirm/:sessionId", (req, res) => {
 
   const { rfid, filePath, pdfPath, pageCount } = session;
   const totalPages = pageCount ?? 1;
+    if (!mayUseCard(rfid)) {
+    return res.status(403).json({ error: "Card not verified. Enter your PIN at the kiosk first." });
+  }
 
   const colorMode: "bw" | "color" = req.body.colorMode === "color" ? "color" : "bw";
   const paperSize = sanitizePaperSize(req.body.paperSize);
@@ -281,7 +297,7 @@ router.post("/api/print/qr-confirm/:sessionId", (req, res) => {
       return res.status(400).json({ error: `Invalid page range. This document has ${totalPages} page(s).` });
     }
     selectedPages = parsed;
-    cupsRangeFlag = `-P ${rangeInput}`;
+        cupsRangeFlag = `-P ${selectedPages.join(",")}`;
   }
 
   const creditsPerPage = colorMode === "color" ? 8 : 3;
@@ -318,19 +334,35 @@ router.post("/api/print/qr-confirm/:sessionId", (req, res) => {
   const cupsOrientationFlag = getCupsOrientationFlag(layout);
   const cmd = `lp ${cupsRangeFlag} -o ColorModel=${cupsColorFlag} -o media=${cupsMediaString} ${cupsOrientationFlag} "${pdfPath}"`;
 
+  // Charge first (atomic), print second, refund if printing fails
+  if (isGuest) {
+    deductGuestCredits(totalCost);
+  } else {
+    const charged = db.prepare("UPDATE users SET credits = credits - ? WHERE rfid = ? AND credits >= ?").run(totalCost, rfid, totalCost);
+    if (charged.changes === 0) {
+      if (filePath) fs.unlink(filePath, () => {});
+      fs.unlink(pdfPath, () => {});
+      deleteSession(req.params.sessionId);
+      return res.status(403).json({ error: "Not enough credits." });
+    }
+  }
+
   exec(cmd, (error, stdout, stderr) => {
     if (filePath && filePath !== pdfPath) fs.unlink(filePath, () => {});
     fs.unlink(pdfPath, () => {});
     deleteSession(req.params.sessionId);
 
-    if (error) return res.status(500).json({ error: stderr || error.message });
+        if (error) {   // printing failed: give the credits back
+      if (isGuest) addGuestCredit(totalCost);
+      else db.prepare("UPDATE users SET credits = credits + ? WHERE rfid = ?").run(totalCost, rfid);
+      return res.status(500).json({ error: stderr || error.message });
+    }
 
     if (isGuest) {
-      deductGuestCredits(totalCost);
       endGuestSession();
     } else {
-      db.prepare("UPDATE users SET credits = credits - ? WHERE rfid = ?").run(totalCost, rfid);
-      db.prepare(`INSERT INTO transactions (rfid, type, credits) VALUES (?, 'print', ?)`).run(rfid, totalCost);
+      db.prepare("INSERT INTO transactions (rfid, type, size, credits) VALUES (?, 'print', ?, ?)")
+        .run(rfid, `${selectedPages.length} page(s), ${colorMode}`, totalCost);
     }
 
     res.json({

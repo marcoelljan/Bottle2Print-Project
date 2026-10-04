@@ -595,6 +595,16 @@ const adjustCredits = async (mode: "add" | "remove") => {
   } catch { setCreditMsg("Could not reach backend."); }
 };
 
+  const resetUserPin = async () => {
+    if (!editUserModal) return;
+    if (!window.confirm("Reset the PIN for " + editUserModal.name + "? They will set a new PIN the next time they tap their card.")) return;
+    try {
+      const res = await authFetch(`/api/admin/user/${editUserModal.rfid}/reset-pin`, { method: "POST" });
+      const data = await res.json();
+      setCreditMsg(res.ok && data.success ? "Done. The user sets a new PIN on their next tap." : (data.error ?? "Failed."));
+    } catch { setCreditMsg("Could not reach backend."); }
+  };
+
   const handleDeleteUser = async (rfid: string) => {
     if (!window.confirm("Are you sure you want to delete this user?")) return;
     await authFetch(`/api/admin/user/${rfid}`, { method: "DELETE" });
@@ -678,6 +688,14 @@ const adjustCredits = async (mode: "add" | "remove") => {
     } catch {
       alert("Could not reach backend.");
     }
+  };
+
+   const sendTestEmail = async () => {
+    try {
+      const res = await authFetch(`/api/admin/alerts/test`, { method: "POST" });
+      const data = await res.json();
+      alert(res.ok && data.success ? "Test email sent to every admin with a Gmail saved." : "Failed: " + (data.error ?? "unknown error"));
+    } catch { alert("Could not reach backend."); }
   };
 
   const handleLogout = () => {
@@ -1297,10 +1315,10 @@ const adjustCredits = async (mode: "add" | "remove") => {
                       <td style={{
   ...td, fontWeight: 700,
   color: t.credits > 0 && (t.type === "deposit" || t.type === "transfer_in" || t.type === "adjust") ? "#2ecc71"
-       : t.type === "transfer_out" || t.credits < 0 ? "#e74c3c" : "#f0a500",
+       : t.type === "transfer_out" || t.type === "print" || t.credits < 0? "#e74c3c" : "#f0a500",
 }}>
   {t.credits > 0 && (t.type === "deposit" || t.type === "transfer_in" || t.type === "adjust") ? `+${t.credits}`
-    : t.type === "transfer_out" || t.credits < 0 ? `-${Math.abs(t.credits)}` : `0`}
+    : t.type === "transfer_out" || t.type === "print" || t.credits < 0 ? `-${Math.abs(t.credits)}` : `0`}
 </td>
                       </tr>
                     ))}
@@ -1846,6 +1864,9 @@ const adjustCredits = async (mode: "add" | "remove") => {
                 </button>
               </div>
             </div>
+                        <button onClick={sendTestEmail} style={{ ...confirmBtn, background: "#2a2a2a", color: "#38bdf8", border: "1px solid #3a3a3a", width: "100%", marginTop: 12 }}>
+              Send test email
+            </button>
 
             <div style={{ display: "flex", marginTop: 24 }}>
               <button onClick={() => setShowMaintenanceModal(false)} style={{ ...ghostBtn, width: "100%" }}>Close</button>
@@ -1892,6 +1913,9 @@ const adjustCredits = async (mode: "add" | "remove") => {
                 <button onClick={() => adjustCredits("add")} style={{ ...actionBtn("#1a3a2a", "#2ecc71"), flex: 1, padding: "8px" }}>+ Add</button>
                 <button onClick={() => adjustCredits("remove")} style={{ ...actionBtn("#3a1a1a", "#e74c3c"), flex: 1, padding: "8px" }}>− Remove</button>
               </div>
+                            <button onClick={resetUserPin} style={{ ...actionBtn("#2a2a2a", "#f0a500"), width: "100%", padding: "8px", marginTop: 10 }}>
+                Reset PIN (user sets a new one at the kiosk)
+              </button>
               {creditMsg && <div style={{ fontSize: 12, marginTop: 6, color: creditMsg.startsWith("Done") ? "#2ecc71" : "#e74c3c" }}>{creditMsg}</div>}
             </div>
             {editMsg && <div style={{ fontSize: 13, color: editMsg.startsWith("Updated") ? "#2ecc71" : "#e74c3c", marginTop: 12, display: "flex", alignItems: "center", gap: 6 }}>

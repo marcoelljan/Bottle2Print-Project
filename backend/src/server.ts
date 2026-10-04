@@ -19,6 +19,8 @@ import { isGuestActive, startGuestSession, addGuestCredit, getGuestCredits } fro
 import { recordSensorActivity, setSerialStatus, recordHeartbeat, startHealthWatch, recordBinLevel, recordIdleStatus } from "./sensorHealth";
 import { getCalibration, classifyBottle, tofInUse } from "./sensorConfig";
 import { registerBusyCheck } from "./kioskState";
+import { markVerified } from "./pinAuth";
+import { startAlertWatch } from "./alerts";
 import { registerTofCalSender, handleTofCalLine } from "./tofCal";
 import { EventEmitter } from "events";
 
@@ -155,6 +157,7 @@ function finalizeDepositSession() {
 }
 
 const app = express();
+app.set("trust proxy", "loopback");   // so req.ip is the real device behind Tailscale Serve
 app.use(cors());
 app.use(express.json());
 
@@ -230,10 +233,11 @@ app.post("/api/session/verify-pin", async (req, res) => {
   db.prepare("UPDATE users SET pin_fail_count = 0, pin_locked_until = NULL WHERE rfid = ?").run(rfid);
 
   if (user.pin_needs_reset === 1) {
-    session.step = "awaiting_new_pin";
+        session.step      = user.pin_needs_reset === 1 ? "awaiting_new_pin" : "awaiting_pin";
     broadcastState();
     return res.json({ success: true, requiresNewPin: true });
   }
+    markVerified(rfid);
 
   if (kioskMode === "deposit") {
     rfidDepositSessionActive = true;
@@ -265,6 +269,7 @@ app.post("/api/session/update-pin", async (req, res) => {
       SET pin_hash = ?, pin_needs_reset = 0, pin_fail_count = 0, pin_locked_until = NULL 
       WHERE rfid = ?
     `).run(newHash, session.rfid);
+     if (session.rfid) markVerified(session.rfid);
 
     if (kioskMode === "deposit") {
       rfidDepositSessionActive = true;
@@ -420,6 +425,7 @@ function sendToArduino(cmd: string) {
 
 startHealthWatch();
 registerTofCalSender(() => sendToArduino("TOFCAL"));
+startAlertWatch();
 connectSerial();
 
 lineBus.on("data", (raw: string) => {
@@ -520,7 +526,7 @@ lineBus.on("data", (raw: string) => {
     broadcastState();
 
     setTimeout(() => {
-      if (session.step === "awaiting_pin" && session.sessionId === newSessionId) {
+      if ( (session.step === "awaiting_pin" || session.step === "awaiting_new_pin") && session.sessionId === newSessionId) {
         resetSession();
       }
     }, 30000);

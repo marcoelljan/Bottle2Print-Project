@@ -78,6 +78,7 @@ export default function PrintScreen({ onBack }: Props) {
   const [invoice, setInvoice] = useState<any | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const autoPrintFiredRef = useRef(false);
+  const printingRef = useRef(false);
 
   useEffect(() => {
     fetch(`${API}/api/mode`, {
@@ -211,7 +212,8 @@ export default function PrintScreen({ onBack }: Props) {
   };
 
   const handlePrint = async () => {
-    if (!sessionId) return;
+       if (!sessionId || printingRef.current) return;   // ignore a second tap while one print is running
+    printingRef.current = true;
     setStep("printing");
     try {
       const res = await fetch(`${API}/api/print/qr-confirm/${sessionId}`, {
@@ -243,7 +245,7 @@ export default function PrintScreen({ onBack }: Props) {
     } catch {
       setErrorMsg("Could not reach backend.");
       setStep("error");
-    }
+    } finally { printingRef.current = false; }
   };
 
   useEffect(() => {
@@ -412,8 +414,17 @@ export default function PrintScreen({ onBack }: Props) {
 
               <div style={{ display: "flex", gap: 8 }}>
                 <button onClick={() => setStep("qr")} style={ghostBtn}>Cancel</button>
-                <button
-                  onClick={() => setStep("rfid")}
+                 <button
+                  onClick={async () => {
+                    try {
+                      await fetch(`${API}/api/mode`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ mode: "print" }),
+                      });
+                    } catch {}
+                    setStep("rfid");
+                  }}
                   style={primaryBtn(rangeIsValid)}
                   disabled={!rangeIsValid}
                 >

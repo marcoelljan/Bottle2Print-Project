@@ -424,6 +424,7 @@ export default function CheckBalanceScreen({ onBack }: Props) {
   );
 }
 const signedCredits = (h: any) =>
+  h.type === "print" ? -Math.abs(h.credits) :
   h.type === "transfer_out" ? -Math.abs(h.credits)
   : h.type === "deposit" || h.type === "transfer_in" || h.type === "adjust" ? h.credits
   : h.credits < 0 ? h.credits : 0;

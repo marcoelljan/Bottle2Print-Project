@@ -1,6 +1,7 @@
 import { Router } from "express";
 import bcrypt from "bcrypt";
 import { db } from "../db";
+import { markVerified } from "../pinAuth";
 
 const router = Router();
 
@@ -35,8 +36,8 @@ router.get("/api/user/:rfid", (req, res) => {
   `).get(req.params.rfid) as any;
 
   if (!user) return res.status(404).json({ error: "Not found" });
-  const { pin_hash, ...safe } = user;
-  res.json(safe);
+      const { pin_hash, ...safe } = user;
+  res.json({ ...safe, hasPin: !!pin_hash && user.pin_needs_reset !== 1 });
 });
 
 router.get("/api/user/:rfid/transactions", (req, res) => {
@@ -57,6 +58,11 @@ router.post("/api/user/register", async (req, res) => {
   }
 
   const existing = db.prepare("SELECT * FROM users WHERE rfid = ?").get(rfid) as any;
+    if (existing && existing.pin_hash && existing.pin_needs_reset !== 1) {
+    return res.status(409).json({ error: "This card is already registered." });
+  }
+  const dupe = db.prepare("SELECT rfid FROM users WHERE studentId = ? AND rfid != ?").get(String(studentId).trim(), rfid);
+  if (dupe) return res.status(409).json({ error: "That student ID is already registered to another card." });
 
   let pinHash: string;
   try {
@@ -127,6 +133,7 @@ router.post("/api/user/verify-pin", async (req, res) => {
 
   if (match) {
     db.prepare("UPDATE users SET pin_fail_count = 0, pin_locked_until = NULL WHERE rfid = ?").run(rfid);
+        markVerified(rfid);
     return res.json({ success: true });
   }
 

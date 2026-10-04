@@ -4,6 +4,7 @@ import crypto from "crypto";
 import nodemailer from "nodemailer";
 import { db } from "../db";
 import { exec } from "child_process";
+import { sendMail } from "../alerts";
 import { isKioskBusy } from "../kioskState";
 import { getSensorStatus } from "../sensorHealth";
 import { getCalibration, updateCalibration, invalidateCalibrationCache } from "../sensorConfig";
@@ -83,8 +84,27 @@ function requireSuperAdmin(req: any, res: any, next: any) {
   next();
 }
 
-let failedAttempts = 0;
-let lockoutUntil = 0;
+// Lockout is tracked per username (5 tries) and per device/IP (15 tries), 3 minutes each
+const LOGIN_LOCK_MS = 3 * 60 * 1000;
+const loginFails = new Map<string, { count: number; lockedUntil: number }>();
+
+function lockedUntilFor(keys: string[]): number {
+  const now = Date.now();
+  let until = 0;
+  for (const k of keys) {
+    const e = loginFails.get(k);
+    if (e && e.lockedUntil > now) until = Math.max(until, e.lockedUntil);
+  }
+  return until;
+}
+
+function recordFail(key: string, limit: number) {
+  const e = loginFails.get(key) ?? { count: 0, lockedUntil: 0 };
+  if (e.lockedUntil && e.lockedUntil <= Date.now()) { e.count = 0; e.lockedUntil = 0; }
+  e.count++;
+  if (e.count >= limit) { e.lockedUntil = Date.now() + LOGIN_LOCK_MS; e.count = 0; }
+  loginFails.set(key, e);
+}
 
 router.post("/api/admin/check-username", (req, res) => {
   const { username } = req.body;
@@ -160,32 +180,33 @@ router.post("/api/admin/reset-password", async (req, res) => {
 });
 
 router.post("/api/admin/login", async (req, res) => {
-  if (Date.now() < lockoutUntil) {
-    return res.status(429).json({ error: "Too many failed attempts. Try again later.", lockoutUntil });
-  }
-
-  const { username, password } = req.body;
+    const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: "Missing username or password." });
 
+  const userKey = "u:" + String(username).trim().toLowerCase();
+  const ipKey = "ip:" + (req.ip ?? "unknown");
+  const lockedUntil = lockedUntilFor([userKey, ipKey]);
+  if (lockedUntil) {
+    return res.status(429).json({ error: "Too many failed attempts. Try again later.", lockoutUntil: lockedUntil });
+  }
   const admin = db.prepare("SELECT * FROM admins WHERE username = ?").get(username) as any;
   const match = admin ? await bcrypt.compare(password, admin.password_hash) : false;
 
-  if (!match) {
-    failedAttempts++;
-    if (failedAttempts >= 5) {
-      lockoutUntil = Date.now() + 3 * 60 * 1000; 
-      failedAttempts = 0;
-      return res.status(429).json({ error: "Too many failed attempts. Try again later.", lockoutUntil });
-    }
+    if (!match) {
+    recordFail(userKey, 5);
+    recordFail(ipKey, 15);
+    const until = lockedUntilFor([userKey, ipKey]);
+    if (until) return res.status(429).json({ error: "Too many failed attempts. Try again later.", lockoutUntil: until });
     return res.status(403).json({ error: "Incorrect username or password." });
   }
 
-  failedAttempts = 0;
-  const token = issueToken({ 
-    adminId: admin.id, 
-    username: admin.username, 
+    loginFails.delete(userKey);
+
+  const token = issueToken({
+    adminId: admin.id,
+    username: admin.username,
     role: admin.role,
-    passwordChanged: admin.password_changed === 1 
+    passwordChanged: admin.password_changed === 1
   });
   
   res.json({ 
@@ -318,6 +339,20 @@ router.post("/api/admin/sensors/tof-calibrate", async (req: any, res) => {
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
+});
+
+router.post("/api/admin/alerts/test", async (req: any, res) => {
+  const r = await sendMail("Test email", "This is a test sent from the Bottle2Print admin panel by " + req.admin.username + ".");
+  logActivity(req.admin.username, "TEST_EMAIL", r.ok ? "Test email sent" : "Test email failed: " + r.error);
+  if (r.ok) res.json({ success: true }); else res.status(500).json({ error: r.error });
+});
+
+router.post("/api/admin/user/:rfid/reset-pin", (req: any, res) => {
+  const { rfid } = req.params;
+  if (!db.prepare("SELECT rfid FROM users WHERE rfid = ?").get(rfid)) return res.status(404).json({ error: "User not found." });
+  db.prepare("UPDATE users SET pin_needs_reset = 1, pin_fail_count = 0, pin_locked_until = NULL WHERE rfid = ?").run(rfid);
+  logActivity(req.admin.username, "RESET_USER_PIN", "Reset PIN for RFID " + rfid + " (user sets a new PIN on next tap)");
+  res.json({ success: true });
 });
 
 // ── Power Control (Super Admin Only) ───────────────────────────────────────

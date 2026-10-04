@@ -69,6 +69,7 @@ export default function RegisterScreen({ onBack }: Props) {
           if (handled || msg.type !== "state" || !msg.session?.rfid || msg.session.sessionId === 0) return;
 
           const scannedRfid = msg.session.rfid;
+          handled = true;
           handleCardDetected(scannedRfid, ws);
           return;
         } catch {}
@@ -105,7 +106,7 @@ export default function RegisterScreen({ onBack }: Props) {
       socket.close();
     }
 
-    if (userData && userData.pin_hash) {
+    if (userData && userData.hasPin) {
       setRfid(scannedRfid);
       setStep("already");
       return;

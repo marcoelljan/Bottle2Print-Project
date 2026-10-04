@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { API, WS_URL } from "../config";
 import { CreditCardIcon } from "./KioskIcons";
 import PINpad from "./Pinpad";
@@ -16,6 +16,9 @@ export default function RFIDprompt({ onIdentified, onBack }: Props) {
   const [pinMode, setPinMode] = useState<"verify" | "new">("verify");
   const [pinError, setPinError] = useState("");
   const [verifyingPin, setVerifyingPin] = useState(false);
+  const onIdentifiedRef = useRef(onIdentified);
+  useEffect(() => { onIdentifiedRef.current = onIdentified; }, [onIdentified]);
+  const firedRef = useRef(false);   // report the identified user only once per mount
 
   useEffect(() => {
     const interval = setInterval(() => setPulse(p => !p), 900);
@@ -59,13 +62,15 @@ export default function RFIDprompt({ onIdentified, onBack }: Props) {
           }
 
           if (data.session?.rfid && (data.session.step === "identified" || data.session.step === "ir")) {
+          if (firedRef.current) return;
+            firedRef.current = true;
             setStatus("found");
             setMsg(`Welcome, ${data.session.userName}`);
             try {
               const res = await fetch(`${API}/api/user/${data.session.rfid}`);
               const user = await res.json();
               setTimeout(() => {
-                onIdentified({
+                onIdentifiedRef.current({
                   rfid:      user.rfid,
                   name:      user.name,
                   studentId: user.studentId ?? "",
@@ -74,7 +79,7 @@ export default function RFIDprompt({ onIdentified, onBack }: Props) {
               }, 800);
             } catch {
               setTimeout(() => {
-                onIdentified({
+                onIdentifiedRef.current({
                   rfid:      data.session.rfid,
                   name:      data.session.userName,
                   studentId: "",
@@ -95,7 +100,7 @@ export default function RFIDprompt({ onIdentified, onBack }: Props) {
         shouldClose = true;
       }
     };
-  }, [onIdentified]);
+    }, []);
 
   const handlePinSubmit = async (pin: string) => {
     setVerifyingPin(true);
