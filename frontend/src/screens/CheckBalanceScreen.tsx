@@ -92,6 +92,22 @@ export default function CheckBalanceScreen({ onBack }: Props) {
     return () => clearInterval(id);
   }, [user?.rfid]);
 
+    // After 30 s without a touch, go back home so the next person never sees this user's balance
+  const onBackRef = useRef(onBack);
+  useEffect(() => { onBackRef.current = onBack; }, [onBack]);
+  useEffect(() => {
+    if (!user) return;
+    let timer = setTimeout(() => onBackRef.current(), 30000);
+    const reset = () => { clearTimeout(timer); timer = setTimeout(() => onBackRef.current(), 20000); };
+    window.addEventListener("pointerdown", reset);
+    window.addEventListener("keydown", reset);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("pointerdown", reset);
+      window.removeEventListener("keydown", reset);
+    };
+  }, [user?.rfid]);
+
   const handleProceedToConfirm = () => {
     const amount = parseInt(transferAmount);
     if (isNaN(amount) || amount <= 0) {

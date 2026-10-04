@@ -10,6 +10,7 @@ import { createSession, getSession, updateSession, deleteSession } from "../qrSe
 import { getGuestCredits, deductGuestCredits, endGuestSession, addGuestCredit } from "../guestSession";
 import { broadcast } from "../wsHub";
 import { isVerified } from "../pinAuth";
+import { sendMail } from "../alerts";
 
 const router = Router();
 const PI_IP = process.env.PI_IP || "localhost";
@@ -106,6 +107,41 @@ function mayUseCard(rfid: unknown): boolean {
   if (typeof rfid !== "string" || !rfid) return false;
   if (rfid === "GUEST") return true;   // guests spend the shared bottle-credit pool, not anyone's account
   return isVerified(rfid);             // card users: PIN entered at the kiosk in the last 10 minutes
+}
+
+let lastPrinterMail = 0;
+
+function printerReady(): Promise<{ ok: boolean; reason?: string }> {
+  return new Promise(resolve => {
+    exec("lpstat -l -p", { timeout: 5000 }, (err, stdout) => {
+      const out = String(stdout || "");
+      if (err && !out) return resolve({ ok: false, reason: "The print service is not responding." });
+      if (!/printer /i.test(out)) return resolve({ ok: false, reason: "No printer is installed." });
+      if (/disabled|stopped|paused/i.test(out)) return resolve({ ok: false, reason: "The printer is turned off or disabled." });
+      if (/waiting for printer to become available|unable to open/i.test(out)) return resolve({ ok: false, reason: "The printer is not connected." });
+      const alerts = (out.match(/Alerts:\s*(.*)/i)?.[1] ?? "").toLowerCase();
+      if (/media-empty|media-needed|media-jam|marker-supply-empty|door-open|offline/.test(alerts)) {
+        return resolve({ ok: false, reason: "The printer reports a problem (" + alerts.trim() + ")." });
+      }
+      resolve({ ok: true });
+    });
+  });
+}
+
+// If a queued job is still waiting after limitMs, cancel it and run onStuck
+function watchJob(jobId: string, limitMs: number, onStuck: () => void) {
+  const started = Date.now();
+  const timer = setInterval(() => {
+    exec("lpstat -o", { timeout: 5000 }, (_e, out) => {
+      const queued = String(out || "").split("\n").some(l => l.startsWith(jobId + " "));
+      if (!queued) { clearInterval(timer); return; }          // finished or removed
+      if (Date.now() - started > limitMs) {
+        clearInterval(timer);
+        exec("cancel " + jobId, () => {});
+        onStuck();
+      }
+    });
+  }, 5000);
 }
 
 router.post("/api/count-pages", upload.single("file"), async (req, res) => {
@@ -268,8 +304,7 @@ router.get("/api/print/preview/:sessionId", (req, res) => {
   res.setHeader("Content-Type", "application/pdf");
   res.sendFile(path.resolve(session.pdfPath));
 });
-
-router.post("/api/print/qr-confirm/:sessionId", (req, res) => {
+router.post("/api/print/qr-confirm/:sessionId", async (req, res) => {
   const session = getSession(req.params.sessionId);
   if (!session || !session.pdfPath) {
     return res.status(404).json({ error: "No uploaded file found for this session." });
@@ -334,6 +369,11 @@ router.post("/api/print/qr-confirm/:sessionId", (req, res) => {
   const cupsOrientationFlag = getCupsOrientationFlag(layout);
   const cmd = `lp ${cupsRangeFlag} -o ColorModel=${cupsColorFlag} -o media=${cupsMediaString} ${cupsOrientationFlag} "${pdfPath}"`;
 
+  const printer = await printerReady();
+  if (!printer.ok) {
+    return res.status(503).json({ error: "Printer not ready: " + printer.reason + " Please ask staff. You have not been charged." });
+  }
+
   // Charge first (atomic), print second, refund if printing fails
   if (isGuest) {
     deductGuestCredits(totalCost);
@@ -363,6 +403,24 @@ router.post("/api/print/qr-confirm/:sessionId", (req, res) => {
     } else {
       db.prepare("INSERT INTO transactions (rfid, type, size, credits) VALUES (?, 'print', ?, ?)")
         .run(rfid, `${selectedPages.length} page(s), ${colorMode}`, totalCost);
+    }
+
+        const jobId = (stdout.match(/request id is (\S+)/) ?? [])[1];
+    if (jobId && /^[A-Za-z0-9_.-]+$/.test(jobId)) {
+      watchJob(jobId, 120000 + selectedPages.length * 20000, () => {
+        if (!isGuest) {
+          db.prepare("UPDATE users SET credits = credits + ? WHERE rfid = ?").run(totalCost, rfid);
+          db.prepare("INSERT INTO transactions (rfid, type, size, credits) VALUES (?, 'adjust', 'Print refunded: the job did not finish', ?)").run(rfid, totalCost);
+        }
+        try {
+          db.prepare("INSERT INTO activity_logs (admin_user, action, details) VALUES (?, ?, ?)")
+            .run("System Kiosk", "PRINT_REFUND", (isGuest ? "Guest" : "RFID " + rfid) + ": job " + jobId + " stuck and cancelled" + (isGuest ? "" : ", " + totalCost + " credits refunded"));
+        } catch {}
+        if (Date.now() - lastPrinterMail > 60 * 60 * 1000) {
+          lastPrinterMail = Date.now();
+          sendMail("Printer problem", "A print job was stuck for several minutes and was cancelled. Please check the printer for paper, ink or a jam.");
+        }
+      });
     }
 
     res.json({
