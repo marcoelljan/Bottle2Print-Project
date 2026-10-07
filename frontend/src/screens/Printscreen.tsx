@@ -452,7 +452,7 @@ export default function PrintScreen({ onBack }: Props) {
               </div>
             </div>
 
-            {["ir", "capacitive", "tof", "loadcell"].includes(kioskSession?.step ?? "") && (
+            {["ir", "capacitive", "tof", "loadcell", "storing"].includes(kioskSession?.step ?? "") && (
               kioskSession?.steps.map(s => (
                 <div key={s.id} style={{
                   display: "flex", alignItems: "center", gap: 14,

@@ -16,7 +16,7 @@ import adminRoutes from "./routes/admin";
 import feedbackRoutes from "./routes/feedback";
 import { setWss } from "./wsHub";
 import { isGuestActive, startGuestSession, addGuestCredit, getGuestCredits } from "./guestSession";
-import { recordSensorActivity, setSerialStatus, recordHeartbeat, startHealthWatch, recordBinLevel, recordIdleStatus } from "./sensorHealth";
+import { recordSensorActivity, setSerialStatus, recordHeartbeat, startHealthWatch, recordBinLevel, recordIdleStatus, recordStorageResult } from "./sensorHealth";
 import { getCalibration, classifyBottle, tofInUse } from "./sensorConfig";
 import { registerBusyCheck } from "./kioskState";
 import { markVerified } from "./pinAuth";
@@ -55,7 +55,7 @@ interface SessionState {
   userName:    string | null;
   credits:     number;
   step: "idle" | "awaiting_pin" | "awaiting_new_pin" | "identified" | "already_registered" | "unregistered"
-      | "ir" | "capacitive" | "tof" | "loadcell" | "result" | "session_summary";
+            | "ir" | "capacitive" | "tof" | "loadcell" | "storing" | "result" | "session_summary";
   steps:       ValidationStep[];
   heightMm:    number | null;
   weightG:     number | null;
@@ -91,7 +91,56 @@ let session: SessionState = {
   ...freshDepositTotals(),
 };
 
-const SENSOR_IN_PROGRESS_STEPS = ["ir", "capacitive", "tof", "loadcell"];
+const SENSOR_IN_PROGRESS_STEPS = ["ir", "capacitive", "tof", "loadcell", "storing"];
+
+// A bottle is only paid for after the photoelectric confirms it reached storage
+interface PendingDeposit { rfid: string; label: string; credits: number; heightMm: number | null; weightG: number; co2Grams: number; }
+let pendingDeposit: PendingDeposit | null = null;
+let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+
+function takePending(): PendingDeposit | null {
+  const d = pendingDeposit;
+  pendingDeposit = null;
+  if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+  return d;
+}
+
+function commitPendingDeposit() {
+  const d = takePending();
+  if (!d) return;
+  const mine = session.rfid === d.rfid;
+  if (d.rfid === "GUEST") {
+    if (!isGuestActive()) return;
+    addGuestCredit(d.credits);
+    if (mine) session.credits = getGuestCredits();
+  } else {
+    db.prepare(`
+      INSERT INTO transactions (rfid, type, size, height_mm, weight_g, co2_saved_g, credits)
+      VALUES (?, 'deposit', ?, ?, ?, ?, ?)
+    `).run(d.rfid, d.label, d.heightMm, d.weightG, d.co2Grams, d.credits);
+    db.prepare("UPDATE users SET credits = credits + ? WHERE rfid = ?").run(d.credits, d.rfid);
+    const updated = db.prepare("SELECT credits FROM users WHERE rfid = ?").get(d.rfid) as any;
+    if (mine && updated) session.credits = updated.credits;
+  }
+  if (!mine) return;
+  session.size = d.label;
+  session.step = "result";
+  session.result = "accepted";
+  session.depositBottleCount   += 1;
+  session.depositCreditsEarned += d.credits;
+  session.depositCo2Grams      += d.co2Grams;
+  broadcastState();
+}
+
+function failPendingDeposit(msg: string) {
+  const d = takePending();
+  if (!d || session.rfid !== d.rfid) return;
+  logReject("storage", msg, d.heightMm, d.weightG);
+  session.step = "result";
+  session.result = "rejected";
+  session.errorMsg = msg;
+  broadcastState();
+}
 
 let rfidDepositSessionActive = false;
 let depositStopRequested = false;
@@ -298,7 +347,8 @@ app.post("/api/deposit/finish", (_req, res) => {
     co2Grams: session.depositCo2Grams,
   };
 
-  if (!SENSOR_IN_PROGRESS_STEPS.includes(session.step)) {
+  const waitingForBottle = session.step === "ir" && session.steps[0]?.status === "pending";
+  if (!SENSOR_IN_PROGRESS_STEPS.includes(session.step) || waitingForBottle) {
     finalizeDepositSession();
   }
 
@@ -440,8 +490,7 @@ lineBus.on("data", (raw: string) => {
     return;
   }
     if (line.startsWith("TOFCAL:")) { handleTofCalLine(line); return; }
-  if (line === "VERDICT:ACCEPTED") { recordSensorActivity("servo", "Gate → storage (accept)"); return; }
-  if (line === "VERDICT:REJECTED") { recordSensorActivity("servo", "Gate → reject chute"); return; }
+    if (line === "VERDICT:ACCEPTED" || line === "VERDICT:REJECTED") return;   // sent != worked, wait for CONFIRM
 
   if (line.startsWith("RFID:")) {
     recordSensorActivity("rfid");
@@ -480,8 +529,14 @@ lineBus.on("data", (raw: string) => {
       session.errorMsg  = null;
       session.timestamp = Date.now();
       session.sessionId = newSessionId;
-      session.step      = isFullyRegistered ? "already_registered" : "identified";
+      
+      const needsNewPin = !!user && user.pin_needs_reset === 1 && String(user.studentId ?? "").trim().length > 0;
+      session.step      = isFullyRegistered ? "already_registered" : needsNewPin ? "awaiting_new_pin" : "identified";
       broadcastState();
+            
+      if (needsNewPin) setTimeout(() => {
+        if (session.step === "awaiting_new_pin" && session.sessionId === newSessionId) resetSession();
+      }, 30000);
 
       if (isFullyRegistered) {
         setTimeout(() => resetSession(), 3000);
@@ -522,7 +577,7 @@ lineBus.on("data", (raw: string) => {
     session.errorMsg  = null;
     session.timestamp = Date.now();
     session.sessionId = newSessionId;
-    session.step      = "awaiting_pin";
+    session.step      = user.pin_needs_reset === 1 ? "awaiting_new_pin" : "awaiting_pin";
     broadcastState();
 
     setTimeout(() => {
@@ -635,34 +690,20 @@ lineBus.on("data", (raw: string) => {
       sendToArduino("REJECT");
       setTimeout(() => continueDepositLoop(), 3000);
     } else {
-      const creditsEarned = match.credits;
-      const co2Grams = co2SavedGrams(weightG);
-
-      setStep("loadcell", "pass", `${weightOk ? weightG + "g" : "no weight"} · ${match.label} (+${creditsEarned}) [${mode}]`);
-      session.size   = match.label;
-      session.step   = "result";
-      session.result = "accepted";
-
-      if (session.rfid === "GUEST") {
-        addGuestCredit(creditsEarned);
-        session.credits = getGuestCredits();
-      } else {
-        db.prepare(`
-          INSERT INTO transactions (rfid, type, size, height_mm, weight_g, co2_saved_g, credits)
-          VALUES (?, 'deposit', ?, ?, ?, ?, ?)
-        `).run(session.rfid, match.label, session.heightMm, weightG, co2Grams, creditsEarned);
-        db.prepare(`UPDATE users SET credits = credits + ? WHERE rfid = ?`).run(creditsEarned, session.rfid);
-
-        const updated = db.prepare("SELECT credits FROM users WHERE rfid = ?").get(session.rfid) as any;
-        session.credits = updated.credits;
-      }
-
-      session.depositBottleCount   += 1;
-      session.depositCreditsEarned += creditsEarned;
-      session.depositCo2Grams      += co2Grams;
-
+            setStep("loadcell", "pass", `${weightOk ? weightG + "g" : "no weight"} · ${match.label} (+${match.credits}) [${mode}]`);
+      pendingDeposit = {
+        rfid: session.rfid!, label: match.label, credits: match.credits,
+        heightMm: session.heightMm, weightG, co2Grams: co2SavedGrams(weightG),
+      };
+      session.step = "storing";
       broadcastState();
       sendToArduino("ACCEPT");
+      if (pendingTimer) clearTimeout(pendingTimer);
+      pendingTimer = setTimeout(() => {          // safety net: Arduino never answered
+        if (!pendingDeposit) return;
+        failPendingDeposit("The gate did not confirm the bottle. No credits were given.");
+        setTimeout(() => continueDepositLoop(), 3000);
+      }, 10000);
     }
     return;
   }
@@ -674,17 +715,19 @@ lineBus.on("data", (raw: string) => {
     return;
   }
 
-    if (line === "CONFIRM:STORAGE_OK") {
-    recordSensorActivity("photoelectric", "Storage confirmed");
+      if (line === "CONFIRM:STORAGE_OK") {
+    commitPendingDeposit();
+    recordStorageResult(true);
     return;
   }
 
   if (line === "CONFIRM:JAM_DETECTED") {
-    recordSensorActivity("photoelectric", "Jam or no detection", "fault");
+    recordSensorActivity("photoelectric", "No bottle seen after gate moved", "fault");
+    recordStorageResult(false);
+    failPendingDeposit("The bottle did not reach the storage bin. No credits were given.");
     setTimeout(() => continueDepositLoop(), 3000);
     return;
   }
-
   if (line.startsWith("BIN:FILL_LEVEL_CM:")) {
     const cm = parseFloat(line.split(":")[2]);
     if (Number.isFinite(cm)) {

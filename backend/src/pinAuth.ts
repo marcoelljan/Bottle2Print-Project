@@ -12,3 +12,4 @@ export function isVerified(rfid: string): boolean {
   if (Date.now() - at > VERIFIED_TTL_MS) { verified.delete(rfid); return false; }
   return true;
 }
+export function clearVerified(rfid: string) { verified.delete(rfid); }

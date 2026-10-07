@@ -1,12 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import BackButton from "../components/BackButton";
 import PINpad from "../components/Pinpad";
 import { API, WS_URL } from "../config";
 import { AccountCircleIcon, CreditCardIcon } from "../components/KioskIcons";
+import RFIDprompt from "../components/RFIDprompt";
 
 interface Props { onBack: () => void; }
 
-type Step = "tap" | "form" | "pin" | "confirm_pin" | "saving" | "success" | "error" | "already";
+type Step = "tap" | "form" | "pin" | "confirm_pin" | "saving" | "success" | "error" | "already" | "reset" | "reset_done";
 
 const formatTitleCase = (str: string) => {
   return str
@@ -26,6 +27,12 @@ export default function RegisterScreen({ onBack }: Props) {
   const [pinError, setPinError] = useState("");
   const [errorMsg, setErrorMsg] = useState("");
   const [pulse, setPulse]       = useState(false);
+
+  const keepModeRef = useRef(false);
+  useEffect(() => () => {
+    fetch(`${API}/api/mode`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: "idle" }) });
+  }, []);
+
   const [attemptedSubmit, setAttemptedSubmit] = useState(false);
 
   const studentIdRegex = /^\d{3}-\d{5}[A-Z]$/;
@@ -63,26 +70,41 @@ export default function RegisterScreen({ onBack }: Props) {
       ws.onclose = () => {};
       ws.onerror = () => {};
 
-      ws.onmessage = async (e) => {
+           ws.onmessage = async (e) => {
         try {
           const msg = JSON.parse(e.data);
-          if (handled || msg.type !== "state" || !msg.session?.rfid || msg.session.sessionId === 0) return;
+          if (handled || msg.type !== "state" || !msg.session || !(msg.session.sessionId > 0)) return;
 
-          const scannedRfid = msg.session.rfid;
-          handled = true;
-          handleCardDetected(scannedRfid, ws);
-          return;
+          const { step: s, rfid: scanned } = msg.session;
+
+          // Reset-PIN flow
+          if (s === "awaiting_new_pin") {
+            handled = true;
+            keepModeRef.current = true;
+            ws?.close();
+            setRfid(scanned);
+            setStep("reset");
+            return;
+          }
+
+          // Normal registration flow
+          if ((s === "identified" || s === "already_registered") && scanned) {
+            handled = true;
+            await handleCardDetected(scanned, ws);
+          }
         } catch {}
       };
     })();
 
     return () => {
       cancelled = true;
-      fetch(`${API}/api/mode`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: "idle" }),
-      });
+      if (!keepModeRef.current) {
+        fetch(`${API}/api/mode`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: "idle" }),
+        });
+      }
       if (ws) {
         if (ws.readyState === WebSocket.OPEN) {
           ws.close();
@@ -323,6 +345,16 @@ export default function RegisterScreen({ onBack }: Props) {
             onSubmit={handleConfirmPinSubmit}
             onCancel={() => setStep("pin")}
           />
+        )}
+
+                {step === "reset" && (
+          <RFIDprompt onIdentified={() => { keepModeRef.current = false; setStep("reset_done"); }} />
+        )}
+        {step === "reset_done" && (
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontSize: 22, color: "#2ecc71", fontWeight: 700, marginBottom: 16 }}>New PIN saved</div>
+            <button onClick={onBack} style={doneBtn}>Done</button>
+          </div>
         )}
 
         {step === "saving" && (

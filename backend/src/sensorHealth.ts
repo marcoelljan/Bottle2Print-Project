@@ -187,3 +187,12 @@ export function startHealthWatch() {
     }
   }, WATCH_INTERVAL_MS);
 }
+
+export function recordStorageResult(ok: boolean) {
+  if (ok) {
+    recordSensorActivity("photoelectric", "Bottle passed to storage");
+    recordSensorActivity("servo", "Gate moved, bottle reached the bin");
+  } else {
+    recordSensorActivity("servo", "Gate moved but no bottle seen (gate or photoelectric problem)", "fault");
+  }
+}

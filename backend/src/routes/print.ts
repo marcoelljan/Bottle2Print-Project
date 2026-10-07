@@ -109,6 +109,12 @@ function mayUseCard(rfid: unknown): boolean {
   return isVerified(rfid);             // card users: PIN entered at the kiosk in the last 10 minutes
 }
 
+function logSystem(action: string, details: string) {
+  try {
+    db.prepare("INSERT INTO activity_logs (admin_user, action, details) VALUES (?, ?, ?)").run("System Kiosk", action, details);
+  } catch {}
+}
+
 let lastPrinterMail = 0;
 
 function printerReady(): Promise<{ ok: boolean; reason?: string }> {
@@ -160,7 +166,7 @@ router.post("/api/count-pages", upload.single("file"), async (req, res) => {
 
 router.post("/api/print/qr-session", async (req, res) => {
   const { rfid } = req.body;
-    if (rfid && rfid !== "UNASSIGNED" && !mayUseCard(rfid)) {
+  if (rfid && rfid !== "UNASSIGNED" && !mayUseCard(rfid)) {
     return res.status(403).json({ error: "Card not verified. Enter your PIN at the kiosk first." });
   }
   const sessionId = createSession(rfid ?? "UNASSIGNED");
@@ -304,6 +310,7 @@ router.get("/api/print/preview/:sessionId", (req, res) => {
   res.setHeader("Content-Type", "application/pdf");
   res.sendFile(path.resolve(session.pdfPath));
 });
+
 router.post("/api/print/qr-confirm/:sessionId", async (req, res) => {
   const session = getSession(req.params.sessionId);
   if (!session || !session.pdfPath) {
@@ -312,8 +319,15 @@ router.post("/api/print/qr-confirm/:sessionId", async (req, res) => {
 
   const { rfid, filePath, pdfPath, pageCount } = session;
   const totalPages = pageCount ?? 1;
-    if (!mayUseCard(rfid)) {
+  if (!mayUseCard(rfid)) {
     return res.status(403).json({ error: "Card not verified. Enter your PIN at the kiosk first." });
+  }
+
+  // [EDIT 1] Printer first: if it is down, say so (and keep the file) before talking about credits
+  const printer = await printerReady();
+  if (!printer.ok) {
+    logSystem("PRINTER_NOT_READY", `${printer.reason} (${rfid === "GUEST" ? "Guest" : "RFID " + rfid})`);
+    return res.status(503).json({ error: "Printer not ready: " + printer.reason + " Please ask staff. You have not been charged." });
   }
 
   const colorMode: "bw" | "color" = req.body.colorMode === "color" ? "color" : "bw";
@@ -332,7 +346,7 @@ router.post("/api/print/qr-confirm/:sessionId", async (req, res) => {
       return res.status(400).json({ error: `Invalid page range. This document has ${totalPages} page(s).` });
     }
     selectedPages = parsed;
-        cupsRangeFlag = `-P ${selectedPages.join(",")}`;
+    cupsRangeFlag = `-P ${selectedPages.join(",")}`;
   }
 
   const creditsPerPage = colorMode === "color" ? 8 : 3;
@@ -340,13 +354,11 @@ router.post("/api/print/qr-confirm/:sessionId", async (req, res) => {
 
   const isGuest = rfid === "GUEST";
 
+  // [EDIT 2] Not enough credits: keep the file so the user can pay with bottles without re-uploading
   if (isGuest) {
     const guestCredits = getGuestCredits();
     if (guestCredits < totalCost) {
-      if (filePath) fs.unlink(filePath, () => {});
-      fs.unlink(pdfPath, () => {});
-      deleteSession(req.params.sessionId);
-      return res.status(403).json({ error: "Not enough credits." });
+      return res.status(403).json({ error: `Not enough credits. You have ${guestCredits}, this job needs ${totalCost}. Go back and pay with bottles.` });
     }
   } else {
     const user = db.prepare("SELECT * FROM users WHERE rfid = ?").get(rfid) as any;
@@ -357,10 +369,7 @@ router.post("/api/print/qr-confirm/:sessionId", async (req, res) => {
       return res.status(404).json({ error: "User not found." });
     }
     if (user.credits < totalCost) {
-      if (filePath) fs.unlink(filePath, () => {});
-      fs.unlink(pdfPath, () => {});
-      deleteSession(req.params.sessionId);
-      return res.status(403).json({ error: "Not enough credits." });
+      return res.status(403).json({ error: `Not enough credits. You have ${user.credits}, this job needs ${totalCost}. Go back and pay with bottles.` });
     }
   }
 
@@ -369,34 +378,28 @@ router.post("/api/print/qr-confirm/:sessionId", async (req, res) => {
   const cupsOrientationFlag = getCupsOrientationFlag(layout);
   const cmd = `lp ${cupsRangeFlag} -o ColorModel=${cupsColorFlag} -o media=${cupsMediaString} ${cupsOrientationFlag} "${pdfPath}"`;
 
-  const printer = await printerReady();
-  if (!printer.ok) {
-    return res.status(503).json({ error: "Printer not ready: " + printer.reason + " Please ask staff. You have not been charged." });
-  }
-
   // Charge first (atomic), print second, refund if printing fails
   if (isGuest) {
     deductGuestCredits(totalCost);
   } else {
     const charged = db.prepare("UPDATE users SET credits = credits - ? WHERE rfid = ? AND credits >= ?").run(totalCost, rfid, totalCost);
     if (charged.changes === 0) {
-      if (filePath) fs.unlink(filePath, () => {});
-      fs.unlink(pdfPath, () => {});
-      deleteSession(req.params.sessionId);
-      return res.status(403).json({ error: "Not enough credits." });
+      return res.status(403).json({ error: "Not enough credits. Go back and pay with bottles." });
     }
   }
 
   exec(cmd, (error, stdout, stderr) => {
-    if (filePath && filePath !== pdfPath) fs.unlink(filePath, () => {});
-    fs.unlink(pdfPath, () => {});
-    deleteSession(req.params.sessionId);
-
-        if (error) {   // printing failed: give the credits back
+    if (error) {   // printing failed: give the credits back and KEEP the file
+      logSystem("PRINT_FAILED", `${isGuest ? "Guest" : "RFID " + rfid}: ${String(stderr || error.message).slice(0, 150)}, ${totalCost} credits refunded`);
       if (isGuest) addGuestCredit(totalCost);
       else db.prepare("UPDATE users SET credits = credits + ? WHERE rfid = ?").run(totalCost, rfid);
       return res.status(500).json({ error: stderr || error.message });
     }
+
+    // [EDIT 3] Only a successful print removes the uploaded file
+    if (filePath && filePath !== pdfPath) fs.unlink(filePath, () => {});
+    fs.unlink(pdfPath, () => {});
+    deleteSession(req.params.sessionId);
 
     if (isGuest) {
       endGuestSession();
@@ -405,7 +408,7 @@ router.post("/api/print/qr-confirm/:sessionId", async (req, res) => {
         .run(rfid, `${selectedPages.length} page(s), ${colorMode}`, totalCost);
     }
 
-        const jobId = (stdout.match(/request id is (\S+)/) ?? [])[1];
+    const jobId = (stdout.match(/request id is (\S+)/) ?? [])[1];
     if (jobId && /^[A-Za-z0-9_.-]+$/.test(jobId)) {
       watchJob(jobId, 120000 + selectedPages.length * 20000, () => {
         if (!isGuest) {

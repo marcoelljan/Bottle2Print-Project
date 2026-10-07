@@ -35,6 +35,9 @@ interface Session {
   size: string | null;
   result: "accepted" | "rejected" | null;
   errorMsg: string | null;
+  depositBottleCount: number;
+  depositCreditsEarned: number;
+  depositCo2Grams: number;
 }
 
 const STEP_ICONS: Record<string, React.ReactNode> = {
@@ -112,12 +115,22 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
     } catch {}
   };
 
+    const handleFinishRfid = async () => {
+    try { await fetch(`${API}/api/deposit/finish`, { method: "POST" }); } catch {}
+  };
+
   const handleDoneDepositing = () => {
     localStorage.setItem("guestCredits", String(session?.credits || 0));
     onNavigate("print", { credits: session?.credits || 0, isGuest: true });
   };
 
   const inValidation = ["ir", "capacitive", "tof", "loadcell"].includes(step);
+
+    const wasActiveRef = useRef(false);
+  useEffect(() => {
+    if (step !== "idle" && step !== "unregistered") wasActiveRef.current = true;
+    else if (wasActiveRef.current && user && !guestMode) onBack();
+  }, [step]);
 
   return (
     <div style={fullScreen}>
@@ -159,7 +172,7 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
           </div>
         )}
 
-        {!user && showRfidPrompt && (step === "idle" || step === "unregistered") && !session?.errorMsg && (
+        {!user && showRfidPrompt && ["idle", "unregistered", "awaiting_pin", "awaiting_new_pin"].includes(step) && !session?.errorMsg && (
           <RFIDprompt onIdentified={handleIdentified} />
         )}
 
@@ -206,6 +219,31 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+                {step === "storing" && (
+          <div style={{ textAlign: "center" }}>
+            <div style={{ marginBottom: 16 }}><RecyclingIcon size={64} color="#f0a500" /></div>
+            <div style={{ fontSize: 20, color: "#f0a500", fontWeight: 700 }}>Moving bottle to storage...</div>
+            <div style={{ fontSize: 13, color: "#aaa", marginTop: 6 }}>Credits are added once the bottle is confirmed</div>
+          </div>
+        )}
+
+        {step === "session_summary" && (
+          <div style={{ textAlign: "center" }}>
+            <div style={{ marginBottom: 12 }}><CheckCircleIcon size={64} color="#2ecc71" /></div>
+            <div style={{ fontSize: 22, color: "#2ecc71", fontWeight: 700, marginBottom: 8 }}>Deposit complete</div>
+            <div style={{ fontSize: 14, color: "#aaa", marginBottom: 20 }}>
+              {session?.depositBottleCount ?? 0} bottle(s) · +{session?.depositCreditsEarned ?? 0} credits
+            </div>
+            <button onClick={onBack} style={{ ...backBtn, maxWidth: 260 }}>Done</button>
+          </div>
+        )}
+
+        {!guestMode && session?.rfid && session.rfid !== "GUEST" && ["ir", "result"].includes(step) && (
+          <div style={{ position: "absolute", bottom: 20, left: 0, right: 0, textAlign: "center" }}>
+            <button onClick={handleFinishRfid} style={{ ...backBtn, maxWidth: 260 }}>Finish depositing</button>
           </div>
         )}
 

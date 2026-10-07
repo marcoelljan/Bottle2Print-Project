@@ -9,6 +9,7 @@ import { isKioskBusy } from "../kioskState";
 import { getSensorStatus } from "../sensorHealth";
 import { getCalibration, updateCalibration, invalidateCalibrationCache } from "../sensorConfig";
 import { requestTofCal } from "../tofCal";
+import { clearVerified } from "../pinAuth";
 
 const router = Router();
 
@@ -299,7 +300,7 @@ router.get("/api/admin/stats", requireAuth, (_req, res) => {
     res.json({
       totalBottles: totals.total_bottles || 0,
       totalPlasticKg: ((totals.total_weight_g || 0) / 1000).toFixed(2),
-      totalCo2G: totals.total_co2_g || 0,
+      totalCo2G: Math.round((totals.total_co2_g || 0) * 10) / 10,
       totalPrints: totals.total_prints || 0,
       totalUsers: totals.total_users || 0,
     });
@@ -331,7 +332,7 @@ router.post("/api/admin/sensors/tof-calibrate", async (req: any, res) => {
   if (isKioskBusy()) return res.status(409).json({ error: "A deposit is in progress. Try again when the kiosk is idle." });
   const r = await requestTofCal();
   if (!r.ok) return res.status(500).json({ error: "No reading from the Arduino. Check the ToF sensor and that the kiosk is idle." });
-  if (r.spread > 25) return res.status(422).json({ error: `Readings are unstable (spread ${r.spread} mm). Check the mount and try again.` });
+  if (r.spread > 60) return res.status(422).json({ error: `Readings are unstable (spread ${r.spread} mm). Check the mount and try again.` });
   try {
     const config = updateCalibration({ tofMountMm: r.mean });
     logActivity(req.admin.username, "UPDATE_SENSOR_CONFIG", `Recalibrated ToF empty reading to ${r.mean} mm (spread ${r.spread} mm)`);
@@ -350,7 +351,7 @@ router.post("/api/admin/alerts/test", async (req: any, res) => {
 router.post("/api/admin/user/:rfid/reset-pin", (req: any, res) => {
   const { rfid } = req.params;
   if (!db.prepare("SELECT rfid FROM users WHERE rfid = ?").get(rfid)) return res.status(404).json({ error: "User not found." });
-  db.prepare("UPDATE users SET pin_needs_reset = 1, pin_fail_count = 0, pin_locked_until = NULL WHERE rfid = ?").run(rfid);
+  db.prepare("UPDATE users SET pin_needs_reset = 1, pin_fail_count = 0, pin_locked_until = NULL WHERE rfid = ?").run(rfid); clearVerified(rfid); 
   logActivity(req.admin.username, "RESET_USER_PIN", "Reset PIN for RFID " + rfid + " (user sets a new PIN on next tap)");
   res.json({ success: true });
 });

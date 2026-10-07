@@ -88,13 +88,25 @@ const SENSOR_LABELS: Record<string, string> = {
   servo: "Servo gate", photoelectric: "Photoelectric", ultrasonic: "Ultrasonic (bin)",
 };
 const IDLE_MONITORED = ["rfid", "tof", "loadcell", "ultrasonic"];
+
+const SENSOR_HINTS: Record<string, string> = {
+  rfid: "Check the RFID reader wiring (SS pin 10, RST pin 9) and its 3.3V power.",
+  ir: "Check the IR intake sensor signal wire (pin 2) and power.",
+  capacitive: "Check the capacitive sensor signal wire (pin 4) and power.",
+  tof: "Check the ToF sensor SDA/SCL wires and power. The mount must not be blocked.",
+  loadcell: "Check the load cell and HX711 wiring (DOUT pin 3, SCK pin 5) and that nothing is pressing on the platform.",
+  servo: "Gate moved but no bottle was seen. Check the servo signal wire (pin 8) and its power first, then the photoelectric sensor (pin 6) and any jam in the chute.",
+  photoelectric: "No bottle was seen after the gate moved. Check the photoelectric sensor (pin 6), the servo gate, and any jam in the chute.",
+  ultrasonic: "Check the HC-SR04 TRIG (pin 7) and ECHO (A0) wires. A nearly full bin can also block the echo.",
+};
+
 const LOG_GROUPS: Record<string, { label: string; actions: string[] }> = {
   users:    { label: "Users",               actions: ["REGISTER_USER", "EDIT_USER", "DELETE_USER", "ADJUST_CREDITS"] },
   admins:   { label: "Admin Accounts",      actions: ["CREATE_ADMIN", "EDIT_ADMIN", "DELETE_ADMIN"] },
   security: { label: "Password & Security", actions: ["REQUEST_PASSWORD_RESET", "RESET_PASSWORD"] },
   backup:   { label: "Backup & Restore",    actions: ["EXPORT_BACKUP", "RESTORE_BACKUP"] },
   system:   { label: "System Control",      actions: ["SHUTDOWN_PI", "REBOOT_PI", "UPDATE_SENSOR_CONFIG"] },
-  hardware: { label: "Hardware Alerts",     actions: ["SENSOR_FAULT", "SENSOR_RECOVERED", "ARDUINO_OFFLINE", "ARDUINO_UNRESPONSIVE", "ARDUINO_ONLINE"] },
+  hardware: { label: "Hardware Alerts",     actions: ["SENSOR_FAULT", "SENSOR_RECOVERED", "ARDUINO_OFFLINE", "ARDUINO_UNRESPONSIVE", "ARDUINO_ONLINE", "PRINTER_NOT_READY", "PRINT_FAILED", "PRINT_REFUND"] },
 };
 
 const formatPhTime = (dateString: string) => {
@@ -208,8 +220,9 @@ export default function AdminScreen({}: Props) {
   const [calMsg, setCalMsg]             = useState("");
   const [calSaving, setCalSaving]       = useState(false);
   const [tofCalBusy, setTofCalBusy] = useState(false);
+  const [openHint, setOpenHint] = useState<string | null>(null);
   const [badges, setBadges] = useState<Record<Tab, number>>(ZERO_BADGES);
- const seenSensorRef = useRef<number | null>(null);
+  const seenSensorRef = useRef<number | null>(null);
   const tabRef = useRef<Tab>("logs");
 useEffect(() => { tabRef.current = tab; }, [tab]);
 
@@ -1267,7 +1280,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                   {txns
                     .filter(t => {
                       const q = searchQuery.toLowerCase();
-                      const matchesSearch = (t.user_name && t.user_name.toLowerCase().includes(q)) || t.rfid.toLowerCase().includes(q) || t.type.toLowerCase().includes(q) || (t.size && t.size.toLowerCase().includes(q));
+                     const matchesSearch = (t.user_name && t.user_name.toLowerCase().includes(q)) || t.rfid.toLowerCase().includes(q) || t.type.toLowerCase().includes(q) || (t.size && t.size.toLowerCase().includes(q)) || (t.reject_reason && t.reject_reason.toLowerCase().includes(q));
                       
                       let matchesFilter = true;
                       if (filterValue === "deposit") matchesFilter = t.type === "deposit";
@@ -1276,7 +1289,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                       else if (filterValue === "reject") matchesFilter = t.type === "reject";
 
                       const matchesDate = !dateFilter || t.created_at.startsWith(dateFilter);
-                      return matchesSearch && matchesFilter && matchesDate || (t.reject_reason && t.reject_reason.toLowerCase().includes(q));
+                      return matchesSearch && matchesFilter && matchesDate;
                     })
                     .map(t => (
                       <tr key={t.id} style={{ borderBottom: "1px solid #2a2a2a" }}>
@@ -1297,7 +1310,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
     const sub = <div style={{ fontSize: 11, color: "#666", marginTop: 2 }}>Height {h} · Weight {w}</div>;
     if (t.type === "reject") {
       const labels: Record<string, string> = {
-        capacitive: "Capacitive", tof: "ToF", loadcell: "Load cell", "loadcell+tof": "Load cell + ToF",
+        capacitive: "Capacitive", tof: "ToF", loadcell: "Load cell", "loadcell+tof": "Load cell + ToF",storage: "Storage",
       };
       return (
         <div>
@@ -1418,7 +1431,34 @@ const adjustCredits = async (mode: "add" | "remove") => {
                   </div>
                 );
               })()}
+                            {sensorStatus && (() => {
+                const box = (color: string, children: React.ReactNode) => (
+                  <div style={{ fontSize: 12, color, marginTop: 8, maxWidth: 560, lineHeight: 1.5 }}>{children}</div>
+                );
+                if (sensorStatus.overall === "offline") {
+                  return box("#888", "Readings below are the last known values and may be outdated. Check the USB cable and that ARDUINO_PORT in the backend .env matches the port. The kiosk retries every 5 seconds.");
+                }
+                if (sensorStatus.overall === "unresponsive") {
+                  return box("#888", "The Arduino is connected but not answering the heartbeat. Press its reset button or re-plug the USB cable.");
+                }
+                const now = Date.now();
+                const faulted = SENSOR_ORDER.filter(id => sensorStatus.sensors[id]?.state === "fault");
+                const silent = IDLE_MONITORED.filter(id => {
+                  const h = sensorStatus.sensors[id];
+                  return h && h.state !== "fault" && h.lastSeen && now - h.lastSeen > 60000;
+                });
+                if (!faulted.length && !silent.length) return null;
+                const list = faulted.length ? faulted : silent;
+                const first = list[0];
+                const color = faulted.length ? "#e74c3c" : "#f0a500";
+                return box(color, <>
+                  <strong>{faulted.length ? "Check first: " : "Not reporting: "}{SENSOR_LABELS[first] ?? first}.</strong>{" "}
+                  {SENSOR_HINTS[first]}
+                  {list.length > 1 && <div style={{ color: "#888" }}>Also affected: {list.slice(1).map(id => SENSOR_LABELS[id] ?? id).join(", ")}</div>}
+                </>);
+              })()}
             </div>
+            
 
                        {/* Per-sensor last activity */}
             <div>
@@ -1426,30 +1466,54 @@ const adjustCredits = async (mode: "add" | "remove") => {
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
                 {sensorStatus && SENSOR_ORDER.filter(id => sensorStatus.sensors[id]).map(id => {
                   const h = sensorStatus.sensors[id];
-                  const faulted = h.state === "fault";
+                                   const down = sensorStatus.overall !== "online";
+                  const faulted = !down && h.state === "fault";
                   const secs = h.lastSeen ? Math.max(0, Math.round((Date.now() - h.lastSeen) / 1000)) : null;
                   const ago = formatAgo(secs);
                   const monitored = IDLE_MONITORED.includes(id);
-                  const active = monitored && !faulted && secs !== null && secs <= 20;
+                  const active = !down && monitored && !faulted && secs !== null && secs <= 20;
+                  const silent = !down && monitored && !faulted && secs !== null && secs > 60;
                   const pct = sensorStatus.bin?.fillPercent ?? null;
-                  const binColor = pct === null ? "#666" : pct >= 95 ? "#e74c3c" : pct >= 80 ? "#f0a500" : "#2ecc71";
+                  const binColor = down || pct === null ? "#666" : pct >= 95 ? "#e74c3c" : pct >= 80 ? "#f0a500" : "#2ecc71";
                   return (
-                                        <div key={id} style={{ ...adminStatCard, textAlign: "left", ...(faulted ? { border: "1px solid #e74c3c" } : {}) }}>
+                    <div key={id} title={SENSOR_HINTS[id]} onClick={() => setOpenHint(openHint === id ? null : id)} style={{
+                      ...adminStatCard, textAlign: "left", cursor: "pointer",
+                      ...(faulted ? { border: "1px solid #e74c3c" } : {}),
+                      ...(silent ? { border: "1px solid #f0a500" } : {}),
+                      ...(down ? { opacity: openHint === id ? 0.9 : 0.5 } : {}),
+                    }}>
                       <div style={adminStatLabel}>{SENSOR_LABELS[id] ?? id}</div>
-                      <div style={{ fontSize: 12, marginTop: 4, color: faulted ? "#e74c3c" : (active || (!monitored && h.lastSeen)) ? "#2ecc71" : "#888" }}>
-                        {faulted ? `Problem · ${ago}` : active ? `Active · ${ago}` : ago}
+                      <div style={{ fontSize: 12, marginTop: 4, color: faulted ? "#e74c3c" : silent ? "#f0a500" : !down && (active || (!monitored && h.lastSeen)) ? "#2ecc71" : "#888" }}>
+                        {down ? (h.lastSeen ? `Last seen ${ago}` : "No data")
+                          : faulted ? `Problem · ${ago}`
+                          : active ? `Active · ${ago}`
+                          : silent ? `No recent check · ${ago}`
+                          : ago}
                       </div>
+                      {(faulted || silent) && openHint !== id && (
+                        <div style={{ fontSize: 10, color: faulted ? "#e74c3c" : "#f0a500", marginTop: 4 }}>Tap for what to check</div>
+                      )}
+                      {openHint === id && (
+                        <div style={{ fontSize: 11, color: "#ccc", marginTop: 8, paddingTop: 8, borderTop: "1px solid #333", lineHeight: 1.5 }}>
+                          {down && (
+                            <div style={{ color: "#f0a500", marginBottom: 4 }}>
+                              Arduino is {sensorStatus.overall}, so this sensor can't be checked right now. Fix the USB connection first.
+                            </div>
+                          )}
+                          {SENSOR_HINTS[id]}
+                        </div>
+                      )}
                       {h.lastDetail && <div style={{ fontSize: 11, color: "#555", marginTop: 2 }}>{h.lastDetail}</div>}
                       {id === "servo" && (
                         <div style={{ fontSize: 10, color: "#444", marginTop: 4 }}>Last action only. The gate has no feedback.</div>
                       )}
                       {id === "ultrasonic" && pct !== null && (
                         <div style={{ marginTop: 8 }}>
-                          <div style={{ fontSize: 12, fontWeight: 700, color: binColor }}>Bin {pct}% full</div>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: binColor }}>{down ? "Last known: " : ""}Bin {pct}% full</div>
                           <div style={{ height: 6, background: "#333", borderRadius: 3, marginTop: 4, overflow: "hidden" }}>
                             <div style={{ width: `${pct}%`, height: "100%", background: binColor }} />
                           </div>
-                          <div style={{ fontSize: 10, color: "#444", marginTop: 4 }}>Checked every few seconds while idle</div>
+                          {!down && <div style={{ fontSize: 10, color: "#444", marginTop: 4 }}>Checked every few seconds while idle</div>}
                         </div>
                       )}
                     </div>
