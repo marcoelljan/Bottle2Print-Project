@@ -220,6 +220,10 @@ export default function AdminScreen({}: Props) {
   const [calMsg, setCalMsg]             = useState("");
   const [calSaving, setCalSaving]       = useState(false);
   const [tofCalBusy, setTofCalBusy] = useState(false);
+  const [driveBusy, setDriveBusy] = useState(false);
+  const [backupTime, setBackupTime] = useState("17:00");
+  const [backupEnabled, setBackupEnabled] = useState(true);
+  const [driveStatus, setDriveStatus] = useState<{ action: string; details: string; created_at: string } | null>(null);
   const [openHint, setOpenHint] = useState<string | null>(null);
   const [badges, setBadges] = useState<Record<Tab, number>>(ZERO_BADGES);
   const seenSensorRef = useRef<number | null>(null);
@@ -703,6 +707,38 @@ const adjustCredits = async (mode: "add" | "remove") => {
     }
   };
 
+       const loadDriveStatus = async () => {
+    try {
+      const r = await authFetch(`/api/admin/backup/drive-status`);
+      if (r.ok) setDriveStatus(await r.json());
+      const s = await authFetch(`/api/admin/backup/settings`);
+      if (s.ok) { const cfg = await s.json(); setBackupTime(cfg.time); setBackupEnabled(cfg.enabled); }
+    } catch {}
+  };
+
+     const backupToDrive = async () => {
+    setDriveBusy(true);
+    try {
+      const res = await authFetch(`/api/admin/backup/drive`, { method: "POST" });
+      const data = await res.json();
+      alert(res.ok && data.success ? "Backup uploaded to Google Drive." : "Backup failed: " + (data.error ?? "unknown error"));
+    } catch { alert("Could not reach backend."); }
+    setDriveBusy(false);
+    loadDriveStatus();
+  };
+
+  const saveBackupSchedule = async () => {
+    try {
+      const res = await authFetch(`/api/admin/backup/settings`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ time: backupTime, enabled: backupEnabled }),
+      });
+      const data = await res.json();
+      alert(res.ok && data.success ? "Backup schedule saved." : "Failed: " + (data.error ?? "unknown error"));
+    } catch { alert("Could not reach backend."); }
+  };
+
    const sendTestEmail = async () => {
     try {
       const res = await authFetch(`/api/admin/alerts/test`, { method: "POST" });
@@ -1049,7 +1085,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                 <button
                   onClick={() => {
                     setShowDropdown(false);
-                    setShowMaintenanceModal(true);
+                    setShowMaintenanceModal(true); loadDriveStatus();
                   }}
                   style={dropdownItem}
                 >
@@ -1928,6 +1964,27 @@ const adjustCredits = async (mode: "add" | "remove") => {
                 </button>
               </div>
             </div>
+
+                                   <button onClick={backupToDrive} disabled={driveBusy} style={{ ...confirmBtn, background: "#2a2a2a", color: "#f0a500", border: "1px solid #3a3a3a", width: "100%", marginTop: 12, opacity: driveBusy ? 0.5 : 1 }}>
+                                   {driveBusy ? "Uploading..." : "Back up to Drive now"}
+                                    </button>
+            <div style={{ fontSize: 11, marginTop: 6, textAlign: "left", color: driveStatus?.action === "DRIVE_BACKUP" ? "#2ecc71" : driveStatus ? "#e74c3c" : "#666" }}>
+              {driveStatus
+                ? (driveStatus.action === "DRIVE_BACKUP" ? "Last Drive backup: " : "Last attempt failed: ") + formatPhTime(driveStatus.created_at) + (driveStatus.action === "DRIVE_BACKUP" ? "" : " · " + driveStatus.details)
+                : "No Drive backup yet."}
+            </div>
+
+                           <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+              <label style={{ fontSize: 12, color: "#888", display: "flex", alignItems: "center", gap: 6 }}>
+                <input type="checkbox" checked={backupEnabled} onChange={e => setBackupEnabled(e.target.checked)} style={{ accentColor: "#f0a500" }} />
+                Automatic daily backup at
+              </label>
+              <input type="time" value={backupTime} onChange={e => setBackupTime(e.target.value)} disabled={!backupEnabled}
+                style={{ ...inputStyle, width: 120, padding: "6px 8px", fontSize: 13, colorScheme: "dark", opacity: backupEnabled ? 1 : 0.5 }} />
+              <button onClick={saveBackupSchedule} style={{ ...actionBtn("#1e293b", "#38bdf8"), padding: "8px 14px", fontSize: 12 }}>Save</button>
+            </div>
+            <div style={{ fontSize: 10, color: "#555", marginTop: 4, textAlign: "left" }}>Manila time. A backup already made today counts, so a new time applies from tomorrow.</div>
+
                         <button onClick={sendTestEmail} style={{ ...confirmBtn, background: "#2a2a2a", color: "#38bdf8", border: "1px solid #3a3a3a", width: "100%", marginTop: 12 }}>
               Send test email
             </button>

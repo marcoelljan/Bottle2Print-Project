@@ -21,6 +21,7 @@ import { getCalibration, classifyBottle, tofInUse } from "./sensorConfig";
 import { registerBusyCheck } from "./kioskState";
 import { markVerified } from "./pinAuth";
 import { startAlertWatch } from "./alerts";
+import { startBackupSchedule } from "./driveBackup";
 import { registerTofCalSender, handleTofCalLine } from "./tofCal";
 import { EventEmitter } from "events";
 
@@ -208,7 +209,7 @@ function finalizeDepositSession() {
 const app = express();
 app.set("trust proxy", "loopback");   // so req.ip is the real device behind Tailscale Serve
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "50mb" }));
 
 type KioskMode = "deposit" | "register" | "balance" | "print" | "admin" | "idle";
 let kioskMode: KioskMode = "idle";
@@ -476,6 +477,7 @@ function sendToArduino(cmd: string) {
 startHealthWatch();
 registerTofCalSender(() => sendToArduino("TOFCAL"));
 startAlertWatch();
+startBackupSchedule();
 connectSerial();
 
 lineBus.on("data", (raw: string) => {

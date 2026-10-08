@@ -5,6 +5,7 @@ import nodemailer from "nodemailer";
 import { db } from "../db";
 import { exec } from "child_process";
 import { sendMail } from "../alerts";
+import { runDriveBackup, getBackupStatus, getBackupSettings, saveBackupSettings } from "../driveBackup";
 import { isKioskBusy } from "../kioskState";
 import { getSensorStatus } from "../sensorHealth";
 import { getCalibration, updateCalibration, invalidateCalibrationCache } from "../sensorConfig";
@@ -354,6 +355,31 @@ router.post("/api/admin/user/:rfid/reset-pin", (req: any, res) => {
   db.prepare("UPDATE users SET pin_needs_reset = 1, pin_fail_count = 0, pin_locked_until = NULL WHERE rfid = ?").run(rfid); clearVerified(rfid); 
   logActivity(req.admin.username, "RESET_USER_PIN", "Reset PIN for RFID " + rfid + " (user sets a new PIN on next tap)");
   res.json({ success: true });
+});
+
+router.post("/api/admin/backup/drive", requireSuperAdmin, async (req: any, res) => {
+  const r = await runDriveBackup(req.admin.username);
+  if (r.ok) res.json({ success: true }); else res.status(500).json({ error: r.message });
+});
+
+router.get("/api/admin/backup/drive-status", requireSuperAdmin, (_req, res) => {
+  res.json(getBackupStatus());
+});
+
+router.get("/api/admin/backup/settings", requireSuperAdmin, (_req, res) => {
+  res.json(getBackupSettings());
+});
+
+router.patch("/api/admin/backup/settings", requireSuperAdmin, (req: any, res) => {
+  try {
+    const time = String(req.body.time ?? "");
+    const enabled = req.body.enabled !== false;
+    saveBackupSettings(time, enabled);
+    logActivity(req.admin.username, "UPDATE_BACKUP_SCHEDULE", enabled ? "Automatic Drive backup set to " + time + " (Manila time)" : "Automatic Drive backup turned off");
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
 });
 
 // ── Power Control (Super Admin Only) ───────────────────────────────────────
