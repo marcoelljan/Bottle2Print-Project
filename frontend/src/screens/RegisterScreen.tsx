@@ -37,7 +37,16 @@ export default function RegisterScreen({ onBack }: Props) {
 
   const studentIdRegex = /^\d{3}-\d{5}[A-Z]$/;
   const isStudentIdValid = studentIdRegex.test(studentId.trim());
-  const showStudentIdError = studentId.trim().length >= 10 && !isStudentIdValid;
+  const studentIdProblem = (() => {
+    const s = studentId.trim();
+    if (!s) return "Student ID is required.";
+    if (!/^\d{3}-/.test(s)) return "Start with 3 digits, then a dash. Example: 123-12345M";
+    if (!/^\d{3}-\d{5}/.test(s)) return "After the dash, enter 5 digits. Example: 123-12345M";
+    if (s.length < 10) return "Add the last letter at the end. Example: 123-12345M";
+    if (!isStudentIdValid) return "The ID must end with one capital letter and nothing after it. Example: 123-12345M";
+    return "";
+  })();
+  const showStudentIdError = !isStudentIdValid && (attemptedSubmit || studentId.trim().length >= 10);
 
   useEffect(() => {
     const t = setInterval(() => setPulse(p => !p), 900);
@@ -283,15 +292,11 @@ export default function RegisterScreen({ onBack }: Props) {
                 placeholder="123-12345M"
                 style={{
                   ...input,
-                  borderColor: (attemptedSubmit && !studentId.trim()) || showStudentIdError ? "#e74c3c" : "#3a3a3a"
+                  borderColor: showStudentIdError ? "#e74c3c" : "#3a3a3a"
                 }}
               />
-              {attemptedSubmit && !studentId.trim() ? (
-                <div style={{ fontSize: 10, color: "#e74c3c", marginTop: 3 }}>Student ID is required.</div>
-              ) : showStudentIdError && (
-                <div style={{ fontSize: 10, color: "#e74c3c", marginTop: 3 }}>
-                  Invalid format. Expected layout: 123-12345M
-                </div>
+               {showStudentIdError && (
+                <div style={{ fontSize: 11, color: "#e74c3c", marginTop: 3 }}>{studentIdProblem}</div>
               )}
             </div>
 
@@ -307,7 +312,11 @@ export default function RegisterScreen({ onBack }: Props) {
                 I agree to the <strong style={{ color: "#aaa" }}>Data Privacy Policy</strong>. I consent to the collection of my credentials and recycling metrics for tracking. <span style={{ color: "#e74c3c" }}>*</span>
               </label>
             </div>
-
+                           {attemptedSubmit && !isFormValid && (
+              <div style={{ fontSize: 12, color: "#e74c3c", marginBottom: 10, textAlign: "left" }}>
+                Please fix the highlighted fields before continuing.
+              </div>
+            )}
             <div style={{ display: "flex", gap: 12 }}>
               <button onClick={() => setStep("tap")} style={ghostBtn}>Cancel</button>
               <button
