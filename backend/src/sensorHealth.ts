@@ -1,7 +1,8 @@
 import { db } from "./db";
 import { getCalibration } from "./sensorConfig";
+import { exec } from "child_process";
 
-export type SensorId = "ir" | "capacitive" | "tof" | "loadcell" | "rfid" | "photoelectric" | "ultrasonic" | "servo";
+export type SensorId = "ir" | "capacitive" | "tof" | "loadcell" | "rfid" | "photoelectric" | "ultrasonic" | "servo" | "printer";
 export type SerialStatus = "connected" | "disconnected" | "error";
 export type OverallStatus = "online" | "unresponsive" | "offline";
 export type SensorState = "ok" | "fault" | "unknown";
@@ -18,7 +19,7 @@ interface SensorHealth {
 const SENSOR_NAMES: Record<SensorId, string> = {
   ir: "IR sensor", capacitive: "Capacitive sensor", tof: "ToF sensor",
   loadcell: "Load cell", rfid: "RFID reader",
-  photoelectric: "Photoelectric sensor", ultrasonic: "Ultrasonic sensor", servo: "Servo gate",
+  photoelectric: "Photoelectric sensor", ultrasonic: "Ultrasonic sensor", servo: "Servo gate", printer: "Printer",
 };
 const IDS = Object.keys(SENSOR_NAMES) as SensorId[];
 
@@ -162,6 +163,29 @@ export function getSensorStatus() {
   };
 }
 
+export function printerReady(): Promise<{ ok: boolean; reason?: string }> {
+  return new Promise(resolve => {
+    exec("lpstat -l -p", { timeout: 5000 }, (err, stdout) => {
+      const out = String(stdout || "");
+      if (err && !out) return resolve({ ok: false, reason: "The print service is not responding." });
+      if (!/printer /i.test(out)) return resolve({ ok: false, reason: "No printer is installed." });
+      if (/disabled|stopped|paused/i.test(out)) return resolve({ ok: false, reason: "The printer is turned off or disabled." });
+      if (/waiting for printer to become available|unable to open/i.test(out)) return resolve({ ok: false, reason: "The printer is not connected." });
+      const alerts = (out.match(/Alerts:\s*(.*)/i)?.[1] ?? "").toLowerCase();
+      if (/media-empty|media-needed|media-jam|marker-supply-empty|door-open|offline/.test(alerts)) {
+        return resolve({ ok: false, reason: "The printer reports a problem (" + alerts.trim() + ")." });
+      }
+      resolve({ ok: true });
+    });
+  });
+}
+
+async function pollPrinter() {
+  const r = await printerReady();
+  if (r.ok) recordSensorActivity("printer", "Ready");
+  else recordSensorActivity("printer", r.reason ?? "Not ready", "fault");
+}
+
 const WATCH_INTERVAL_MS = 5000;
 const STARTUP_GRACE_MS  = 30000; // don't log the normal boot sequence
 
@@ -169,6 +193,9 @@ export function startHealthWatch() {
   const startedAt = Date.now();
   let everOnline = false;
   let lastLogged: OverallStatus = "online";
+
+    pollPrinter();
+  setInterval(pollPrinter, 15000);
 
   setInterval(() => {
     const { overall, serial } = getSensorStatus();

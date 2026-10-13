@@ -11,6 +11,7 @@ import { getGuestCredits, deductGuestCredits, endGuestSession, addGuestCredit } 
 import { broadcast } from "../wsHub";
 import { isVerified } from "../pinAuth";
 import { sendMail } from "../alerts";
+import { printerReady } from "../sensorHealth";
 
 const router = Router();
 const PI_IP = process.env.PI_IP || "localhost";
@@ -118,22 +119,7 @@ function logSystem(action: string, details: string) {
 let lastPrinterMail = 0;
 const cancelledJobs = new Set<string>();   // jobs cancelled because they never finished
 
-function printerReady(): Promise<{ ok: boolean; reason?: string }> {
-  return new Promise(resolve => {
-    exec("lpstat -l -p", { timeout: 5000 }, (err, stdout) => {
-      const out = String(stdout || "");
-      if (err && !out) return resolve({ ok: false, reason: "The print service is not responding." });
-      if (!/printer /i.test(out)) return resolve({ ok: false, reason: "No printer is installed." });
-      if (/disabled|stopped|paused/i.test(out)) return resolve({ ok: false, reason: "The printer is turned off or disabled." });
-      if (/waiting for printer to become available|unable to open/i.test(out)) return resolve({ ok: false, reason: "The printer is not connected." });
-      const alerts = (out.match(/Alerts:\s*(.*)/i)?.[1] ?? "").toLowerCase();
-      if (/media-empty|media-needed|media-jam|marker-supply-empty|door-open|offline/.test(alerts)) {
-        return resolve({ ok: false, reason: "The printer reports a problem (" + alerts.trim() + ")." });
-      }
-      resolve({ ok: true });
-    });
-  });
-}
+
 
 // If a queued job is still waiting after limitMs, cancel it and run onStuck
 function watchJob(jobId: string, limitMs: number, onStuck: () => void) {

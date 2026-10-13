@@ -20,7 +20,7 @@ const retryAt = new Map<string, number>();
 
 const LABELS: Record<string, string> = {
   ir: "IR sensor", capacitive: "Capacitive sensor", tof: "ToF sensor", loadcell: "Load cell",
-  rfid: "RFID reader", photoelectric: "Photoelectric sensor", ultrasonic: "Ultrasonic sensor", servo: "Servo gate",
+  rfid: "RFID reader", photoelectric: "Photoelectric sensor", ultrasonic: "Ultrasonic sensor", servo: "Servo gate", printer: "Printer",
 };
 const label = (id: string) => LABELS[id] ?? id;
 const nowText = () => new Date().toLocaleString("en-US", { timeZone: "Asia/Manila" });
@@ -85,8 +85,9 @@ function checkAlerts() {
       }
     }
 
-    if (st.overall === "online") {
-      for (const [id, h] of Object.entries(st.sensors)) {
+    {
+       for (const [id, h] of Object.entries(st.sensors)) {
+       if (id !== "printer" && st.overall !== "online") continue;
         if (h.state === "fault") {
           if (faultSince[id] === undefined) faultSince[id] = now;
           if (now - faultSince[id] >= FAULT_AFTER_MS) {

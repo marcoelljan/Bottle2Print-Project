@@ -82,12 +82,12 @@ const formatAgo = (secs: number | null) => {
   if (h < 24) return `${h}h ${m % 60}m ago`;
   return `${Math.floor(h / 24)}d ${h % 24}h ago`;
 };
-const SENSOR_ORDER = ["rfid", "ir", "capacitive", "tof", "loadcell", "servo", "photoelectric", "ultrasonic"];
+const SENSOR_ORDER = ["rfid", "ir", "capacitive", "tof", "loadcell", "servo", "photoelectric", "ultrasonic", "printer"];
 const SENSOR_LABELS: Record<string, string> = {
   rfid: "RFID", ir: "IR intake", capacitive: "Capacitive", tof: "ToF height", loadcell: "Load cell",
-  servo: "Servo gate", photoelectric: "Photoelectric", ultrasonic: "Ultrasonic (bin)",
+  servo: "Servo gate", photoelectric: "Photoelectric", ultrasonic: "Ultrasonic (bin)", printer: "Printer",
 };
-const IDLE_MONITORED = ["rfid", "tof", "loadcell", "ultrasonic"];
+const IDLE_MONITORED = ["rfid", "tof", "loadcell", "ultrasonic", "printer"];
 
 const SENSOR_HINTS: Record<string, string> = {
   rfid: "Check the RFID reader wiring (SS pin 10, RST pin 9) and its 3.3V power.",
@@ -98,6 +98,7 @@ const SENSOR_HINTS: Record<string, string> = {
   servo: "Gate moved but no bottle was seen. Check the servo signal wire (pin 8) and its power first, then the photoelectric sensor (pin 6) and any jam in the chute.",
   photoelectric: "No bottle was seen after the gate moved. Check the photoelectric sensor (pin 6), the servo gate, and any jam in the chute.",
   ultrasonic: "Check the HC-SR04 TRIG (pin 7) and ECHO (A0) wires. A nearly full bin can also block the echo.",
+  printer: "Check that the printer is powered on and the USB cable is connected, then check paper, ink and for a jam. Running lpstat -l -p on the Pi shows what the print service reports.",
 };
 
 const LOG_GROUPS: Record<string, { label: string; actions: string[] }> = {
@@ -128,6 +129,10 @@ const formatPhTime = (dateString: string) => {
   }
 };
 const ZERO_BADGES: Record<Tab, number> = { logs: 0, users: 0, transactions: 0, feedback: 0, admins: 0, sensors: 0 };
+
+const PAGE = 100;
+type ListKey = "logs" | "txns" | "feedback" | "users" | "admins";
+const FRESH_LIMITS: Record<ListKey, number> = { logs: PAGE, txns: PAGE, feedback: PAGE, users: PAGE, admins: PAGE };
 
 export default function AdminScreen({}: Props) {
   const [token, setToken]           = useState<string | null>(null);
@@ -214,6 +219,11 @@ export default function AdminScreen({}: Props) {
   const [searchQuery, setSearchQuery] = useState("");
   const [filterValue, setFilterValue] = useState("all");
   const [dateFilter, setDateFilter] = useState("");
+  const limitsRef = useRef<Record<ListKey, number>>({ ...FRESH_LIMITS });
+  const [limits, setLimits] = useState<Record<ListKey, number>>({ ...FRESH_LIMITS });
+  const filtersRef = useRef({ q: "", filter: "all", date: "" });
+  const listSeq = useRef(0);
+  const [debouncedQ, setDebouncedQ] = useState("");
 
   const [sensorStatus, setSensorStatus] = useState<SensorStatus | null>(null);
   const [calForm, setCalForm]           = useState<SensorCalibration | null>(null);
@@ -231,10 +241,16 @@ export default function AdminScreen({}: Props) {
 useEffect(() => { tabRef.current = tab; }, [tab]);
 
   useEffect(() => {
-    setSearchQuery("");
-    setFilterValue("all");
-    setDateFilter("");
-  }, [tab]);
+  setSearchQuery("");
+  setFilterValue("all");
+  setDateFilter("");
+  setDebouncedQ("");
+}, [tab]);
+
+useEffect(() => {
+  const id = setTimeout(() => setDebouncedQ(searchQuery.trim()), 400);
+  return () => clearTimeout(id);
+}, [searchQuery]);
 
   const [editUserModal, setEditUserModal] = useState<User | null>(null);
   const [editName, setEditName]       = useState("");
@@ -562,6 +578,53 @@ const syncBadges = async (tk: string | null = token) => {
   } catch {}
 };
 
+const loadLists = async (tk: string | null, superAdmin: boolean) => {
+  const seq = ++listSeq.current;
+  const { q, filter, date } = filtersRef.current;
+  const active = tabRef.current;
+
+  // Filters apply only to the tab you are looking at; the other lists load unfiltered
+  const qs = (key: ListKey, own: Tab) => {
+    const p = new URLSearchParams({ limit: String(limitsRef.current[key]) });
+    if (active === own) {
+      if (q) p.set("q", q);
+      if (date) p.set("date", date);
+      if (filter !== "all") {
+        if (own === "logs") {
+          const acts = LOG_GROUPS[filter]?.actions.join(",");
+          if (acts) p.set("actions", acts);
+        } else p.set("filter", filter);
+      }
+    }
+    return p.toString();
+  };
+
+  const run = async (path: string, set: (d: any) => void) => {
+    const r = await authFetch(path, {}, tk);
+    if (!r.ok) throw new Error(`${path} returned ${r.status}`);
+    const data = await r.json();
+    if (seq === listSeq.current) set(data);   // ignore answers that arrive late
+  };
+
+  const jobs = [
+    run(`/api/admin/activity-logs?${qs("logs", "logs")}`, setActivityLogs),
+    run(`/api/admin/transactions?${qs("txns", "transactions")}`, setTxns),
+    run(`/api/admin/feedback?${qs("feedback", "feedback")}`, setFeedback),
+    run(`/api/admin/users?${qs("users", "users")}`, setUsers),
+  ];
+  if (superAdmin) jobs.push(run(`/api/admin/admins?${qs("admins", "admins")}`, setAdmins));
+
+  (await Promise.allSettled(jobs)).forEach(r => { if (r.status === "rejected") console.error(r.reason); });
+};
+
+useEffect(() => {
+  if (tab === "sensors") return;
+  filtersRef.current = { q: debouncedQ, filter: filterValue, date: dateFilter };
+  limitsRef.current = { ...FRESH_LIMITS };   // new filter: start again from 100
+  setLimits({ ...limitsRef.current });
+  if (verified && passwordChanged) loadLists(token, isSuperAdmin);
+}, [tab, debouncedQ, filterValue, dateFilter]);
+
 const loadAll = async (tk: string | null, superAdmin: boolean) => {
   const get = async (path: string) => {
     const r = await authFetch(path, {}, tk);
@@ -570,16 +633,12 @@ const loadAll = async (tk: string | null, superAdmin: boolean) => {
   };
   const jobs: Promise<any>[] = [
     get(`/api/admin/stats`).then(setStats),
-    get(`/api/admin/activity-logs`).then(setActivityLogs),
-    get(`/api/admin/users`).then(setUsers),
-    get(`/api/admin/transactions`).then(setTxns),
-    get(`/api/admin/feedback`).then(setFeedback),
+    loadLists(tk, superAdmin),
     Promise.all([get(`/api/admin/sensors/status`), get(`/api/admin/sensors/config`)]).then(([status, config]) => {
       setSensorStatus(status);
       setCalForm(prev => prev ?? config); // never overwrite what you're editing
     }),
   ];
-  if (superAdmin) jobs.push(get(`/api/admin/admins`).then(setAdmins));
   (await Promise.allSettled(jobs)).forEach(r => { if (r.status === "rejected") console.error(r.reason); });
 };
 
@@ -589,6 +648,11 @@ const fetchData = async (tkOverride?: string) => {
   await loadAll(tkOverride ?? token, isSuperAdmin);
   await syncBadges(tkOverride ?? token);
   setLoading(false);
+};
+const showMore = async (key: ListKey) => {
+  limitsRef.current[key] += PAGE;
+  setLimits({ ...limitsRef.current });
+  await loadLists(token, isSuperAdmin);
 };
 
 const adjustCredits = async (mode: "add" | "remove") => {
@@ -800,6 +864,8 @@ const adjustCredits = async (mode: "add" | "remove") => {
       seenSensorRef.current = null;
     }
   };
+
+  const hasFilter = !!(searchQuery || filterValue !== "all" || dateFilter);
 
   if (!verified) {
     return (
@@ -1149,12 +1215,13 @@ const adjustCredits = async (mode: "add" | "remove") => {
           ["users", <><AccountCircleIcon size={15} /> Manage Users</>],
           ["transactions", <><RecyclingIcon size={15} /> Transactions</>],
           ["feedback", <><ChatIcon size={15} /> Feedback</>],
-          ["sensors", <><WrenchIcon size={15} /> Sensors</>],
+          ["sensors", <><WrenchIcon size={15} /> Components</>],
           ...(isSuperAdmin ? [["admins", <><LockPersonIcon size={15} /> Manage Admins</>] as [Tab, React.ReactNode]] : []),
         ] as [Tab, React.ReactNode][]).map(([t, label]) => (
           <button key={t} onClick={() => {
             tabRef.current = t;                                   // so an in-flight poll can't bring the badge back
             setTab(t);
+            setSearchQuery(""); setFilterValue("all"); setDateFilter(""); setDebouncedQ("");
             setBadges(b => (b[t] === 0 ? b : { ...b, [t]: 0 })); // clears instantly
             if (t !== "sensors") markSeen(t);                     // tells the server you've seen it
             }} style={{
@@ -1230,15 +1297,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                   <tr>{["Time", "Admin User", "Action", "Details"].map(h => <th key={h} style={th}>{h}</th>)}</tr>
                 </thead>
                 <tbody>
-                  {activityLogs
-                    .filter(l => {
-                      const q = searchQuery.toLowerCase();
-                      const matchesSearch = l.admin_user.toLowerCase().includes(q) || l.action.toLowerCase().includes(q) || (l.details && l.details.toLowerCase().includes(q));
-                      const matchesFilter = filterValue === "all" || (LOG_GROUPS[filterValue]?.actions.includes(l.action) ?? false);
-                      const matchesDate = !dateFilter || l.created_at.startsWith(dateFilter);
-                      return matchesSearch && matchesFilter && matchesDate;
-                    })
-                    .map(l => (
+                  {activityLogs.map(l => (
                       <tr key={l.id} style={{ borderBottom: "1px solid #2a2a2a" }}>
                         <td style={td}>{formatPhTime(l.created_at)}</td>
                         <td style={{ ...td, fontWeight: 600, color: "#f0a500" }}>{l.admin_user}</td>
@@ -1246,10 +1305,15 @@ const adjustCredits = async (mode: "add" | "remove") => {
                         <td style={td}>{l.details}</td>
                       </tr>
                     ))}
-                  {activityLogs.length === 0 && <tr><td colSpan={4} style={{ ...td, textAlign: "center", color: "#555" }}>No activity logs recorded yet</td></tr>}
+                  {activityLogs.length === 0 && <tr><td colSpan={4} style={{ ...td, textAlign: "center", color: "#555" }}>{hasFilter ? "No matching logs" : "No activity logs recorded yet"}</td></tr>}
                 </tbody>
               </table>
             </div>
+            {activityLogs.length >= limits.logs && (
+  <button onClick={() => showMore("logs")} style={{ ...ghostBtn, flex: "unset", alignSelf: "center", padding: "8px 20px", fontSize: 12 }}>
+    Show more
+  </button>
+)}
           </div>
         )}
          {/* 2. MANAGE USERS */}
@@ -1282,17 +1346,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                   <tr>{["Name", "Student ID", "RFID", "Credits", "Registered", "Actions"].map(h => <th key={h} style={th}>{h}</th>)}</tr>
                 </thead>
                 <tbody>
-                  {users
-                    .filter(u => {
-                      const q = searchQuery.toLowerCase();
-                      return u.name.toLowerCase().includes(q) || (u.studentId && u.studentId.toLowerCase().includes(q)) || u.rfid.toLowerCase().includes(q);
-                    })
-                    .sort((a, b) => {
-                      if (filterValue === "credits_asc") return a.credits - b.credits;
-                      if (filterValue === "credits_desc") return b.credits - a.credits;
-                      return 0;
-                    })
-                    .map(u => (
+                  {users.map(u => (
                       <tr key={u.rfid} style={{ borderBottom: "1px solid #2a2a2a" }}>
                         <td style={td}>{u.name}</td>
                         <td style={td}>{u.studentId || <span style={{ color: "#444" }}>—</span>}</td>
@@ -1307,10 +1361,15 @@ const adjustCredits = async (mode: "add" | "remove") => {
                         </td>
                       </tr>
                     ))}
-                  {users.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: "center", color: "#555" }}>No users yet</td></tr>}
+                  {users.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: "center", color: "#555" }}>{hasFilter ? "No matching users" : "No users yet"}</td></tr>}
                 </tbody>
               </table>
             </div>
+            {users.length >= limits.users && (
+  <button onClick={() => showMore("users")} style={{ ...ghostBtn, flex: "unset", alignSelf: "center", padding: "8px 20px", fontSize: 12 }}>
+    Show more
+  </button>
+)}
           </div>
         )}
          {/* 3. TRANSACTIONS */}
@@ -1351,21 +1410,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                   <tr>{["Name", "Time", "RFID", "Type", "Details", "Credits"].map(h => <th key={h} style={th}>{h}</th>)}</tr>
                 </thead>
                 <tbody>
-                  {txns
-                    .filter(t => {
-                      const q = searchQuery.toLowerCase();
-                     const matchesSearch = (t.user_name && t.user_name.toLowerCase().includes(q)) || t.rfid.toLowerCase().includes(q) || t.type.toLowerCase().includes(q) || (t.size && t.size.toLowerCase().includes(q)) || (t.reject_reason && t.reject_reason.toLowerCase().includes(q));
-                      
-                      let matchesFilter = true;
-                      if (filterValue === "deposit") matchesFilter = t.type === "deposit";
-                      else if (filterValue === "print") matchesFilter = t.type === "print";
-                      else if (filterValue === "transfer") matchesFilter = t.type === "transfer_out" || t.type === "transfer_in";
-                      else if (filterValue === "reject") matchesFilter = t.type === "reject";
-
-                      const matchesDate = !dateFilter || t.created_at.startsWith(dateFilter);
-                      return matchesSearch && matchesFilter && matchesDate;
-                    })
-                    .map(t => (
+                 {txns.map(t => (
                       <tr key={t.id} style={{ borderBottom: "1px solid #2a2a2a" }}>
                         <td style={{ ...td, fontWeight: 600, color: "#fff" }}>{t.user_name ? t.user_name : t.rfid === "GUEST" ? <span style={{ color: "#aaa" }}>Guest</span> : <span style={{ color: "#e74c3c", fontStyle: "italic" }}>Unknown</span>}</td>
                         <td style={td}>{formatPhTime(t.created_at)}</td>
@@ -1409,10 +1454,15 @@ const adjustCredits = async (mode: "add" | "remove") => {
 </td>
                       </tr>
                     ))}
-                  {txns.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: "center", color: "#555" }}>No transactions yet</td></tr>}
+                  {txns.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: "center", color: "#555" }}>{hasFilter ? "No matching transactions" : "No transactions yet"}</td></tr>}
                 </tbody>
               </table>
             </div>
+            {txns.length >= limits.txns && (
+  <button onClick={() => showMore("txns")} style={{ ...ghostBtn, flex: "unset", alignSelf: "center", padding: "8px 20px", fontSize: 12 }}>
+    Show more
+  </button>
+)}
           </div>
         )}
          {/* 4. FEEDBACK */}
@@ -1453,15 +1503,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                   <tr>{["Time", "Context", "Rating", "Comment", "RFID"].map(h => <th key={h} style={th}>{h}</th>)}</tr>
                 </thead>
                 <tbody>
-                  {feedback
-                    .filter(f => {
-                      const q = searchQuery.toLowerCase();
-                      const matchesSearch = f.context.toLowerCase().includes(q) || (f.comment && f.comment.toLowerCase().includes(q)) || (f.rfid && f.rfid.toLowerCase().includes(q));
-                      const matchesFilter = filterValue === "all" || (filterValue === "1" ? f.rating <= 2 : f.rating.toString() === filterValue);
-                      const matchesDate = !dateFilter || f.created_at.startsWith(dateFilter);
-                      return matchesSearch && matchesFilter && matchesDate;
-                    })
-                    .map(f => (
+                  {feedback.map(f => (
                       <tr key={f.id} style={{ borderBottom: "1px solid #2a2a2a" }}>
                         <td style={td}>{formatPhTime(f.created_at)}</td>
                         <td style={td}>{f.context}</td>
@@ -1472,10 +1514,15 @@ const adjustCredits = async (mode: "add" | "remove") => {
                         <td style={{ ...td, fontFamily: "monospace", fontSize: 11, color: "#666" }}>{f.rfid ?? "anon"}</td>
                       </tr>
                     ))}
-                  {feedback.length === 0 && <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "#555" }}>No feedback yet</td></tr>}
+                  {feedback.length === 0 && <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "#555" }}>{hasFilter ? "No matching feedback" : "No feedback yet"}</td></tr>}
                 </tbody>
               </table>
             </div>
+            {feedback.length >= limits.feedback && (
+  <button onClick={() => showMore("feedback")} style={{ ...ghostBtn, flex: "unset", alignSelf: "center", padding: "8px 20px", fontSize: 12 }}>
+    Show more
+  </button>
+)}
           </div>
         )}
          {/* 5. SENSORS (any admin) */}
@@ -1505,19 +1552,25 @@ const adjustCredits = async (mode: "add" | "remove") => {
                   </div>
                 );
               })()}
-                            {sensorStatus && (() => {
-                const box = (color: string, children: React.ReactNode) => (
-                  <div style={{ fontSize: 12, color, marginTop: 8, maxWidth: 560, lineHeight: 1.5 }}>{children}</div>
-                );
-                if (sensorStatus.overall === "offline") {
-                  return box("#888", "Readings below are the last known values and may be outdated. Check the USB cable and that ARDUINO_PORT in the backend .env matches the port. The kiosk retries every 5 seconds.");
-                }
-                if (sensorStatus.overall === "unresponsive") {
-                  return box("#888", "The Arduino is connected but not answering the heartbeat. Press its reset button or re-plug the USB cable.");
-                }
-                const now = Date.now();
-                const faulted = SENSOR_ORDER.filter(id => sensorStatus.sensors[id]?.state === "fault");
-                const silent = IDLE_MONITORED.filter(id => {
+                          {sensorStatus && (() => {
+ const box = (color: string, children: React.ReactNode) => (
+  <div style={{ display: "flex", justifyContent: "center", width: "100%", marginTop: 8 }}>
+    <div style={{ fontSize: 12, color, maxWidth: 560, lineHeight: 1.5, textAlign: "center" }}>{children}</div>
+  </div>
+);
+  const printerFault = sensorStatus.sensors.printer?.state === "fault";
+  const printerBox = printerFault
+    ? box("#e74c3c", <><strong>Printer: </strong>{sensorStatus.sensors.printer.lastDetail} {SENSOR_HINTS.printer}</>)
+    : null;
+  if (sensorStatus.overall === "offline") {
+    return <>{box("#888", "Readings below are the last known values and may be outdated. Check the USB cable and that ARDUINO_PORT in the backend .env matches the port. The kiosk retries every 5 seconds.")}{printerBox}</>;
+  }
+  if (sensorStatus.overall === "unresponsive") {
+    return <>{box("#888", "The Arduino is connected but not answering the heartbeat. Press its reset button or re-plug the USB cable.")}{printerBox}</>;
+  }
+               const now = Date.now();
+               const faulted = SENSOR_ORDER.filter(id => sensorStatus.sensors[id]?.state === "fault");
+               const silent = IDLE_MONITORED.filter(id => {
                   const h = sensorStatus.sensors[id];
                   return h && h.state !== "fault" && h.lastSeen && now - h.lastSeen > 60000;
                 });
@@ -1534,13 +1587,13 @@ const adjustCredits = async (mode: "add" | "remove") => {
             </div>
             
 
-                       {/* Per-sensor last activity */}
+                       {/* Per-component last activity */}
             <div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#888", marginBottom: 8 }}>SENSOR ACTIVITY</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#888", marginBottom: 8 }}>COMPONENTS ACTIVITY</div>
+              <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 10 }}>
                 {sensorStatus && SENSOR_ORDER.filter(id => sensorStatus.sensors[id]).map(id => {
                   const h = sensorStatus.sensors[id];
-                                   const down = sensorStatus.overall !== "online";
+                  const down = id !== "printer" && sensorStatus.overall !== "online";
                   const faulted = !down && h.state === "fault";
                   const secs = h.lastSeen ? Math.max(0, Math.round((Date.now() - h.lastSeen) / 1000)) : null;
                   const ago = formatAgo(secs);
@@ -1551,7 +1604,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                   const binColor = down || pct === null ? "#666" : pct >= 95 ? "#e74c3c" : pct >= 80 ? "#f0a500" : "#2ecc71";
                   return (
                     <div key={id} title={SENSOR_HINTS[id]} onClick={() => setOpenHint(openHint === id ? null : id)} style={{
-                      ...adminStatCard, textAlign: "left", cursor: "pointer",
+                      ...adminStatCard, textAlign: "left", cursor: "pointer", width: "calc(25% - 7.5px)",
                       ...(faulted ? { border: "1px solid #e74c3c" } : {}),
                       ...(silent ? { border: "1px solid #f0a500" } : {}),
                       ...(down ? { opacity: openHint === id ? 0.9 : 0.5 } : {}),
@@ -1828,14 +1881,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                   <tr>{["Username", "Gmail Notification", "Role", "Created", "Actions"].map(h => <th key={h} style={th}>{h}</th>)}</tr>
                 </thead>
                 <tbody>
-                  {admins
-                    .filter(a => {
-                      const q = searchQuery.toLowerCase();
-                      const matchesSearch = a.username.toLowerCase().includes(q) || (a.email && a.email.toLowerCase().includes(q));
-                      const matchesFilter = filterValue === "all" || a.role === filterValue;
-                      return matchesSearch && matchesFilter;
-                    })
-                    .map(a => (
+                  {admins.map(a => (
                       <tr key={a.id} style={{ borderBottom: "1px solid #2a2a2a" }}>
                         <td style={td}>{a.username}</td>
                         <td style={{ ...td, color: a.email ? "#38bdf8" : "#666" }}>{a.email || "Not set"}</td>
@@ -1853,10 +1899,15 @@ const adjustCredits = async (mode: "add" | "remove") => {
                         </td>
                       </tr>
                     ))}
-                  {admins.length === 0 && <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "#555" }}>No admins yet</td></tr>}
+                  {admins.length === 0 && <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "#555" }}>{hasFilter ? "No matching admins" : "No admins yet"}</td></tr>}
                 </tbody>
               </table>
             </div>
+            {admins.length >= limits.admins && (
+  <button onClick={() => showMore("admins")} style={{ ...ghostBtn, flex: "unset", alignSelf: "center", padding: "8px 20px", fontSize: 12 }}>
+    Show more
+  </button>
+)}
           </div>
         )}
       </div>  

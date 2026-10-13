@@ -571,13 +571,40 @@ router.post("/api/admin/restore", requireSuperAdmin, (req: any, res) => {
 });
 
 // ── User Management Routes ────────────────────────────────────────────────
-router.get("/api/admin/users", (_req, res) => {
-  res.json(db.prepare(`
-    SELECT rfid, surname, firstname, middlename, studentId, credits, created_at, 
-    TRIM(COALESCE(firstname, '') || ' ' || CASE WHEN middlename = '' THEN '' ELSE middlename || ' ' END || COALESCE(surname, '')) as name 
-    FROM users 
-    ORDER BY created_at DESC
-  `).all());
+function pageLimit(req: any, def = 100) {
+  const n = parseInt(String(req.query.limit ?? ""), 10);
+  return Number.isFinite(n) && n > 0 ? Math.min(n, 50000) : def;
+}
+
+function listParams(req: any) {
+  const q = String(req.query.q ?? "").trim().slice(0, 100);
+  const rawDate = String(req.query.date ?? "");
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? rawDate : "";
+  const filter = String(req.query.filter ?? "all").slice(0, 40);
+  const like = "%" + q.replace(/[\\%_]/g, "\\$&") + "%";
+  return { q, like, date, filter, limit: pageLimit(req) };
+}
+
+router.get("/api/admin/users", (req, res) => {
+  try {
+    const { q, like, filter, limit } = listParams(req);
+    const order =
+      filter === "credits_asc"  ? "credits ASC, created_at DESC" :
+      filter === "credits_desc" ? "credits DESC, created_at DESC" :
+      "created_at DESC";
+    res.json(db.prepare(`
+      SELECT * FROM (
+        SELECT rfid, surname, firstname, middlename, studentId, credits, created_at,
+        TRIM(COALESCE(firstname, '') || ' ' || CASE WHEN middlename = '' THEN '' ELSE middlename || ' ' END || COALESCE(surname, '')) AS name
+        FROM users
+      )
+      WHERE (@q = '' OR name LIKE @like ESCAPE '\\' OR studentId LIKE @like ESCAPE '\\' OR rfid LIKE @like ESCAPE '\\')
+      ORDER BY ${order}
+      LIMIT @limit
+    `).all({ q, like, limit }));
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch users: " + err.message });
+  }
 });
 
 router.patch("/api/admin/user/:rfid", requireAuth, (req: any, res) => {
@@ -639,50 +666,91 @@ router.delete("/api/admin/user/:rfid", requireSuperAdmin, (req: any, res) => {
   res.json({ success: true });
 });
 
-router.get("/api/admin/transactions", (_req, res) => {
-  res.json(db.prepare(`
-    SELECT t.*, 
-    TRIM(COALESCE(u.firstname, '') || ' ' || CASE WHEN u.middlename = '' THEN '' ELSE u.middlename || ' ' END || COALESCE(u.surname, '')) as user_name 
-    FROM transactions t 
-    LEFT JOIN users u ON t.rfid = u.rfid 
-    WHERE t.type != 'register'
-    ORDER BY t.created_at DESC 
-    LIMIT 1000
-  `).all());
-});
-
-// Automatically blend registration transactions into the Activity Logs feed
-router.get("/api/admin/activity-logs", requireAuth, (_req, res) => {
+router.get("/api/admin/transactions", (req, res) => {
   try {
-    const logs = db.prepare("SELECT id, admin_user, action, details, created_at FROM activity_logs").all() as any[];
+    res.json(db.prepare(`
+      SELECT * FROM (
+        SELECT t.*,
+        TRIM(COALESCE(u.firstname, '') || ' ' || CASE WHEN u.middlename = '' THEN '' ELSE u.middlename || ' ' END || COALESCE(u.surname, '')) AS user_name
+        FROM transactions t
+        LEFT JOIN users u ON t.rfid = u.rfid
+        WHERE t.type != 'register'
+      )
+      WHERE (@q = '' OR user_name LIKE @like ESCAPE '\\' OR rfid LIKE @like ESCAPE '\\' OR type LIKE @like ESCAPE '\\'
+             OR size LIKE @like ESCAPE '\\' OR reject_reason LIKE @like ESCAPE '\\')
+        AND (@filter = 'all'
+             OR (@filter = 'deposit' AND type = 'deposit')
+             OR (@filter = 'print' AND type = 'print')
+             OR (@filter = 'transfer' AND type IN ('transfer_out', 'transfer_in'))
+             OR (@filter = 'reject' AND type = 'reject'))
+        AND (@date = '' OR date(created_at, '+8 hours') = @date)
+      ORDER BY created_at DESC, id DESC
+      LIMIT @limit
+    `).all(listParams(req)));
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch transactions: " + err.message });
+  }
+});
+// Automatically blend registration transactions into the Activity Logs feed
+router.get("/api/admin/activity-logs", requireAuth, (req, res) => {
+  try {
+    const { q, like, date, limit } = listParams(req);
+    const actions = String(req.query.actions ?? "")
+      .split(",").map(a => a.trim()).filter(a => /^[A-Z_]+$/.test(a)).slice(0, 30);
+    const params: Record<string, any> = { q, like, date, limit };
+    actions.forEach((a, i) => { params["a" + i] = a; });
+    const actionClause = actions.length
+      ? `AND action IN (${actions.map((_, i) => "@a" + i).join(", ")})`
+      : "";
 
-    const registrations = db.prepare(`
-      SELECT 
-        t.id + 100000 AS id, 
-        'System Kiosk' AS admin_user, 
-        'REGISTER_USER' AS action, 
-        COALESCE(t.size, 'New user registered (RFID: ' || t.rfid || ')') AS details, 
-        t.created_at 
-      FROM transactions t 
-      WHERE t.type = 'register'
-    `).all() as any[];
+    const rows = db.prepare(`
+      SELECT * FROM (
+        SELECT id, admin_user, action, details, created_at FROM activity_logs
+        UNION ALL
+        SELECT t.id + 100000, 'System Kiosk', 'REGISTER_USER',
+               COALESCE(t.size, 'New user registered (RFID: ' || t.rfid || ')'), t.created_at
+        FROM transactions t WHERE t.type = 'register'
+      )
+      WHERE (@q = '' OR admin_user LIKE @like ESCAPE '\\' OR action LIKE @like ESCAPE '\\' OR details LIKE @like ESCAPE '\\')
+        AND (@date = '' OR date(created_at, '+8 hours') = @date)
+        ${actionClause}
+      ORDER BY created_at DESC, id DESC
+      LIMIT @limit
+    `).all(params);
 
-    const combined = [...logs, ...registrations].sort((a, b) => 
-      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-    );
-
-    res.json(combined.slice(0, 1000));
+    res.json(rows);
   } catch (err: any) {
     res.status(500).json({ error: "Failed to fetch activity logs: " + err.message });
   }
 });
-
-router.get("/api/admin/feedback", (_req, res) => {
-  res.json(db.prepare("SELECT * FROM feedback ORDER BY created_at DESC LIMIT 100").all());
+router.get("/api/admin/feedback", (req, res) => {
+  try {
+    res.json(db.prepare(`
+      SELECT * FROM feedback
+      WHERE (@q = '' OR context LIKE @like ESCAPE '\\' OR comment LIKE @like ESCAPE '\\' OR rfid LIKE @like ESCAPE '\\')
+        AND (@filter = 'all' OR (@filter = '1' AND rating <= 2) OR CAST(rating AS TEXT) = @filter)
+        AND (@date = '' OR date(created_at, '+8 hours') = @date)
+      ORDER BY created_at DESC, id DESC
+      LIMIT @limit
+    `).all(listParams(req)));
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch feedback: " + err.message });
+  }
 });
 
-router.get("/api/admin/admins", requireSuperAdmin, (_req, res) => {
-  res.json(db.prepare("SELECT id, username, email, role, password_changed, created_at FROM admins ORDER BY created_at ASC").all());
+router.get("/api/admin/admins", requireSuperAdmin, (req, res) => {
+  try {
+    const { q, like, filter, limit } = listParams(req);
+    res.json(db.prepare(`
+      SELECT id, username, email, role, password_changed, created_at FROM admins
+      WHERE (@q = '' OR username LIKE @like ESCAPE '\\' OR email LIKE @like ESCAPE '\\')
+        AND (@filter = 'all' OR role = @filter)
+      ORDER BY created_at ASC, id ASC
+      LIMIT @limit
+    `).all({ q, like, filter, limit }));
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch admins: " + err.message });
+  }
 });
 
 router.post("/api/admin/admins", requireSuperAdmin, async (req: any, res) => {
