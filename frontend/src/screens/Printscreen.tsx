@@ -80,6 +80,11 @@ export default function PrintScreen({ onBack }: Props) {
   const autoPrintFiredRef = useRef(false);
   const printingRef = useRef(false);
 
+  const aliveRef = useRef(true);
+  useEffect(() => () => { aliveRef.current = false; }, []);
+  const [printHint, setPrintHint] = useState("");
+  const [printCancelled, setPrintCancelled] = useState(false);
+
   useEffect(() => {
     fetch(`${API}/api/mode`, {
       method: "POST",
@@ -211,6 +216,40 @@ export default function PrintScreen({ onBack }: Props) {
     }
   };
 
+    const waitForPrint = async (jobId: string | null) => {
+    setPrintHint("");
+    setPrintCancelled(false);
+    const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+    const finish = async () => {
+      await sleep(3000);                       // let the last page come out
+      if (!aliveRef.current) return;
+      setStep("success");
+      setShowFeedback(true);
+    };
+    if (!jobId) { await sleep(6000); return finish(); }   // job id unknown: short wait
+
+    const started = Date.now();
+    for (;;) {
+      await sleep(2000);
+      if (!aliveRef.current) return;
+      try {
+        const r = await fetch(`${API}/api/print/job/${jobId}`);
+        const j = await r.json();
+        if (j.state === "done") return finish();
+        if (j.state === "cancelled") {
+          setPrintCancelled(true);
+          setErrorMsg("The print did not finish and was cancelled. Credits were refunded for card users. Check the paper size, then start Print again. Guests: please ask staff.");
+          setStep("error");
+          return;
+        }
+        if (j.state === "attention") setPrintHint(j.reason + " Check that the paper size selected matches the paper loaded in the printer.");
+        else if (Date.now() - started > 20000) setPrintHint("Taking longer than usual. Check that the paper size selected matches the paper loaded in the printer, or ask staff.");
+        else setPrintHint("");
+      } catch {}
+      if (Date.now() - started > 6 * 60 * 1000) return finish();   // safety stop
+    }
+  };
+
   const handlePrint = async () => {
        if (!sessionId || printingRef.current) return;   // ignore a second tap while one print is running
     printingRef.current = true;
@@ -236,8 +275,7 @@ export default function PrintScreen({ onBack }: Props) {
           layout: supportsLandscape ? layout : "portrait",
           output: data.output ?? "",
         });
-        setStep("success");
-        setShowFeedback(true);
+        await waitForPrint(data.jobId ?? null);
       } else {
         setErrorMsg(data.error ?? "Print failed.");
         setStep("error");
@@ -334,16 +372,20 @@ export default function PrintScreen({ onBack }: Props) {
                 <span style={{ ...infoVal, maxWidth: 190, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{fileName}</span>
               </div>
 
-              <div style={{ ...infoRow, alignItems: "center" }}>
-                <span style={infoLabel}>Pages</span>
+                            <div style={{ ...infoRow, alignItems: "center" }}>
+                <span style={infoLabel}>Paper size</span>
                 <select
-                  value={pageRange === "all" ? "all" : "custom"}
-                  onChange={e => setPageRange(e.target.value === "all" ? "all" : "custom")}
+                  value={paperSize}
+                  onChange={e => setPaperSize(e.target.value as PaperSize)}
                   style={selectStyle}
                 >
-                  <option value="all">All ({pageCount})</option>
-                  <option value="custom">Custom range</option>
+                  {PAPER_SIZES.map(ps => (
+                    <option key={ps.value} value={ps.value}>{ps.label} ({ps.sub})</option>
+                  ))}
                 </select>
+              </div>
+              <div style={{ fontSize: 11, lineHeight: 1.4, color: "#f0a500", background: "#2a2418", border: "1px solid #5a4a1a", borderRadius: 6, padding: "6px 8px" }}>
+                Select the same paper size that is loaded in the printer. A different size will not print.
               </div>
 
               {pageRange !== "all" && (
@@ -482,17 +524,25 @@ export default function PrintScreen({ onBack }: Props) {
           </div>
         )}
 
-        {step === "printing" && (
-          <div style={{ textAlign: "center" }}>
+                {step === "printing" && (
+          <div style={{ textAlign: "center", maxWidth: 420 }}>
             <div style={{ fontSize: 56, marginBottom: 16 }}><PrintIcon size={56} color="#f0a500" /></div>
-            <div style={{ fontSize: 20, color: "#f0a500", fontWeight: 600 }}>Sending to printer...</div>
-            <div style={{ fontSize: 14, color: "#666", marginTop: 8 }}>Please wait</div>
+            <div style={{ fontSize: 20, color: "#f0a500", fontWeight: 600 }}>Printing your document...</div>
+            <div style={{ fontSize: 14, color: "#aaa", marginTop: 8 }}>Please wait. Do not leave the kiosk.</div>
+            {printHint && (
+              <div style={{ fontSize: 12, color: "#f0a500", background: "#2a2418", border: "1px solid #5a4a1a", borderRadius: 8, padding: "8px 12px", marginTop: 16 }}>
+                {printHint}
+              </div>
+            )}
           </div>
         )}
 
         {step === "success" && (
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 22, color: "#2ecc71", fontWeight: 700, marginBottom: 8 }}>Print job sent!</div>
+            <div style={{ fontSize: 22, color: "#2ecc71", fontWeight: 700, marginBottom: 8 }}>Print complete!</div>
+                        <div style={{ fontSize: 12, color: "#aaa", marginBottom: 14 }}>
+              Collect your pages from the printer. If nothing printed, the selected paper size may not match the paper in the printer. Please ask staff.
+            </div>
             {invoice && (
               <div style={{ fontSize: 14, color: "#aaa", marginBottom: 24, textAlign: "left", maxWidth: 480, margin: "0 auto 24px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
@@ -511,7 +561,9 @@ export default function PrintScreen({ onBack }: Props) {
           <div style={{ textAlign: "center" }}>
             <div style={{ fontSize: 20, color: "#e74c3c", fontWeight: 700, marginBottom: 8 }}>Print failed</div>
             <div style={{ fontSize: 14, color: "#aaa", marginBottom: 24 }}>{errorMsg}</div>
-            <button onClick={() => setStep("confirm")} style={primaryBtn(true)}>Back to job summary</button>
+            <button onClick={() => (printCancelled ? onBack() : setStep("confirm"))} style={primaryBtn(true)}>
+              {printCancelled ? "Back to home" : "Back to job summary"}
+            </button>
           </div>
         )}
       </div>

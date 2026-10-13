@@ -22,6 +22,7 @@ import { registerBusyCheck } from "./kioskState";
 import { markVerified } from "./pinAuth";
 import { startAlertWatch } from "./alerts";
 import { startBackupSchedule } from "./driveBackup";
+import { startEmailBackupSchedule } from "./emailBackup";
 import { registerTofCalSender, handleTofCalLine } from "./tofCal";
 import { EventEmitter } from "events";
 
@@ -477,6 +478,7 @@ function sendToArduino(cmd: string) {
 startHealthWatch();
 registerTofCalSender(() => sendToArduino("TOFCAL"));
 startAlertWatch();
+startEmailBackupSchedule();
 startBackupSchedule();
 connectSerial();
 

@@ -116,6 +116,7 @@ function logSystem(action: string, details: string) {
 }
 
 let lastPrinterMail = 0;
+const cancelledJobs = new Set<string>();   // jobs cancelled because they never finished
 
 function printerReady(): Promise<{ ok: boolean; reason?: string }> {
   return new Promise(resolve => {
@@ -149,6 +150,26 @@ function watchJob(jobId: string, limitMs: number, onStuck: () => void) {
     });
   }, 5000);
 }
+
+router.get("/api/print/job/:jobId", (req, res) => {
+  const jobId = req.params.jobId;
+  if (!/^[A-Za-z0-9_.-]+$/.test(jobId)) return res.status(400).json({ error: "Invalid job." });
+  exec("lpstat -o", { timeout: 5000 }, (_e, out) => {
+    const queued = String(out || "").split("\n").some(l => l.startsWith(jobId + " "));
+    if (!queued) return res.json({ state: cancelledJobs.has(jobId) ? "cancelled" : "done" });
+    exec("lpstat -l -p", { timeout: 5000 }, (_e2, pout) => {
+      const text = String(pout || "");
+      const alerts = (text.match(/Alerts:\s*(.*)/i)?.[1] ?? "").toLowerCase();
+      if (/media|paper|tray|door-open|jam|marker-supply-empty/.test(alerts)) {
+        return res.json({ state: "attention", reason: "The printer needs attention: " + alerts.trim() + "." });
+      }
+      if (/disabled|stopped|paused|waiting for printer to become available|unable to open/i.test(text)) {
+        return res.json({ state: "attention", reason: "The printer is not ready." });
+      }
+      res.json({ state: "printing" });
+    });
+  });
+});
 
 router.post("/api/count-pages", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file." });
@@ -411,6 +432,7 @@ router.post("/api/print/qr-confirm/:sessionId", async (req, res) => {
     const jobId = (stdout.match(/request id is (\S+)/) ?? [])[1];
     if (jobId && /^[A-Za-z0-9_.-]+$/.test(jobId)) {
       watchJob(jobId, 120000 + selectedPages.length * 20000, () => {
+                cancelledJobs.add(jobId);
         if (!isGuest) {
           db.prepare("UPDATE users SET credits = credits + ? WHERE rfid = ?").run(totalCost, rfid);
           db.prepare("INSERT INTO transactions (rfid, type, size, credits) VALUES (?, 'adjust', 'Print refunded: the job did not finish', ?)").run(rfid, totalCost);
@@ -429,6 +451,7 @@ router.post("/api/print/qr-confirm/:sessionId", async (req, res) => {
     res.json({
       success: true,
       output: stdout.trim(),
+      jobId: jobId ?? null,
       creditsCharged: totalCost,
       pagesPrinted: selectedPages.length,
       colorMode,

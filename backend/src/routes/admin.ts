@@ -6,6 +6,7 @@ import { db } from "../db";
 import { exec } from "child_process";
 import { sendMail } from "../alerts";
 import { runDriveBackup, getBackupStatus, getBackupSettings, saveBackupSettings } from "../driveBackup";
+import { runEmailBackup, getEmailBackupStatus, getEmailBackupSettings, saveEmailBackupSettings } from "../emailBackup";
 import { isKioskBusy } from "../kioskState";
 import { getSensorStatus } from "../sensorHealth";
 import { getCalibration, updateCalibration, invalidateCalibrationCache } from "../sensorConfig";
@@ -320,7 +321,7 @@ router.get("/api/admin/sensors/config", (_req, res) => {
   res.json(getCalibration());
 });
 
-router.patch("/api/admin/sensors/config", (req: any, res) => {
+router.patch("/api/admin/sensors/config", requireSuperAdmin, (req: any, res) => {
   try {
     const updated = updateCalibration(req.body);
     logActivity(req.admin.username, "UPDATE_SENSOR_CONFIG", "Updated sensor calibration thresholds");
@@ -329,7 +330,7 @@ router.patch("/api/admin/sensors/config", (req: any, res) => {
     res.status(400).json({ error: err.message || "Invalid calibration data." });
   }
 });
-router.post("/api/admin/sensors/tof-calibrate", async (req: any, res) => {
+router.post("/api/admin/sensors/tof-calibrate", requireSuperAdmin, async (req: any, res) => {
   if (isKioskBusy()) return res.status(409).json({ error: "A deposit is in progress. Try again when the kiosk is idle." });
   const r = await requestTofCal();
   if (!r.ok) return res.status(500).json({ error: "No reading from the Arduino. Check the ToF sensor and that the kiosk is idle." });
@@ -376,6 +377,31 @@ router.patch("/api/admin/backup/settings", requireSuperAdmin, (req: any, res) =>
     const enabled = req.body.enabled !== false;
     saveBackupSettings(time, enabled);
     logActivity(req.admin.username, "UPDATE_BACKUP_SCHEDULE", enabled ? "Automatic Drive backup set to " + time + " (Manila time)" : "Automatic Drive backup turned off");
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+router.post("/api/admin/backup/email", requireSuperAdmin, async (req: any, res) => {
+  const r = await runEmailBackup(req.admin.username);
+  if (r.ok) res.json({ success: true, message: r.message }); else res.status(500).json({ error: r.message });
+});
+
+router.get("/api/admin/backup/email-status", requireSuperAdmin, (_req, res) => {
+  res.json(getEmailBackupStatus());
+});
+
+router.get("/api/admin/backup/email-settings", requireSuperAdmin, (_req, res) => {
+  res.json(getEmailBackupSettings());
+});
+
+router.patch("/api/admin/backup/email-settings", requireSuperAdmin, (req: any, res) => {
+  try {
+    const time = String(req.body.time ?? "");
+    const enabled = req.body.enabled !== false;
+    saveEmailBackupSettings(time, enabled);
+    logActivity(req.admin.username, "UPDATE_BACKUP_SCHEDULE", enabled ? "Automatic email backup set to " + time + " (Manila time)" : "Automatic email backup turned off");
     res.json({ success: true });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
@@ -603,7 +629,7 @@ router.post("/api/admin/user/:rfid/credits", (req: any, res) => {
   res.json({ success: true, credits: updated.credits });
 });
 
-router.delete("/api/admin/user/:rfid", requireAuth, (req: any, res) => {
+router.delete("/api/admin/user/:rfid", requireSuperAdmin, (req: any, res) => {
   const { rfid } = req.params;
   const user = db.prepare("SELECT * FROM users WHERE rfid = ?").get(rfid);
   if (!user) return res.status(404).json({ error: "User not found." });

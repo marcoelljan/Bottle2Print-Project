@@ -104,7 +104,7 @@ const LOG_GROUPS: Record<string, { label: string; actions: string[] }> = {
   users:    { label: "Users",               actions: ["REGISTER_USER", "EDIT_USER", "DELETE_USER", "ADJUST_CREDITS"] },
   admins:   { label: "Admin Accounts",      actions: ["CREATE_ADMIN", "EDIT_ADMIN", "DELETE_ADMIN"] },
   security: { label: "Password & Security", actions: ["REQUEST_PASSWORD_RESET", "RESET_PASSWORD"] },
-  backup:   { label: "Backup & Restore",    actions: ["EXPORT_BACKUP", "RESTORE_BACKUP"] },
+  backup:   { label: "Backup & Restore",    actions: ["EXPORT_BACKUP", "RESTORE_BACKUP","EMAIL_BACKUP", "EMAIL_BACKUP_FAILED"] },
   system:   { label: "System Control",      actions: ["SHUTDOWN_PI", "REBOOT_PI", "UPDATE_SENSOR_CONFIG"] },
   hardware: { label: "Hardware Alerts",     actions: ["SENSOR_FAULT", "SENSOR_RECOVERED", "ARDUINO_OFFLINE", "ARDUINO_UNRESPONSIVE", "ARDUINO_ONLINE", "PRINTER_NOT_READY", "PRINT_FAILED", "PRINT_REFUND"] },
 };
@@ -738,6 +738,44 @@ const adjustCredits = async (mode: "add" | "remove") => {
       alert(res.ok && data.success ? "Backup schedule saved." : "Failed: " + (data.error ?? "unknown error"));
     } catch { alert("Could not reach backend."); }
   };
+
+      const [emailBusy, setEmailBusy] = useState(false);
+  const [emailStatus, setEmailStatus] = useState<{ action: string; details: string; created_at: string } | null>(null);
+  const [emailTime, setEmailTime] = useState("17:00");
+  const [emailEnabled, setEmailEnabled] = useState(true);
+
+  const loadEmailBackup = async () => {
+    try {
+      const r = await authFetch(`/api/admin/backup/email-status`);
+      if (r.ok) setEmailStatus(await r.json());
+      const s = await authFetch(`/api/admin/backup/email-settings`);
+      if (s.ok) { const cfg = await s.json(); setEmailTime(cfg.time); setEmailEnabled(cfg.enabled); }
+    } catch {}
+  };
+  useEffect(() => { if (showMaintenanceModal) loadEmailBackup(); }, [showMaintenanceModal]);
+
+  const emailBackupNow = async () => {
+    setEmailBusy(true);
+    try {
+      const res = await authFetch(`/api/admin/backup/email`, { method: "POST" });
+      const data = await res.json();
+      alert(res.ok && data.success ? data.message : "Backup failed: " + (data.error ?? "unknown error"));
+    } catch { alert("Could not reach backend."); }
+    setEmailBusy(false);
+    loadEmailBackup();
+  };
+
+  const saveEmailSchedule = async () => {
+    try {
+      const res = await authFetch(`/api/admin/backup/email-settings`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ time: emailTime, enabled: emailEnabled }),
+      });
+      const data = await res.json();
+      alert(res.ok && data.success ? "Backup schedule saved." : "Failed: " + (data.error ?? "unknown error"));
+    } catch { alert("Could not reach backend."); }
+  };  
 
    const sendTestEmail = async () => {
     try {
@@ -1562,8 +1600,8 @@ const adjustCredits = async (mode: "add" | "remove") => {
             {calForm && (
               <div>
                 <div style={{ fontSize: 13, fontWeight: 700, color: "#888", marginBottom: 8 }}>CALIBRATION</div>
-                <div style={{ background: "#242424", border: "1px solid #333", borderRadius: 10, padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
-
+                               <div style={{ background: "#242424", border: "1px solid #333", borderRadius: 10, padding: 16, display: "flex", flexDirection: "column", gap: 14, ...(isSuperAdmin ? {} : { pointerEvents: "none" as const, opacity: 0.6 }) }}>
+                  {!isSuperAdmin && <div style={{ fontSize: 12, color: "#f0a500" }}>View only. Only a super-admin can change calibration.</div>}
                   <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
                     <label style={calLabel}>ToF sanity min (mm)
                       <input type="number" value={calForm.tofMinMm} onChange={e => setCalForm({ ...calForm, tofMinMm: +e.target.value })} style={inputStyle} />
@@ -1902,7 +1940,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
       {/* System Maintenance Modal */}
       {showMaintenanceModal && isSuperAdmin && (
         <div style={overlay}>
-          <div style={{ ...modal, maxWidth: 400 }}>
+                    <div style={{ ...modal, maxWidth: 480, maxHeight: "90vh", overflowY: "auto" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
               <WrenchIcon size={20} color="#f0a500" />
               <span style={{ fontSize: 17, fontWeight: 700, color: "#fff" }}>System Maintenance</span>
@@ -1984,6 +2022,25 @@ const adjustCredits = async (mode: "add" | "remove") => {
               <button onClick={saveBackupSchedule} style={{ ...actionBtn("#1e293b", "#38bdf8"), padding: "8px 14px", fontSize: 12 }}>Save</button>
             </div>
             <div style={{ fontSize: 10, color: "#555", marginTop: 4, textAlign: "left" }}>Manila time. A backup already made today counts, so a new time applies from tomorrow.</div>
+                   
+                            <button onClick={emailBackupNow} disabled={emailBusy} style={{ ...confirmBtn, background: "#2a2a2a", color: "#f0a500", border: "1px solid #3a3a3a", width: "100%", marginTop: 12, opacity: emailBusy ? 0.5 : 1 }}>
+              {emailBusy ? "Sending..." : "Email backup now"}
+            </button>
+            <div style={{ fontSize: 11, marginTop: 6, textAlign: "left", color: emailStatus?.action === "EMAIL_BACKUP" ? "#2ecc71" : emailStatus ? "#e74c3c" : "#666" }}>
+              {emailStatus
+                ? (emailStatus.action === "EMAIL_BACKUP" ? "Last emailed backup: " : "Last attempt failed: ") + formatPhTime(emailStatus.created_at) + (emailStatus.action === "EMAIL_BACKUP" ? "" : " · " + emailStatus.details)
+                : "No emailed backup yet."}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+              <label style={{ fontSize: 12, color: "#888", display: "flex", alignItems: "center", gap: 6 }}>
+                <input type="checkbox" checked={emailEnabled} onChange={e => setEmailEnabled(e.target.checked)} style={{ accentColor: "#f0a500" }} />
+                Automatic daily email backup at
+              </label>
+              <input type="time" value={emailTime} onChange={e => setEmailTime(e.target.value)} disabled={!emailEnabled}
+                style={{ ...inputStyle, width: 120, padding: "6px 8px", fontSize: 13, colorScheme: "dark", opacity: emailEnabled ? 1 : 0.5 }} />
+              <button onClick={saveEmailSchedule} style={{ ...actionBtn("#1e293b", "#38bdf8"), padding: "8px 14px", fontSize: 12 }}>Save</button>
+            </div>
+            <div style={{ fontSize: 10, color: "#555", marginTop: 4, textAlign: "left" }}>Manila time. Sent to every admin with a Gmail saved, plus the kiosk Gmail. A backup already made today counts, so a new time applies from tomorrow.</div>
 
                         <button onClick={sendTestEmail} style={{ ...confirmBtn, background: "#2a2a2a", color: "#38bdf8", border: "1px solid #3a3a3a", width: "100%", marginTop: 12 }}>
               Send test email
