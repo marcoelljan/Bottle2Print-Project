@@ -82,6 +82,9 @@ const formatAgo = (secs: number | null) => {
   if (h < 24) return `${h}h ${m % 60}m ago`;
   return `${Math.floor(h / 24)}d ${h % 24}h ago`;
 };
+
+const CONTROL_LABELS: Record<string, string> = { deposit: "Deposit bottles", print: "Print", balance: "Check balance", register: "Register RFID", rfid: "Card reader (RFID)" };
+
 const SENSOR_ORDER = ["rfid", "ir", "capacitive", "tof", "loadcell", "servo", "photoelectric", "ultrasonic", "printer"];
 const SENSOR_LABELS: Record<string, string> = {
   rfid: "RFID", ir: "IR intake", capacitive: "Capacitive", tof: "ToF height", loadcell: "Load cell",
@@ -108,6 +111,7 @@ const LOG_GROUPS: Record<string, { label: string; actions: string[] }> = {
   backup:   { label: "Backup & Restore",    actions: ["EXPORT_BACKUP", "RESTORE_BACKUP","EMAIL_BACKUP", "EMAIL_BACKUP_FAILED"] },
   system:   { label: "System Control",      actions: ["SHUTDOWN_PI", "REBOOT_PI", "UPDATE_SENSOR_CONFIG"] },
   hardware: { label: "Hardware Alerts",     actions: ["SENSOR_FAULT", "SENSOR_RECOVERED", "ARDUINO_OFFLINE", "ARDUINO_UNRESPONSIVE", "ARDUINO_ONLINE", "PRINTER_NOT_READY", "PRINT_FAILED", "PRINT_REFUND"] },
+  kiosk:    { label: "Kiosk Controls",      actions: ["KIOSK_PART_DISABLED", "KIOSK_PART_ENABLED"] },
 };
 
 const formatPhTime = (dateString: string) => {
@@ -235,6 +239,8 @@ export default function AdminScreen({}: Props) {
   const [backupEnabled, setBackupEnabled] = useState(true);
   const [driveStatus, setDriveStatus] = useState<{ action: string; details: string; created_at: string } | null>(null);
   const [openHint, setOpenHint] = useState<string | null>(null);
+  const [controls, setControls] = useState<any[]>([]);
+  const [ctlMsg, setCtlMsg] = useState<Record<string, string>>({});
   const [badges, setBadges] = useState<Record<Tab, number>>(ZERO_BADGES);
   const seenSensorRef = useRef<number | null>(null);
   const tabRef = useRef<Tab>("logs");
@@ -838,6 +844,30 @@ const adjustCredits = async (mode: "add" | "remove") => {
       });
       const data = await res.json();
       alert(res.ok && data.success ? "Backup schedule saved." : "Failed: " + (data.error ?? "unknown error"));
+    } catch { alert("Could not reach backend."); }
+  };  
+
+     const loadControls = async () => {
+    try { const r = await authFetch(`/api/admin/kiosk-controls`); if (r.ok) setControls(await r.json()); } catch {}
+  };
+  useEffect(() => {
+    if (!verified || !passwordChanged || tab !== "sensors") return;
+    loadControls();
+    const id = setInterval(loadControls, 10000);
+    return () => clearInterval(id);
+  }, [verified, passwordChanged, tab]);
+
+  const toggleControl = async (feature: string, disabled: boolean) => {
+    const message = ctlMsg[feature] ?? controls.find(c => c.feature === feature)?.message ?? "";
+    if (!window.confirm((disabled ? "Switch OFF " : "Switch ON ") + (CONTROL_LABELS[feature] ?? feature) + "?" + (disabled ? "\nUsers will see: " + message : ""))) return;
+    try {
+      const res = await authFetch(`/api/admin/kiosk-controls/${feature}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ disabled, message }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) setControls(data.controls); else alert(data.error ?? "Failed.");
     } catch { alert("Could not reach backend."); }
   };  
 
@@ -1528,6 +1558,38 @@ const adjustCredits = async (mode: "add" | "remove") => {
          {/* 5. SENSORS (any admin) */}
         {!loading && tab === "sensors" && (
           <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 16, height: "100%", overflowY: "auto" }}>
+            
+
+                        {/* Kiosk controls */}
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#888", marginBottom: 8 }}>KIOSK CONTROLS</div>
+              <div style={{ background: "#242424", border: "1px solid #333", borderRadius: 10, padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+                {controls.map(c => (
+                  <div key={c.feature} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    <div style={{ width: 120, fontSize: 13, fontWeight: 700, color: "#fff" }}>{CONTROL_LABELS[c.feature] ?? c.feature}</div>
+                    <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 10px", borderRadius: 20, background: c.disabled ? "#3a1a1a" : "#1a3a2a", color: c.disabled ? "#e74c3c" : "#2ecc71" }}>
+                      {c.disabled ? "OFF" : "ON"}
+                    </span>
+                    <input value={ctlMsg[c.feature] ?? c.message} onChange={e => setCtlMsg({ ...ctlMsg, [c.feature]: e.target.value })}
+                      maxLength={140} placeholder="Message shown to users"
+                      style={{ ...inputStyle, flex: 1, minWidth: 220, padding: "7px 10px", fontSize: 12 }} />
+                    {c.disabled && (
+                      <button onClick={() => toggleControl(c.feature, true)} style={{ ...actionBtn("#2a2a2a", "#38bdf8"), padding: "7px 12px" }}>Update message</button>
+                    )}
+                    <button onClick={() => toggleControl(c.feature, !c.disabled)}
+                      style={{ ...actionBtn(c.disabled ? "#1a3a2a" : "#3a1a1a", c.disabled ? "#2ecc71" : "#e74c3c"), padding: "7px 14px" }}>
+                      {c.disabled ? "Switch ON" : "Switch OFF"}
+                    </button>
+                    {c.disabled && c.changedBy && (
+                      <div style={{ width: "100%", fontSize: 10, color: "#888" }}>Off since {formatPhTime(c.changedAt)} by {c.changedBy}</div>
+                    )}
+                  </div>
+                ))}
+               </div>
+              <div style={{ fontSize: 11, color: "#666", marginTop: 6 }}>
+                Switching a part off greys it out for new users and refuses new requests. A user already depositing finishes the current bottle.
+              </div>
+            </div>
 
             {/* Live connection status */}
             <div>

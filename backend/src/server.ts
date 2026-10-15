@@ -15,7 +15,7 @@ import printRoutes from "./routes/print";
 import adminRoutes from "./routes/admin";
 import feedbackRoutes from "./routes/feedback";
 import { setWss } from "./wsHub";
-import { isGuestActive, startGuestSession, addGuestCredit, getGuestCredits } from "./guestSession";
+import { isGuestActive, startGuestSession, addGuestCredit, getGuestCredits, touchGuest } from "./guestSession";
 import { recordSensorActivity, setSerialStatus, recordHeartbeat, startHealthWatch, recordBinLevel, recordIdleStatus, recordStorageResult } from "./sensorHealth";
 import { getCalibration, classifyBottle, tofInUse } from "./sensorConfig";
 import { registerBusyCheck } from "./kioskState";
@@ -23,8 +23,10 @@ import { markVerified } from "./pinAuth";
 import { startAlertWatch } from "./alerts";
 import { startBackupSchedule } from "./driveBackup";
 import { startEmailBackupSchedule } from "./emailBackup";
+import { getControls, isDisabled, disabledMessage } from "./kioskControls";
 import { registerTofCalSender, handleTofCalLine } from "./tofCal";
 import { EventEmitter } from "events";
+
 
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 4000;
@@ -37,6 +39,7 @@ const PIN_LOCKOUT_MS = 20 * 1000; // 20 second cooldown
 
 function logReject(stage: string, reason: string, heightMm: number | null, weightG: number | null) {
   if (!session.rfid) return;
+    if (session.rfid === "GUEST") touchGuest();
   try {
     db.prepare(`
       INSERT INTO transactions (rfid, type, height_mm, weight_g, co2_saved_g, credits, reject_stage, reject_reason)
@@ -181,6 +184,8 @@ function setStep(id: string, status: StepStatus, detail?: string) {
 function continueDepositLoop() {
   const stillActive = session.rfid === "GUEST" ? isGuestActive() : rfidDepositSessionActive;
 
+    if (isDisabled("deposit")) depositStopRequested = true;   // switched off: finish after the current bottle
+
   if (depositStopRequested || !stillActive) {
     finalizeDepositSession();
     return;
@@ -224,6 +229,10 @@ app.post("/api/mode", (req, res) => {
 });
 
 app.get("/api/mode", (_req, res) => res.json({ mode: kioskMode }));
+
+app.get("/api/kiosk/controls", (_req, res) => {
+  res.json(getControls().map(c => ({ feature: c.feature, disabled: c.disabled, message: c.message })));
+});
 
 app.post("/api/session/verify-pin", async (req, res) => {
   const { pin } = req.body;
@@ -290,6 +299,10 @@ app.post("/api/session/verify-pin", async (req, res) => {
   }
     markVerified(rfid);
 
+      if (kioskMode === "deposit" && isDisabled("deposit")) {
+    return res.status(503).json({ error: disabledMessage("deposit") });
+  }
+
   if (kioskMode === "deposit") {
     rfidDepositSessionActive = true;
     depositStopRequested = false;
@@ -321,6 +334,10 @@ app.post("/api/session/update-pin", async (req, res) => {
       WHERE rfid = ?
     `).run(newHash, session.rfid);
      if (session.rfid) markVerified(session.rfid);
+
+         if (kioskMode === "deposit" && isDisabled("deposit")) {
+      return res.status(503).json({ error: disabledMessage("deposit") });
+    }
 
     if (kioskMode === "deposit") {
       rfidDepositSessionActive = true;
@@ -358,6 +375,7 @@ app.post("/api/deposit/finish", (_req, res) => {
 });
 
 app.post("/api/deposit/guest-start", (_req, res) => {
+    if (isDisabled("deposit")) return res.status(503).json({ error: disabledMessage("deposit") });
   depositStopRequested = false;
   startGuestSession();
 
@@ -379,6 +397,7 @@ app.post("/api/deposit/guest-start", (_req, res) => {
 });
 
 app.get("/api/deposit/guest-status", (_req, res) => {
+  touchGuest();
   res.json({ active: isGuestActive(), credits: getGuestCredits() });
 });
 
@@ -498,6 +517,7 @@ lineBus.on("data", (raw: string) => {
 
   if (line.startsWith("RFID:")) {
     recordSensorActivity("rfid");
+    if (isDisabled("rfid")) return;   // card reader switched off: ignore taps
     const rfid = line.split(":")[1];
     const newSessionId = Date.now();
     session.rfid      = null;

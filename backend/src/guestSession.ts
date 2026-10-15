@@ -9,7 +9,7 @@ interface GuestSessionState {
   lastActivity: number;
 }
 
-const GUEST_TIMEOUT_MS = 10 * 60 * 1000; // 10 min idle = treat as abandoned
+const GUEST_TIMEOUT_MS = 10 * 60 * 1000; // 15 min idle = treat as abandoned
 
 let guestSession: GuestSessionState = { active: false, credits: 0, lastActivity: 0 };
 
@@ -25,7 +25,7 @@ export function isGuestActive(): boolean {
 export function startGuestSession() {
   // Reuse an already-active session (e.g. guest returning from Print's
   // deposit sub-flow) instead of wiping banked credits.
-  if (guestSession.active) {
+  if (isGuestActive()) {
     guestSession.lastActivity = Date.now();
     return;
   }
@@ -38,12 +38,17 @@ export function addGuestCredit(amount: number = 1) {
 }
 
 export function getGuestCredits(): number {
-  return guestSession.credits;
+  return isGuestActive() ? guestSession.credits : 0;
 }
 
 export function deductGuestCredits(amount: number) {
   guestSession.credits = Math.max(0, guestSession.credits - amount);
   guestSession.lastActivity = Date.now();
+}
+
+// Keep the session alive while the guest is clearly still at the kiosk
+export function touchGuest() {
+  if (isGuestActive()) guestSession.lastActivity = Date.now();
 }
 
 export function endGuestSession() {

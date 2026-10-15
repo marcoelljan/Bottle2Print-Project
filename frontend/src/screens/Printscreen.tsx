@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import BackButton from "../components/BackButton";
 import RFIDprompt from "../components/RFIDprompt";
 import FeedBackModal from "../components/FeedbackModal";
+import useKioskControls from "../components/useKioskControls";
 import { API, WS_URL } from "../config";
 import {
   CheckCircleIcon,
@@ -85,6 +86,14 @@ export default function PrintScreen({ onBack }: Props) {
   const [printHint, setPrintHint] = useState("");
   const [printCancelled, setPrintCancelled] = useState(false);
 
+  // Kiosk controls: { feature: message } for every part the admin switched off
+  const off = useKioskControls();
+  const printOff = "print" in off;
+  const depositOff = "deposit" in off;
+  const rfidBlocked = printOff || "rfid" in off;
+  const rfidReason = off.print || off.rfid || "Temporarily unavailable.";
+  const [guestCredits, setGuestCredits] = useState(0);
+
   useEffect(() => {
     fetch(`${API}/api/mode`, {
       method: "POST",
@@ -149,6 +158,18 @@ export default function PrintScreen({ onBack }: Props) {
     })();
   }, []);
 
+  // Read the guest's banked credits whenever the job summary opens
+  useEffect(() => {
+    if (step !== "confirm") return;
+    (async () => {
+      try {
+        const r = await fetch(`${API}/api/deposit/guest-status`);
+        const s = await r.json();
+        setGuestCredits(s.credits ?? 0);
+      } catch {}
+    })();
+  }, [step]);
+
   const handleIdentified = async (u: User) => {
     setUser(u);
     try {
@@ -204,6 +225,14 @@ export default function PrintScreen({ onBack }: Props) {
   const rangeIsValid = selectedPageCount !== null;
   const creditsPerPage = colorMode === "color" ? 8 : 3;
   const creditCost = (selectedPageCount ?? 0) * creditsPerPage;
+
+  // Non-RFID is blocked if Print is off, or if Deposit is off and the guest's banked credits can't cover the job
+  const guestCanCover = guestCredits >= creditCost && creditCost > 0;
+  const guestBlocked = printOff || (depositOff && !guestCanCover);
+  const guestReason = printOff
+    ? (off.print || "Temporarily unavailable.")
+    : (off.deposit || "Temporarily unavailable.") +
+      (guestCredits > 0 ? ` (You have ${guestCredits} credits, this job needs ${creditCost}.)` : "");
 
   const startGuestDeposit = async () => {
     autoPrintFiredRef.current = false;
@@ -425,19 +454,6 @@ export default function PrintScreen({ onBack }: Props) {
               )}
 
               <div style={{ ...infoRow, alignItems: "center" }}>
-                <span style={infoLabel}>Paper size</span>
-                <select
-                  value={paperSize}
-                  onChange={e => setPaperSize(e.target.value as PaperSize)}
-                  style={selectStyle}
-                >
-                  {PAPER_SIZES.map(ps => (
-                    <option key={ps.value} value={ps.value}>{ps.label} ({ps.sub})</option>
-                  ))}
-                </select>
-              </div>
-
-              <div style={{ ...infoRow, alignItems: "center" }}>
                 <span style={infoLabel}>Print type</span>
                 <select
                   value={colorMode}
@@ -454,10 +470,18 @@ export default function PrintScreen({ onBack }: Props) {
                 <span style={{ fontSize: 15, color: "#e74c3c", fontWeight: 700 }}>{creditCost} credits</span>
               </div>
 
+              {(rfidBlocked || guestBlocked) && (
+                <div style={{ fontSize: 11, lineHeight: 1.4, color: "#f0a500", background: "#2a2418", border: "1px solid #5a4a1a", borderRadius: 6, padding: "6px 8px" }}>
+                  {rfidBlocked && <div><strong>RFID &amp; PIN:</strong> {rfidReason}</div>}
+                  {guestBlocked && <div><strong>Non-RFID (Bottles):</strong> {guestReason}</div>}
+                </div>
+              )}
+
               <div style={{ display: "flex", gap: 8 }}>
                 <button onClick={() => setStep("qr")} style={ghostBtn}>Cancel</button>
-                 <button
+                <button
                   onClick={async () => {
+                    if (rfidBlocked) return;
                     try {
                       await fetch(`${API}/api/mode`, {
                         method: "POST",
@@ -467,17 +491,23 @@ export default function PrintScreen({ onBack }: Props) {
                     } catch {}
                     setStep("rfid");
                   }}
-                  style={primaryBtn(rangeIsValid)}
-                  disabled={!rangeIsValid}
+                  style={primaryBtn(rangeIsValid && !rfidBlocked)}
+                  disabled={!rangeIsValid || rfidBlocked}
+                  title={rfidBlocked ? rfidReason : undefined}
                 >
-                  RFID &amp; PIN
+                  {rfidBlocked ? "RFID & PIN (unavailable)" : "RFID & PIN"}
                 </button>
                 <button
-                  onClick={handleGuestChoice}
-                  style={{ ...primaryBtn(rangeIsValid), background: rangeIsValid ? "#2ecc71" : "#333", color: rangeIsValid ? "#000" : "#555" }}
-                  disabled={!rangeIsValid}
+                  onClick={() => { if (!guestBlocked) handleGuestChoice(); }}
+                  style={{
+                    ...primaryBtn(rangeIsValid && !guestBlocked),
+                    background: rangeIsValid && !guestBlocked ? "#2ecc71" : "#333",
+                    color: rangeIsValid && !guestBlocked ? "#000" : "#555",
+                  }}
+                  disabled={!rangeIsValid || guestBlocked}
+                  title={guestBlocked ? guestReason : undefined}
                 >
-                  Non-RFID (Bottles)
+                  {guestBlocked ? "Non-RFID (unavailable)" : "Non-RFID (Bottles)"}
                 </button>
               </div>
             </div>

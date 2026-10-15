@@ -10,6 +10,7 @@ import { createSession, getSession, updateSession, deleteSession } from "../qrSe
 import { getGuestCredits, deductGuestCredits, endGuestSession, addGuestCredit } from "../guestSession";
 import { broadcast } from "../wsHub";
 import { isVerified } from "../pinAuth";
+import { isDisabled, disabledMessage } from "../kioskControls";
 import { sendMail } from "../alerts";
 import { printerReady } from "../sensorHealth";
 
@@ -172,6 +173,7 @@ router.post("/api/count-pages", upload.single("file"), async (req, res) => {
 });
 
 router.post("/api/print/qr-session", async (req, res) => {
+    if (isDisabled("print")) return res.status(503).json({ error: disabledMessage("print") });
   const { rfid } = req.body;
   if (rfid && rfid !== "UNASSIGNED" && !mayUseCard(rfid)) {
     return res.status(403).json({ error: "Card not verified. Enter your PIN at the kiosk first." });
@@ -186,6 +188,7 @@ router.post("/api/print/qr-attach/:sessionId", async (req, res) => {
   const { sessionId } = req.params;
   const { rfid } = req.body;
   if (!rfid) return res.status(400).json({ error: "Missing rfid." });
+  if (rfid !== "GUEST" && isDisabled("rfid")) return res.status(503).json({ error: disabledMessage("rfid") });
   if (rfid && rfid !== "UNASSIGNED" && !mayUseCard(rfid)) {
     return res.status(403).json({ error: "Card not verified. Enter your PIN at the kiosk first." });
   }
@@ -319,12 +322,14 @@ router.get("/api/print/preview/:sessionId", (req, res) => {
 });
 
 router.post("/api/print/qr-confirm/:sessionId", async (req, res) => {
+    if (isDisabled("print")) return res.status(503).json({ error: disabledMessage("print") });
   const session = getSession(req.params.sessionId);
   if (!session || !session.pdfPath) {
     return res.status(404).json({ error: "No uploaded file found for this session." });
   }
 
   const { rfid, filePath, pdfPath, pageCount } = session;
+    if (rfid !== "GUEST" && isDisabled("rfid")) return res.status(503).json({ error: disabledMessage("rfid") });
   const totalPages = pageCount ?? 1;
   if (!mayUseCard(rfid)) {
     return res.status(403).json({ error: "Card not verified. Enter your PIN at the kiosk first." });

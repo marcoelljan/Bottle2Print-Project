@@ -7,6 +7,8 @@ import { exec } from "child_process";
 import { sendMail } from "../alerts";
 import { runDriveBackup, getBackupStatus, getBackupSettings, saveBackupSettings } from "../driveBackup";
 import { runEmailBackup, getEmailBackupStatus, getEmailBackupSettings, saveEmailBackupSettings } from "../emailBackup";
+import { getControls, setControl, FEATURES } from "../kioskControls";
+import type { Feature } from "../kioskControls";
 import { isKioskBusy } from "../kioskState";
 import { getSensorStatus } from "../sensorHealth";
 import { getCalibration, updateCalibration, invalidateCalibrationCache } from "../sensorConfig";
@@ -406,6 +408,21 @@ router.patch("/api/admin/backup/email-settings", requireSuperAdmin, (req: any, r
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
+});
+
+router.get("/api/admin/kiosk-controls", (_req, res) => {
+  res.json(getControls());
+});
+
+router.patch("/api/admin/kiosk-controls/:feature", (req: any, res) => {
+  const feature = req.params.feature as Feature;
+  if (!FEATURES.includes(feature)) return res.status(400).json({ error: "Unknown feature." });
+  const disabled = req.body.disabled === true;
+  const message = String(req.body.message ?? "");
+  setControl(feature, disabled, message, req.admin.username);
+  logActivity(req.admin.username, disabled ? "KIOSK_PART_DISABLED" : "KIOSK_PART_ENABLED",
+    feature + (disabled ? " switched off. Message: " + (message.trim() || "(default)") : " switched back on"));
+  res.json({ success: true, controls: getControls() });
 });
 
 // ── Power Control (Super Admin Only) ───────────────────────────────────────

@@ -2,6 +2,7 @@ import { Router } from "express";
 import bcrypt from "bcrypt";
 import { db } from "../db";
 import { markVerified } from "../pinAuth";
+import { firstDisabled } from "../kioskControls";
 
 const router = Router();
 
@@ -49,6 +50,8 @@ router.get("/api/user/:rfid/transactions", (req, res) => {
 
 // ── Registration — supports separated name columns & 6-digit PIN hashing ──
 router.post("/api/user/register", async (req, res) => {
+      const regBlocked = firstDisabled("register", "rfid");
+  if (regBlocked) return res.status(503).json({ error: regBlocked });
   const { rfid, surname, firstname, middlename, studentId, pin } = req.body;
   if (!rfid || !surname || !firstname || !studentId) {
     return res.status(400).json({ error: "Missing required fields." });
@@ -247,6 +250,8 @@ async function verifyUserPin(rfid: string, pin: unknown): Promise<{ ok: true } |
 
 // ── Credit Transfer Route (PIN checked here, not by the browser) ───────────
 router.post("/api/user/transfer", async (req, res) => {
+      const balBlocked = firstDisabled("balance", "rfid");
+  if (balBlocked) return res.status(503).json({ error: balBlocked });
   const { senderRfid, recipientRfid, amount, pin } = req.body;
   const transferAmount = parseInt(amount);
 

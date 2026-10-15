@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import type { Screen } from "../App";
 import FeedbackModal from "../components/FeedbackModal";
@@ -9,6 +9,7 @@ import {
   AccountCircleIcon,
   ChatIcon,
 } from "../components/KioskIcons";
+import { API } from "../config";
 
 interface Props { onNavigate: (s: Screen) => void; }
 
@@ -29,6 +30,23 @@ const TILES: Tile[] = [
 
 export default function HomeScreen({ onNavigate }: Props) {
   const [showFeedback, setShowFeedback] = useState(false);
+    const [off, setOff] = useState<Record<string, string>>({});   // feature -> message while switched off
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const r = await fetch(`${API}/api/kiosk/controls`);
+        if (!r.ok) return;
+        const next: Record<string, string> = {};
+        for (const c of await r.json()) if (c.disabled) next[c.feature] = c.message;
+        setOff(next);
+      } catch {}
+    };
+    load();
+    const id = setInterval(load, 10000);
+    return () => clearInterval(id);
+  }, []);
+    // Check Balance and Register need a card, so the card-reader switch greys them out too
+  const why = (s: string) => off[s] ?? (s === "balance" || s === "register" ? off["rfid"] : undefined);
   return (
     <div style={{
       width: "100%", height: "100%", flex: 1, background: "#1a1a1a",
@@ -68,14 +86,14 @@ export default function HomeScreen({ onNavigate }: Props) {
           {TILES.map(t => (
             <button
               key={t.screen as string}
-              onClick={() => onNavigate(t.screen)}
+              onClick={() => { if (!why(t.screen as string)) onNavigate(t.screen); }}
               style={{
                 background: "#242424",
                 border: "1px solid #333",
                 borderRadius: 12,
                 padding: "22px 24px",
                 display: "flex", alignItems: "center", gap: 18,
-                cursor: "pointer", textAlign: "left",
+                cursor: why(t.screen as string) ? "not-allowed" : "pointer", opacity: why(t.screen as string) ? 0.45 : 1, textAlign: "left",
                 transition: "border-color 0.2s, background 0.2s",
               }}
               onMouseEnter={e => {
@@ -97,7 +115,7 @@ export default function HomeScreen({ onNavigate }: Props) {
               </div>
               <div>
                 <div style={{ fontSize: 16, fontWeight: 700, color: "#fff", marginBottom: 3 }}>{t.label}</div>
-                <div style={{ fontSize: 12, color: "#666" }}>{t.sub}</div>
+                <div style={{ fontSize: 12, color: why(t.screen as string) ? "#e0a030" : "#666" }}>{why(t.screen as string) ?? t.sub}</div>
               </div>
             </button>
           ))}

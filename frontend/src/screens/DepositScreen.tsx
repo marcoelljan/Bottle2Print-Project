@@ -17,6 +17,7 @@ import {
   SignalIcon,
   XCircleIcon,
 } from "../components/KioskIcons";
+import useKioskControls from "../components/useKioskControls";
 
 interface Props { onBack: () => void; onNavigate: (s: Screen, params?: any) => void; }
 interface User { rfid: string; name: string; studentId: string; credits: number; }
@@ -57,6 +58,12 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
   const feedbackShownRef = useRef(false);
 
   const step = session?.step ?? "idle";
+  const off = useKioskControls();
+  const depositOff = "deposit" in off;
+  const rfidBlocked = depositOff || "rfid" in off;
+  const rfidReason = off.deposit ?? off.rfid ?? "";
+  const guestReason = off.deposit ?? "";
+  const tileOff: React.CSSProperties = { opacity: 0.45, cursor: "not-allowed" };
 
   useEffect(() => {
     fetch(`${API}/api/mode`, {
@@ -153,21 +160,33 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
           <div style={{ textAlign: "center", width: "100%", maxWidth: 760 }}>
             <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 18 }}>How would you like to deposit?</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, maxWidth: 640, margin: "0 auto" }}>
-              <button onClick={() => setShowRfidPrompt(true)} style={choiceTileStyle}>
-                <div style={tileIconWrap}><CreditCardIcon size={28} color="#f0a500" /></div>
-                <div style={{ textAlign: "left" }}>
-                  <div style={tileLabel}>Tap RFID Card</div>
-                  <div style={tileSub}>Use your registered card</div>
-                </div>
-              </button>
+            <button
+  onClick={() => { if (!rfidBlocked) setShowRfidPrompt(true); }}
+  disabled={rfidBlocked}
+  style={{ ...choiceTileStyle, ...(rfidBlocked ? tileOff : {}) }}
+>
+  <div style={tileIconWrap}><CreditCardIcon size={28} color={rfidBlocked ? "#666" : "#f0a500"} /></div>
+  <div style={{ textAlign: "left" }}>
+    <div style={{ ...tileLabel, color: rfidBlocked ? "#888" : "#fff" }}>Tap RFID Card</div>
+    <div style={{ ...tileSub, color: rfidBlocked ? "#f0a500" : "#666" }}>
+      {rfidBlocked ? rfidReason : "Use your registered card"}
+    </div>
+  </div>
+</button>
 
-              <button onClick={handleGuestStart} style={choiceTileStyle}>
-                <div style={tileIconWrap}><CreditCardOffIcon size={28} color="#f0a500" /></div>
-                <div style={{ textAlign: "left" }}>
-                  <div style={tileLabel}>Continue as Guest</div>
-                  <div style={tileSub}>No RFID card needed</div>
-                </div>
-              </button>
+<button
+  onClick={() => { if (!depositOff) handleGuestStart(); }}
+  disabled={depositOff}
+  style={{ ...choiceTileStyle, ...(depositOff ? tileOff : {}) }}
+>
+  <div style={tileIconWrap}><CreditCardOffIcon size={28} color={depositOff ? "#666" : "#f0a500"} /></div>
+  <div style={{ textAlign: "left" }}>
+    <div style={{ ...tileLabel, color: depositOff ? "#888" : "#fff" }}>Continue as Guest</div>
+    <div style={{ ...tileSub, color: depositOff ? "#f0a500" : "#666" }}>
+      {depositOff ? guestReason : "No RFID card needed"}
+    </div>
+  </div>
+</button>
             </div>
           </div>
         )}
