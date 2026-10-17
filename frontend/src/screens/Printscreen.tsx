@@ -40,6 +40,12 @@ const STATUS_COLOR: Record<SensorStepStatus, string> = {
   pending: "#3a3a3a", running: "#f0a500", pass: "#2ecc71", fail: "#e74c3c",
 };
 
+const PAPER_DIMS: Record<PaperSize, { w: number; h: number }> = {
+  Letter: { w: 8.5,  h: 11 },
+  A4:     { w: 8.27, h: 11.69 },
+  Long:   { w: 8.5,  h: 13 },
+};
+
 const PAPER_SIZES: { value: PaperSize; label: string; sub: string }[] = [
   { value: "Letter", label: "Short", sub: "8.5 × 11 in" },
   { value: "A4",     label: "A4",    sub: "8.27 × 11.69 in" },
@@ -377,19 +383,61 @@ export default function PrintScreen({ onBack }: Props) {
               <div style={{ fontSize: 13, color: "#aaa", marginBottom: 6, fontWeight: 600 }}>
                 {selectedPageCount ?? 0} sheet{(selectedPageCount ?? 0) === 1 ? "" : "s"} of paper preview
               </div>
-              {sessionId && (
-                <div style={previewFrameWrapper}>
-                  <iframe
-                    src={`${API}/api/print/preview/${sessionId}#toolbar=0&navpanes=0`}
-                    title="Print preview"
-                    style={{
-                      width: "100%",
-                      height: "100%",
-                      border: "none",
-                    }}
-                  />
-                </div>
-              )}
+              {sessionId && (() => {
+  const isLandscape = supportsLandscape && layout === "landscape";
+  const dims = PAPER_DIMS[paperSize];
+  const pw = isLandscape ? dims.h : dims.w;   // paper width as shown
+  const ph = isLandscape ? dims.w : dims.h;   // paper height as shown
+  const ratio = pw / ph;
+
+  return (
+    // Outer box: takes all free space in the preview pane
+    <div
+      style={{
+        flex: 1,
+        minHeight: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        containerType: "size",
+      } as React.CSSProperties}
+    >
+      {/* Paper: the biggest box with the paper's shape that fits the outer box */}
+      <div
+        style={{
+          width: `min(100cqw, ${100 * ratio}cqh)`,
+          height: `min(100cqh, ${100 / ratio}cqw)`,
+          background: "#fff",
+          borderRadius: 4,
+          overflow: "hidden",
+          border: "1px solid #333",
+          position: "relative",
+          containerType: "size",
+          filter: colorMode === "bw" ? "grayscale(1)" : "none",
+          transition: "filter 0.25s",
+        } as React.CSSProperties}
+      >
+        <iframe
+          src={`${API}/api/print/preview/${sessionId}#toolbar=0&navpanes=0`}
+          title="Print preview"
+          style={
+            isLandscape
+              ? {
+                  position: "absolute",
+                  top: "50%",
+                  left: "50%",
+                  width: "100cqh",
+                  height: "100cqw",
+                  transform: "translate(-50%, -50%) rotate(90deg)",
+                  border: "none",
+                }
+              : { width: "100%", height: "100%", border: "none" }
+          }
+        />
+      </div>
+    </div>
+  );
+})()}
             </div>
 
             {/* Right Column: Touch-Optimized Settings Pane */}
@@ -630,9 +678,6 @@ const splitContainer: React.CSSProperties = {
 };
 const previewPane: React.CSSProperties = {
   flex: 1.2, display: "flex", flexDirection: "column", background: "#242424", border: "1px solid #333", borderRadius: 14, padding: 16, boxSizing: "border-box", overflow: "hidden",
-};
-const previewFrameWrapper: React.CSSProperties = {
-  flex: 1, background: "#fff", borderRadius: 8, overflow: "hidden", border: "1px solid #333", width: "100%",
 };
 const settingsPane: React.CSSProperties = {
   flex: 1, background: "#242424", border: "1px solid #333", borderRadius: 14, padding: "16px 20px", display: "flex", flexDirection: "column", justifyContent: "space-between", height: "100%", boxSizing: "border-box",
