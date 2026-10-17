@@ -899,7 +899,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
 
   if (!verified) {
     return (
-      <div style={fullScreen}>
+      <div style={fullScreen} data-nokb>
         <div style={{ ...headerBar, paddingLeft: 24 }}>
           <LockPersonIcon size={22} color="#f0a500" />
           <div>
@@ -1092,7 +1092,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
 
   if (!passwordChanged) {
     return (
-      <div style={fullScreen}>
+      <div style={fullScreen} data-nokb>
         <div style={{ ...headerBar, paddingLeft: 24 }}>
           <LockPersonIcon size={22} color="#f0a500" />
           <div>
@@ -1150,7 +1150,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
   }
 
   return (
-    <div style={fullScreen}>
+    <div style={fullScreen} data-nokb>
       <input
         type="file"
         id="restoreFileInput"

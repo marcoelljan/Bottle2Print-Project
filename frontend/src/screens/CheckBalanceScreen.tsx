@@ -330,6 +330,7 @@ export default function CheckBalanceScreen({ onBack }: Props) {
                 ) : (
                   <div style={{ position: "relative" }}>
                     <input
+                      data-kb="digits"
                       type="text"
                       value={searchQuery}
                       onChange={e => setSearchQuery(e.target.value)}

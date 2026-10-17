@@ -287,6 +287,7 @@ export default function RegisterScreen({ onBack }: Props) {
             <div style={fieldGroup}>
               <label style={fieldLabel}>Student ID Layout (e.g. 123-12345M) <span style={{ color: "#e74c3c" }}>*</span></label>
               <input
+                data-kb="digits"
                 value={studentId}
                 onChange={e => setStudentId(e.target.value.toUpperCase())}
                 placeholder="123-12345M"
