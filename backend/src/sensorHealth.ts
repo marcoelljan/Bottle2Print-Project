@@ -150,8 +150,9 @@ export function getSensorStatus() {
     overall = responsive ? "online" : "unresponsive";
   }
 
-  return {
+    return {
     overall,
+    serverNow: Date.now(),
     serial: {
       status: serialStatus,
       error: serialErrorMsg,

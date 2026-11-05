@@ -52,6 +52,7 @@ interface AdminAccount {
 
 interface SensorStatus {
   overall: "online" | "unresponsive" | "offline";
+  serverNow?: number;
   serial: {
     status: "connected" | "disconnected" | "error";
     error: string | null;
@@ -1657,7 +1658,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                   const h = sensorStatus.sensors[id];
                   const down = id !== "printer" && sensorStatus.overall !== "online";
                   const faulted = !down && h.state === "fault";
-                  const secs = h.lastSeen ? Math.max(0, Math.round((Date.now() - h.lastSeen) / 1000)) : null;
+                  const secs = h.lastSeen ? Math.max(0, Math.round(((sensorStatus.serverNow ?? Date.now()) - h.lastSeen) / 1000)) : null;
                   const ago = formatAgo(secs);
                   const monitored = IDLE_MONITORED.includes(id);
                   const active = !down && monitored && !faulted && secs !== null && secs <= 20;
