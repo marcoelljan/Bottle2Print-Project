@@ -100,6 +100,8 @@ const SENSOR_IN_PROGRESS_STEPS = ["ir", "capacitive", "tof", "loadcell", "storin
 
 // A bottle is only paid for after the photoelectric confirms it reached storage
 interface PendingDeposit { rfid: string; label: string; credits: number; heightMm: number | null; weightG: number; co2Grams: number; }
+const STORAGE_CONFIRMATION_FAILURE =
+  "Bottle passed validation, but we couldn't confirm it reached storage. No credits were added. It may be stuck—please contact staff for help.";
 let pendingDeposit: PendingDeposit | null = null;
 let pendingTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -725,8 +727,8 @@ lineBus.on("data", (raw: string) => {
       if (pendingTimer) clearTimeout(pendingTimer);
       pendingTimer = setTimeout(() => {          // safety net: Arduino never answered
         if (!pendingDeposit) return;
-        failPendingDeposit("The gate did not confirm the bottle. No credits were given.");
-        setTimeout(() => continueDepositLoop(), 3000);
+        failPendingDeposit(STORAGE_CONFIRMATION_FAILURE);
+        setTimeout(() => continueDepositLoop(), 6000);
       }, 10000);
     }
     return;
@@ -748,8 +750,8 @@ lineBus.on("data", (raw: string) => {
   if (line === "CONFIRM:JAM_DETECTED") {
     recordSensorActivity("photoelectric", "No bottle seen after gate moved", "fault");
     recordStorageResult(false);
-    failPendingDeposit("The bottle did not reach the storage bin. No credits were given.");
-    setTimeout(() => continueDepositLoop(), 3000);
+    failPendingDeposit(STORAGE_CONFIRMATION_FAILURE);
+    setTimeout(() => continueDepositLoop(), 6000);
     return;
   }
   if (line.startsWith("BIN:FILL_LEVEL_CM:")) {

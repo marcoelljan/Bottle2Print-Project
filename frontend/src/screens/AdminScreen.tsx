@@ -96,7 +96,7 @@ const IDLE_MONITORED = ["rfid", "tof", "loadcell", "ultrasonic", "printer"];
 const SENSOR_HINTS: Record<string, string> = {
   rfid: "Check the RFID reader wiring (SS pin 10, RST pin 9) and its 3.3V power.",
   ir: "Check the IR intake sensor signal wire (pin 2) and power.",
-  capacitive: "Check the capacitive sensor signal wire (pin 4) and power.",
+  capacitive: "Check the capacitive sensor signal wire (Analog 1) and power.",
   tof: "Check the ToF sensor SDA/SCL wires and power. The mount must not be blocked.",
   loadcell: "Check the load cell and HX711 wiring (DOUT pin 3, SCK pin 5) and that nothing is pressing on the platform.",
   servo: "Gate moved but no bottle was seen. Check the servo signal wire (pin 8) and its power first, then the photoelectric sensor (pin 6) and any jam in the chute.",
