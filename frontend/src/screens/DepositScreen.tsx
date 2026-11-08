@@ -81,27 +81,31 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
   }, []);
 
   useEffect(() => {
-    const ws = new WebSocket(WS_URL);
-    let shouldClose = false;
+    let ws: WebSocket | null = null;
+    let closed = false;
+    let retry: ReturnType<typeof setTimeout> | null = null;
 
-    ws.onopen  = () => {
-      setConnected(true);
-      if (shouldClose) ws.close();
+    const connect = () => {
+      ws = new WebSocket(WS_URL);
+      ws.onopen = () => setConnected(true);
+      ws.onclose = () => {
+        setConnected(false);
+        if (!closed) retry = setTimeout(connect, 2000);
+      };
+      ws.onerror = () => ws?.close();
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === "state") setSession(msg.session);
+        } catch {}
+      };
     };
-    ws.onclose = () => setConnected(false);
-    ws.onmessage = (e) => {
-      try {
-        const msg = JSON.parse(e.data);
-        if (msg.type === "state") setSession(msg.session);
-      } catch {}
-    };
+    connect();
 
     return () => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.close();
-      } else if (ws.readyState === WebSocket.CONNECTING) {
-        shouldClose = true;
-      }
+      closed = true;
+      if (retry) clearTimeout(retry);
+      ws?.close();
     };
   }, []);
 
@@ -131,7 +135,7 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
     onNavigate("print", { credits: session?.credits || 0, isGuest: true });
   };
 
-  const inValidation = ["ir", "capacitive", "tof", "loadcell"].includes(step);
+  const inValidation = ["ir", "capacitive", "tof", "loadcell", "storing"].includes(step);
 
     const wasActiveRef = useRef(false);
   useEffect(() => {
@@ -149,7 +153,12 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
           <div style={headerTitle}>Deposit Bottles</div>
           <div style={headerSub}>Earn print credits</div>
         </div>
-        <div style={{ marginLeft: "auto", fontSize: 11, color: connected ? "#2ecc71" : "#e74c3c", display: "flex", alignItems: "center", gap: 5 }}>
+        {guestMode && (
+          <div style={guestBadge}>
+            Your credits: <strong style={{ color: "#f0a500", fontSize: 16 }}>{session?.credits ?? 0}</strong>
+          </div>
+        )}
+        <div style={{ marginLeft: guestMode ? 14 : "auto", fontSize: 11, color: connected ? "#2ecc71" : "#e74c3c", display: "flex", alignItems: "center", gap: 5 }}>
           <span style={{ width: 6, height: 6, borderRadius: "50%", background: connected ? "#2ecc71" : "#e74c3c", display: "inline-block" }} />
           {connected ? "Online" : "Offline"}
         </div>
@@ -215,7 +224,16 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
         {inValidation && (
           <div style={{ width: "100%", maxWidth: 560 }}>
             <div style={{ textAlign: "center", marginBottom: 20 }}>
-              <div style={{ fontSize: 16, color: "#f0a500", fontWeight: 700 }}>Validating bottle...</div>
+              <div style={{ fontSize: 16, color: "#f0a500", fontWeight: 700 }}>
+                {step === "storing"
+                  ? "Moving bottle to storage..."
+                  : step === "ir" && session?.steps[0]?.status === "pending"
+                    ? "Ready for a bottle"
+                    : "Validating bottle..."}
+              </div>
+              {step === "ir" && session?.steps[0]?.status === "pending" && (
+                <div style={{ fontSize: 13, color: "#aaa", marginTop: 6 }}>Insert your bottle now.</div>
+              )}
             </div>
             {session?.steps.map(s => (
               <div key={s.id} style={{
@@ -238,14 +256,11 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
                 </div>
               </div>
             ))}
-          </div>
-        )}
-
-                {step === "storing" && (
-          <div style={{ textAlign: "center" }}>
-            <div style={{ marginBottom: 16 }}><RecyclingIcon size={64} color="#f0a500" /></div>
-            <div style={{ fontSize: 20, color: "#f0a500", fontWeight: 700 }}>Moving bottle to storage...</div>
-            <div style={{ fontSize: 13, color: "#aaa", marginTop: 6 }}>Credits are added once the bottle is confirmed</div>
+            {step === "storing" && (
+              <div style={{ textAlign: "center", fontSize: 13, color: "#aaa", marginTop: 6 }}>
+                Credits are added once the bottle is confirmed
+              </div>
+            )}
           </div>
         )}
 
@@ -285,18 +300,29 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
                 </button>
               </div>
             )}
-            <div style={{ fontSize: 12, color: "#444", marginTop: 14 }}>Returning to home screen...</div>
+            <div style={{ fontSize: 13, color: "#f0a500", marginTop: 14 }}>
+              Please wait until the gate finishes moving before inserting another bottle.
+            </div>
           </div>
         )}
 
         {step === "result" && session?.result === "rejected" && (
-          <div style={{ textAlign: "center" }}>
+          <div style={{ flex: 1, alignSelf: "stretch", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center" }}>
             <div style={{ marginBottom: 12 }}><XCircleIcon size={64} color="#e74c3c" /></div>
             <div style={{ fontSize: 22, color: "#e74c3c", fontWeight: 700, marginBottom: 8 }}>Bottle rejected</div>
             <div style={{ fontSize: 14, color: "#aaa", maxWidth: 400, margin: "0 auto 20px" }}>
               {session.errorMsg}
             </div>
-            <div style={{ fontSize: 12, color: "#444" }}>Returning to home screen...</div>
+            {!!(session.heightMm || session.weightG) && (
+              <div style={{ fontSize: 13, color: "#f0a500", marginBottom: 16 }}>
+                {session.heightMm ? `Height ${session.heightMm}mm` : ""}
+                {session.heightMm && session.weightG ? " · " : ""}
+                {session.weightG ? `Weight ${session.weightG}g` : ""}
+              </div>
+            )}
+            <div style={{ fontSize: 13, color: "#f0a500" }}>
+              Please wait until the gate finishes moving before inserting another bottle.
+            </div>
           </div>
         )}
 
@@ -358,3 +384,8 @@ const tileIconWrap: React.CSSProperties = {
 };
 const tileLabel: React.CSSProperties = { fontSize: 18, fontWeight: 700, color: "#fff", marginBottom: 4 };
 const tileSub: React.CSSProperties = { fontSize: 12, color: "#666" };
+const guestBadge: React.CSSProperties = {
+  marginLeft: "auto", padding: "6px 14px", borderRadius: 999,
+  background: "#242424", border: "1.5px solid #f0a500",
+  fontSize: 12, color: "#ccc", display: "flex", alignItems: "center", gap: 8,
+};

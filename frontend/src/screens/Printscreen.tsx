@@ -31,6 +31,8 @@ interface KioskSession {
   credits: number;
   result: "accepted" | "rejected" | null;
   errorMsg: string | null;
+  heightMm: number | null;
+  weightG: number | null;
 }
 
 const STEP_ICONS: Record<string, React.ReactNode> = {
@@ -68,7 +70,7 @@ function countSelectedPages(range: string, total: number): number | null {
 
 export default function PrintScreen({ onBack }: Props) {
   const [step, setStep] = useState<Step>("qr");
-  const [, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<User | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [qrImage, setQrImage] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
@@ -99,6 +101,27 @@ export default function PrintScreen({ onBack }: Props) {
   const rfidBlocked = printOff || "rfid" in off;
   const rfidReason = off.print || off.rfid || "Temporarily unavailable.";
   const [guestCredits, setGuestCredits] = useState(0);
+
+  const refreshGuestCredits = async () => {
+    try {
+      const r = await fetch(`${API}/api/deposit/guest-status`);
+      const s = await r.json();
+      setGuestCredits(s.credits ?? 0);
+    } catch {}
+  };
+
+  // credits carried over from the Deposit screen
+  useEffect(() => { refreshGuestCredits(); }, []);
+
+  // live updates while the guest is inserting bottles
+  useEffect(() => {
+    if (kioskSession?.rfid === "GUEST") setGuestCredits(kioskSession.credits ?? 0);
+  }, [kioskSession]);
+
+  const isRfidUser = !!user && user.rfid !== "GUEST";
+  const isGuestPath = user?.rfid === "GUEST" || step === "guest-deposit";
+  const showGuestBadge = !isRfidUser && (guestCredits > 0 || isGuestPath);
+  const showLeftover = showGuestBadge && guestCredits > 0;
 
   useEffect(() => {
     fetch(`${API}/api/mode`, {
@@ -145,24 +168,24 @@ export default function PrintScreen({ onBack }: Props) {
     return () => ws.close();
   }, [sessionId]);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch(`${API}/api/print/qr-session`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({}),
-        });
-        const data = await res.json();
-        setSessionId(data.sessionId);
-        setQrImage(data.qrImage);
-        setStep("qr");
-      } catch {
-        setErrorMsg("Could not reach backend to generate QR code.");
-        setStep("error");
-      }
-    })();
-  }, []);
+  const createQrSession = async () => {
+    try {
+      const res = await fetch(`${API}/api/print/qr-session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      setSessionId(data.sessionId);
+      setQrImage(data.qrImage);
+      setStep("qr");
+    } catch {
+      setErrorMsg("Could not reach backend to generate QR code.");
+      setStep("error");
+    }
+  };
+
+  useEffect(() => { createQrSession(); }, []);
 
   // Read the guest's banked credits whenever the job summary opens
   useEffect(() => {
@@ -302,6 +325,7 @@ export default function PrintScreen({ onBack }: Props) {
       });
       const data = await res.json();
       if (data.success) {
+        refreshGuestCredits();
         setInvoice({
           creditsCharged: data.creditsCharged ?? creditCost,
           pagesPrinted: data.pagesPrinted ?? selectedPageCount,
@@ -349,6 +373,15 @@ export default function PrintScreen({ onBack }: Props) {
           <div style={headerTitle}>Print</div>
           <div style={headerSub}>Scan the QR code to send your file</div>
         </div>
+        {showGuestBadge && (
+          <div style={{
+            marginLeft: "auto", padding: "6px 14px", borderRadius: 999,
+            background: "#242424", border: "1.5px solid #f0a500",
+            fontSize: 12, color: "#ccc",
+          }}>
+            Your credits: <strong style={{ color: "#f0a500", fontSize: 16 }}>{guestCredits}</strong>
+          </div>
+        )}
       </div>
 
       <div style={body}>
@@ -565,11 +598,23 @@ export default function PrintScreen({ onBack }: Props) {
         {step === "guest-deposit" && (
           <div style={{ width: "100%", maxWidth: 560 }}>
             <div style={{ textAlign: "center", marginBottom: 16 }}>
-              <div style={{ fontSize: 16, color: "#f0a500", fontWeight: 700 }}>Insert bottles to pay for this job</div>
+              <div style={{ fontSize: 16, color: "#f0a500", fontWeight: 700 }}>
+                {kioskSession?.step === "ir" && kioskSession.steps[0]?.status === "pending"
+                  ? "Ready for a bottle"
+                  : "Insert bottles to pay for this job"}
+              </div>
+              {kioskSession?.step === "ir" && kioskSession.steps[0]?.status === "pending" && (
+                <div style={{ fontSize: 13, color: "#aaa", marginTop: 4 }}>Insert your bottle now.</div>
+              )}
               <div style={{ fontSize: 13, color: "#aaa", marginTop: 4 }}>
                 Need <strong style={{ color: "#fff" }}>{creditCost}</strong> credits — you have{" "}
                 <strong style={{ color: "#2ecc71" }}>{kioskSession?.credits ?? 0}</strong>
               </div>
+              {kioskSession?.step === "result" && kioskSession.result === "accepted" && (
+                <div style={{ fontSize: 12, color: "#f0a500", marginTop: 8 }}>
+                  Bottle accepted. Please wait until the gate finishes moving before inserting another bottle.
+                </div>
+              )}
             </div>
 
             {["ir", "capacitive", "tof", "loadcell", "storing"].includes(kioskSession?.step ?? "") && (
@@ -594,6 +639,25 @@ export default function PrintScreen({ onBack }: Props) {
                   </div>
                 </div>
               ))
+            )}
+
+            {kioskSession?.step === "result" && kioskSession.result === "rejected" && (
+              <div
+                style={{ textAlign: "center", padding: "16px 12px", background: "#242424", border: "1.5px solid #e74c3c", borderRadius: 10 }}
+              >
+                <div style={{ color: "#e74c3c", fontWeight: 700, fontSize: 16, marginBottom: 6 }}>Bottle rejected</div>
+                <div style={{ fontSize: 13, color: "#aaa" }}>{kioskSession.errorMsg}</div>
+                {!!(kioskSession.heightMm || kioskSession.weightG) && (
+                  <div style={{ fontSize: 13, color: "#f0a500", marginTop: 8 }}>
+                    {kioskSession.heightMm ? `Height ${kioskSession.heightMm}mm` : ""}
+                    {kioskSession.heightMm && kioskSession.weightG ? " · " : ""}
+                    {kioskSession.weightG ? `Weight ${kioskSession.weightG}g` : ""}
+                  </div>
+                )}
+                <div style={{ fontSize: 12, color: "#f0a500", marginTop: 8 }}>
+                  Please wait until the gate finishes moving before inserting another bottle.
+                </div>
+              </div>
             )}
 
             <button onClick={cancelGuestDeposit} style={{ ...ghostBtn, width: "100%", marginTop: 16 }}>
@@ -631,7 +695,40 @@ export default function PrintScreen({ onBack }: Props) {
                 </div>
               </div>
             )}
-            <button onClick={onBack} style={primaryBtn(true)}>Back to home</button>
+            {showLeftover && (
+              <div style={{ fontSize: 13, color: "#f0a500", marginBottom: 14 }}>
+                You have <strong>{guestCredits}</strong> credits left. Print another file to use them.
+                Unused credits will be cleared when you press Finish or after a few minutes of inactivity.
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+              {showLeftover && (
+                <button
+                  onClick={() => {
+                    setInvoice(null);
+                    setFileName(null);
+                    setPageCount(null);
+                    setQrImage(null);
+                    autoPrintFiredRef.current = false;
+                    createQrSession();
+                  }}
+                  style={primaryBtn(true)}
+                >
+                  Print another file
+                </button>
+              )}
+              <button
+                onClick={async () => {
+                  if (showLeftover) {
+                    try { await fetch(`${API}/api/deposit/guest-end`, { method: "POST" }); } catch {}
+                  }
+                  onBack();
+                }}
+                style={showLeftover ? ghostBtn : primaryBtn(true)}
+              >
+                {showLeftover ? "Finish" : "Back to home"}
+              </button>
+            </div>
           </div>
         )}
 

@@ -408,13 +408,17 @@ router.post("/api/print/qr-confirm/:sessionId", async (req, res) => {
       return res.status(500).json({ error: stderr || error.message });
     }
 
-    // [EDIT 3] Only a successful print removes the uploaded file
+        // [EDIT 3] Only a successful print removes the uploaded file
     if (filePath && filePath !== pdfPath) fs.unlink(filePath, () => {});
     fs.unlink(pdfPath, () => {});
     deleteSession(req.params.sessionId);
 
     if (isGuest) {
-      endGuestSession();
+      try {
+        db.prepare("INSERT INTO transactions (rfid, type, size, credits) VALUES ('GUEST', 'print', ?, ?)")
+          .run(`${selectedPages.length} page(s), ${colorMode}`, totalCost);
+      } catch (e) { console.error("guest print log failed:", e); }
+      if (getGuestCredits() <= 0) endGuestSession();   // keep the session if credits are left over
     } else {
       db.prepare("INSERT INTO transactions (rfid, type, size, credits) VALUES (?, 'print', ?, ?)")
         .run(rfid, `${selectedPages.length} page(s), ${colorMode}`, totalCost);

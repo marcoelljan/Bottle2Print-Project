@@ -15,7 +15,7 @@ import printRoutes from "./routes/print";
 import adminRoutes from "./routes/admin";
 import feedbackRoutes from "./routes/feedback";
 import { setWss } from "./wsHub";
-import { isGuestActive, startGuestSession, addGuestCredit, getGuestCredits, touchGuest } from "./guestSession";
+import { isGuestActive, startGuestSession, addGuestCredit, getGuestCredits, touchGuest, endGuestSession } from "./guestSession";
 import { recordSensorActivity, setSerialStatus, recordHeartbeat, startHealthWatch, recordBinLevel, recordIdleStatus, recordStorageResult } from "./sensorHealth";
 import { getCalibration, classifyBottle, tofInUse } from "./sensorConfig";
 import { registerBusyCheck } from "./kioskState";
@@ -36,6 +36,7 @@ const BAUD_RATE = 9600;
 // ── PIN policy ─────────────────────────────────────────────────────────────
 const PIN_MAX_ATTEMPTS = 3;
 const PIN_LOCKOUT_MS = 20 * 1000; // 20 second cooldown
+const REJECT_DISPLAY_MS = 5000; // how long a "Bottle rejected" screen stays up
 
 function logReject(stage: string, reason: string, heightMm: number | null, weightG: number | null) {
   if (!session.rfid) return;
@@ -117,18 +118,24 @@ function commitPendingDeposit() {
   if (!d) return;
   const mine = session.rfid === d.rfid;
   if (d.rfid === "GUEST") {
-    if (!isGuestActive()) return;
-    addGuestCredit(d.credits);
-    if (mine) session.credits = getGuestCredits();
-  } else {
+  if (!isGuestActive()) return;
+  addGuestCredit(d.credits);
+  try {
     db.prepare(`
       INSERT INTO transactions (rfid, type, size, height_mm, weight_g, co2_saved_g, credits)
-      VALUES (?, 'deposit', ?, ?, ?, ?, ?)
-    `).run(d.rfid, d.label, d.heightMm, d.weightG, d.co2Grams, d.credits);
-    db.prepare("UPDATE users SET credits = credits + ? WHERE rfid = ?").run(d.credits, d.rfid);
-    const updated = db.prepare("SELECT credits FROM users WHERE rfid = ?").get(d.rfid) as any;
-    if (mine && updated) session.credits = updated.credits;
-  }
+      VALUES ('GUEST', 'deposit', ?, ?, ?, ?, ?)
+    `).run(d.label, d.heightMm, d.weightG, d.co2Grams, d.credits);
+  } catch (e) { console.error("guest deposit log failed:", e); }
+  if (mine) session.credits = getGuestCredits();
+} else {
+  db.prepare(`
+    INSERT INTO transactions (rfid, type, size, height_mm, weight_g, co2_saved_g, credits)
+    VALUES (?, 'deposit', ?, ?, ?, ?, ?)
+  `).run(d.rfid, d.label, d.heightMm, d.weightG, d.co2Grams, d.credits);
+  db.prepare("UPDATE users SET credits = credits + ? WHERE rfid = ?").run(d.credits, d.rfid);
+  const updated = db.prepare("SELECT credits FROM users WHERE rfid = ?").get(d.rfid) as any;
+  if (mine && updated) session.credits = updated.credits;
+}
   if (!mine) return;
   session.size = d.label;
   session.step = "result";
@@ -181,6 +188,30 @@ function resetSession(force = false) {
 function setStep(id: string, status: StepStatus, detail?: string) {
   const s = session.steps.find(s => s.id === id);
   if (s) { s.status = status; if (detail) s.detail = detail; }
+}
+
+const REARM_DELAY_MS = 1500;
+let continueTimer: ReturnType<typeof setTimeout> | null = null;
+let rearmTimer: ReturnType<typeof setTimeout> | null = null;
+
+function depositStillActive() {
+  return !depositStopRequested && !isDisabled("deposit") &&
+    (session.rfid === "GUEST" ? isGuestActive() : rfidDepositSessionActive);
+}
+
+// Keep the result on screen for showMs, but re-arm the Arduino after 1.5 s
+// so a bottle inserted in the meantime is not missed.
+function scheduleNextBottle(showMs: number) {
+  if (continueTimer) clearTimeout(continueTimer);
+  if (rearmTimer) clearTimeout(rearmTimer);
+  rearmTimer = setTimeout(() => {
+    rearmTimer = null;
+    if (depositStillActive()) sendToArduino(session.rfid === "GUEST" ? "GUEST_START" : "PROCEED");
+  }, Math.min(REARM_DELAY_MS, showMs));
+  continueTimer = setTimeout(() => {
+    continueTimer = null;
+    if (session.step === "result") continueDepositLoop();   // skip if a new bottle is already being validated
+  }, showMs);
 }
 
 function continueDepositLoop() {
@@ -408,6 +439,19 @@ app.post("/api/deposit/guest-stop", (_req, res) => {
   resetSession(true);
   res.json({ success: true, credits: getGuestCredits() });
 });
+app.post("/api/deposit/guest-end", (_req, res) => {
+  depositStopRequested = true;
+  endGuestSession();          // wipes banked credits so the next guest starts at 0
+  resetSession(true);
+  res.json({ success: true });
+});
+app.post("/api/deposit/next", (_req, res) => {
+  if (session.step === "result" && depositStillActive()) {
+    if (continueTimer) { clearTimeout(continueTimer); continueTimer = null; }
+    continueDepositLoop();   // back to the validation screen and arm the Arduino now
+  }
+  res.json({ success: true });
+});
 
 app.get("/api/session", (_req, res) => res.json(session));
 
@@ -616,10 +660,11 @@ lineBus.on("data", (raw: string) => {
 
   if (line === "IR:DETECTED") {
     recordSensorActivity("ir");
-    if (session.step === "result") return;
-    session.step = "ir";
-    setStep("ir", "running");
-    broadcastState();
+        if (session.step === "result") {
+      if (!depositStillActive()) return;
+      if (continueTimer) { clearTimeout(continueTimer); continueTimer = null; }
+      continueDepositLoop();      // next bottle arrived: leave the result screen now
+    }
     setTimeout(() => {
       if (session.step === "result") return;
       setStep("ir", "pass", "Bottle insertion confirmed");
@@ -649,7 +694,7 @@ lineBus.on("data", (raw: string) => {
     logReject("capacitive", "Contaminant or non-plastic material detected.", null, null);
     broadcastState();
     sendToArduino("REJECT");
-    setTimeout(() => continueDepositLoop(), 3000);
+    scheduleNextBottle(REJECT_DISPLAY_MS);
     return;
   }
 
@@ -686,7 +731,7 @@ lineBus.on("data", (raw: string) => {
       logReject("tof", `Height ${heightMm}mm outside the valid range (${cal.tofMinMm}-${cal.tofMaxMm}mm).`, heightMm, null);
       broadcastState();
       sendToArduino("REJECT");
-      setTimeout(() => continueDepositLoop(), 5000);
+      scheduleNextBottle(REJECT_DISPLAY_MS);
     } else {
       setStep("tof", "pass", `Height: ${heightMm}mm`);
       session.step = "loadcell";
@@ -714,7 +759,7 @@ lineBus.on("data", (raw: string) => {
       session.errorMsg = `Bottle rejected: ${reason ?? "failed validation"}`;
       broadcastState();
       sendToArduino("REJECT");
-      setTimeout(() => continueDepositLoop(), 3000);
+      scheduleNextBottle(REJECT_DISPLAY_MS);
     } else {
             setStep("loadcell", "pass", `${weightOk ? weightG + "g" : "no weight"} · ${match.label} (+${match.credits}) [${mode}]`);
       pendingDeposit = {
@@ -728,16 +773,15 @@ lineBus.on("data", (raw: string) => {
       pendingTimer = setTimeout(() => {          // safety net: Arduino never answered
         if (!pendingDeposit) return;
         failPendingDeposit(STORAGE_CONFIRMATION_FAILURE);
-        setTimeout(() => continueDepositLoop(), 6000);
+        scheduleNextBottle(REJECT_DISPLAY_MS);
       }, 10000);
     }
     return;
   }
 
-    if (line === "OBJECT:TIMEOUT") {
-    if (session.step === "ir" && (rfidDepositSessionActive || session.rfid === "GUEST")) {
-      sendToArduino(session.rfid === "GUEST" ? "GUEST_START" : "PROCEED");
-    }
+      if (line === "OBJECT:TIMEOUT") {
+    // still depositing: make sure it is armed. Session over: let the Arduino go back to reading cards.
+    sendToArduino(depositStillActive() ? (session.rfid === "GUEST" ? "GUEST_START" : "PROCEED") : "DONE");
     return;
   }
 
@@ -751,7 +795,7 @@ lineBus.on("data", (raw: string) => {
     recordSensorActivity("photoelectric", "No bottle seen after gate moved", "fault");
     recordStorageResult(false);
     failPendingDeposit(STORAGE_CONFIRMATION_FAILURE);
-    setTimeout(() => continueDepositLoop(), 6000);
+    scheduleNextBottle(REJECT_DISPLAY_MS);
     return;
   }
   if (line.startsWith("BIN:FILL_LEVEL_CM:")) {
@@ -760,13 +804,13 @@ lineBus.on("data", (raw: string) => {
       recordBinLevel(cm);
       recordSensorActivity("ultrasonic", `${cm} cm from sensor`);
     }
-    setTimeout(() => continueDepositLoop(), 3000);
+    scheduleNextBottle(3000); //edit if the reject seetle ms in the arduino is changed
     return;
   }
 
   if (line === "BIN:ERROR") {
     recordSensorActivity("ultrasonic", "No echo", "fault");
-    setTimeout(() => continueDepositLoop(), 3000);
+    scheduleNextBottle(3000);
     return;
   }
 });
