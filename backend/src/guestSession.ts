@@ -9,7 +9,7 @@ interface GuestSessionState {
   lastActivity: number;
 }
 
-const GUEST_TIMEOUT_MS = 5 * 60 * 1000; // 5 min idle = abandoned
+const GUEST_TIMEOUT_MS = 8 * 60 * 1000; // 8 min idle = abandoned
 let guestSession: GuestSessionState = { active: false, credits: 0, lastActivity: 0 };
 
 export function isGuestActive(): boolean {

@@ -436,12 +436,14 @@ app.get("/api/deposit/guest-status", (_req, res) => {
 
 app.post("/api/deposit/guest-stop", (_req, res) => {
   depositStopRequested = true;
+  if (!SENSOR_IN_PROGRESS_STEPS.includes(session.step)) sendToArduino("DONE");
   resetSession(true);
   res.json({ success: true, credits: getGuestCredits() });
 });
 app.post("/api/deposit/guest-end", (_req, res) => {
   depositStopRequested = true;
   endGuestSession();          // wipes banked credits so the next guest starts at 0
+  if (!SENSOR_IN_PROGRESS_STEPS.includes(session.step)) sendToArduino("DONE");
   resetSession(true);
   res.json({ success: true });
 });
