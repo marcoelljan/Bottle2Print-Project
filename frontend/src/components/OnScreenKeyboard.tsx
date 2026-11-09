@@ -45,8 +45,19 @@ export default function OnScreenKeyboard() {
   const [field, setField] = useState<Field | null>(null);
   const [symbols, setSymbols] = useState(false);
   const [shift, setShift] = useState(false);
+  const [pressed, setPressed] = useState<string | null>(null);
   const kbRef = useRef<HTMLDivElement>(null);
   const open = wanted && !!field;
+
+  useEffect(() => {
+    const clear = () => setPressed(null);
+    window.addEventListener("pointerup", clear);
+    window.addEventListener("pointercancel", clear);
+    return () => {
+      window.removeEventListener("pointerup", clear);
+      window.removeEventListener("pointercancel", clear);
+    };
+  }, []);
 
   useEffect(() => {
     if (!wanted) return;
@@ -111,16 +122,30 @@ export default function OnScreenKeyboard() {
   };
 
   const label = (k: string) => (!symbols && shift ? k.toUpperCase() : k);
-  const btn = (k: string, text?: string, flex = 1, hot = false) => (
-    <button
-      key={k + (text ?? "")}
-      onPointerDown={e => { e.preventDefault(); act(k); }}
-      onMouseDown={e => e.preventDefault()}
-      style={{ ...keyStyle, flex, ...(hot ? { background: "#f0a500", color: "#000" } : {}) }}
-    >
-      {text ?? label(k)}
-    </button>
-  );
+  const btn = (k: string, text?: string, flex = 1, hot = false) => {
+    const id = k + (text ?? "");
+    const isPressed = pressed === id;
+    const showPop = isPressed && k.length === 1 && k !== " ";
+    return (
+      <button
+        key={id}
+        aria-label={k === "SHIFT" ? "Shift" : k === "BACK" ? "Delete" : text ?? label(k)}
+        onPointerDown={e => { e.preventDefault(); setPressed(id); act(k); }}
+        onPointerUp={() => setPressed(null)}
+        onPointerLeave={() => setPressed(null)}
+        onPointerCancel={() => setPressed(null)}
+        onMouseDown={e => e.preventDefault()}
+        style={{
+          ...keyStyle, flex, position: "relative",
+          ...(hot ? { background: "#f0a500", color: "#000" } : {}),
+          ...(isPressed ? pressedKey : {}),
+        }}
+      >
+        {text ?? label(k)}
+        {showPop && <span style={popStyle}>{label(k)}</span>}
+      </button>
+    );
+  };
 
   return (
     <div
@@ -130,20 +155,20 @@ export default function OnScreenKeyboard() {
       style={wrap}
     >
       {numeric ? (
-        <div style={rowStyle}>{DIGITS.map(d => btn(d))}{btn("BACK", "Del", 1.6)}{btn("DONE", "Done", 1.6, true)}</div>
+        <div style={rowStyle}>{DIGITS.map(d => btn(d))}{btn("BACK", "×", 1.6)}{btn("DONE", "Done", 1.6, true)}</div>
       ) : (
         <>
           {(symbols || digitRowOnTop) && <div style={rowStyle}>{DIGITS.map(d => btn(d))}</div>}
           {symbols ? (
             <>
               <div style={rowStyle}>{SYMBOL_ROWS[0].map(k => btn(k))}</div>
-              <div style={rowStyle}>{SYMBOL_ROWS[1].map(k => btn(k))}{btn("BACK", "Del", 1.6)}</div>
+              <div style={rowStyle}>{SYMBOL_ROWS[1].map(k => btn(k))}{btn("BACK", "×", 1.6)}</div>
             </>
           ) : (
             <>
               <div style={rowStyle}>{LETTER_ROWS[0].map(k => btn(k))}</div>
               <div style={{ ...rowStyle, padding: "0 4%" }}>{LETTER_ROWS[1].map(k => btn(k))}</div>
-              <div style={rowStyle}>{btn("SHIFT", "Shift", 1.6, shift)}{LETTER_ROWS[2].map(k => btn(k))}{btn("BACK", "Del", 1.6)}</div>
+              <div style={rowStyle}>{btn("SHIFT", "⇧", 1.6, shift)}{LETTER_ROWS[2].map(k => btn(k))}{btn("BACK", "×", 1.6)}</div>
             </>
           )}
           <div style={rowStyle}>
@@ -164,4 +189,16 @@ const rowStyle: React.CSSProperties = { display: "flex", gap: 5, marginBottom: 5
 const keyStyle: React.CSSProperties = {
   height: 42, minWidth: 0, borderRadius: 8, border: "1px solid #3a3a3a", background: "#2a2a2a",
   color: "#fff", fontSize: 18, fontWeight: 600, cursor: "pointer", padding: 0, touchAction: "manipulation",
+  transition: "transform 0.08s ease, background 0.08s ease, border-color 0.08s ease",
+};
+const pressedKey: React.CSSProperties = {
+  transform: "scale(1.08)", background: "#444", borderColor: "#f0a500", zIndex: 2,
+};
+const popStyle: React.CSSProperties = {
+  position: "absolute", bottom: "calc(100% + 6px)", left: "50%", transform: "translateX(-50%)",
+  minWidth: 54, height: 62, padding: "0 10px", boxSizing: "border-box",
+  display: "flex", alignItems: "center", justifyContent: "center",
+  background: "#2a2a2a", border: "2px solid #f0a500", borderRadius: 10,
+  fontSize: 32, fontWeight: 700, color: "#fff",
+  boxShadow: "0 6px 16px rgba(0,0,0,0.6)", pointerEvents: "none",
 };

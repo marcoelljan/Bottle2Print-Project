@@ -287,7 +287,7 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
             <div style={{ fontSize: 24, color: "#2ecc71", fontWeight: 700, marginBottom: 6 }}>Bottle accepted!</div>
             <div style={{ fontSize: 14, color: "#aaa", marginBottom: 20 }}>
               Size: <strong style={{ color: "#f0a500" }}>{session.size}</strong>
-              {" · "}{session.heightMm}mm · {session.weightG}g
+              {" · "}{session.heightMm != null ? (session.heightMm / 10).toFixed(1) : "—"} cm · {session.weightG}g
             </div>
             <div style={creditBox}>
               <div style={{ fontSize: 12, color: "#666" }}>Total credits</div>
@@ -315,7 +315,7 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
             </div>
             {!!(session.heightMm || session.weightG) && (
               <div style={{ fontSize: 13, color: "#f0a500", marginBottom: 16 }}>
-                {session.heightMm ? `Height ${session.heightMm}mm` : ""}
+                {session.heightMm ? `Height ${(session.heightMm / 10).toFixed(1)} cm` : ""}
                 {session.heightMm && session.weightG ? " · " : ""}
                 {session.weightG ? `Weight ${session.weightG}g` : ""}
               </div>

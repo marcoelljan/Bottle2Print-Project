@@ -37,6 +37,7 @@ const BAUD_RATE = 9600;
 const PIN_MAX_ATTEMPTS = 3;
 const PIN_LOCKOUT_MS = 20 * 1000; // 20 second cooldown
 const REJECT_DISPLAY_MS = 5000; // how long a "Bottle rejected" screen stays up
+const cm = (mm: number) => (mm / 10).toFixed(1);   // display only; everything stored stays in mm
 
 function logReject(stage: string, reason: string, heightMm: number | null, weightG: number | null) {
   if (!session.rfid) return;
@@ -721,21 +722,21 @@ lineBus.on("data", (raw: string) => {
     }
 
     session.heightMm = heightMm;
-    recordSensorActivity("tof", `${heightMm}mm`);
+    recordSensorActivity("tof", `${cm(heightMm)} cm`);
 
     const cal = getCalibration();
     // The sanity range is only enforced once ToF has been calibrated
     if (tofInUse(cal) && (heightMm < cal.tofMinMm || heightMm > cal.tofMaxMm)) {
-      setStep("tof", "fail", `Height ${heightMm}mm out of range`);
+      setStep("tof", "fail", `Height ${cm(heightMm)} cm out of range`);
       session.step     = "result";
       session.result   = "rejected";
-      session.errorMsg = `Invalid bottle size (height ${heightMm}mm). Only PET accepted.`;
-      logReject("tof", `Height ${heightMm}mm outside the valid range (${cal.tofMinMm}-${cal.tofMaxMm}mm).`, heightMm, null);
+     session.errorMsg = `Invalid bottle size (height ${cm(heightMm)} cm). Only PET accepted.`;
+     logReject("tof", `Height ${cm(heightMm)} cm outside the valid range (${cm(cal.tofMinMm)}-${cm(cal.tofMaxMm)} cm).`, heightMm, null);
       broadcastState();
       sendToArduino("REJECT");
       scheduleNextBottle(REJECT_DISPLAY_MS);
     } else {
-      setStep("tof", "pass", `Height: ${heightMm}mm`);
+      setStep("tof", "pass", `Height: ${cm(heightMm)} cm`);
       session.step = "loadcell";
       setStep("loadcell", "running");
       broadcastState();

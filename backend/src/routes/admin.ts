@@ -336,10 +336,10 @@ router.post("/api/admin/sensors/tof-calibrate", requireSuperAdmin, async (req: a
   if (isKioskBusy()) return res.status(409).json({ error: "A deposit is in progress. Try again when the kiosk is idle." });
   const r = await requestTofCal();
   if (!r.ok) return res.status(500).json({ error: "No reading from the Arduino. Check the ToF sensor and that the kiosk is idle." });
-  if (r.spread > 60) return res.status(422).json({ error: `Readings are unstable (spread ${r.spread} mm). Check the mount and try again.` });
+  if (r.spread > 60) return res.status(422).json({ error: `Readings are unstable (spread ${(r.spread / 10).toFixed(1)} cm). Check the mount and try again.` });
   try {
     const config = updateCalibration({ tofMountMm: r.mean });
-    logActivity(req.admin.username, "UPDATE_SENSOR_CONFIG", `Recalibrated ToF empty reading to ${r.mean} mm (spread ${r.spread} mm)`);
+    logActivity(req.admin.username, "UPDATE_SENSOR_CONFIG", `Recalibrated ToF empty reading to ${(r.mean / 10).toFixed(1)} cm (spread ${(r.spread / 10).toFixed(1)} cm)`);
     res.json({ success: true, mean: r.mean, spread: r.spread, config });
   } catch (err: any) {
     res.status(400).json({ error: err.message });

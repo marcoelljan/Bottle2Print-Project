@@ -1,5 +1,7 @@
 import { db } from "./db";
 
+const cm = (mm: number) => (mm / 10).toFixed(1);
+
 export interface SizeSpec {
   label: string;
   minWeight: number;
@@ -26,16 +28,16 @@ export interface SensorCalibration {
 
 const DEFAULT_CALIBRATION: SensorCalibration = {
   tofMinMm: 40,
-  tofMaxMm: 375, // derived from firmware's TOF_MOUNT_HEIGHT_MM (380mm), minus a small safety margin
+    tofMaxMm: 375, // sanity ceiling for bottle height (mm); must stay below the empty-chamber reading
   weightMaxRejectG: 68,
   shortBottleHeightMm: 100,
   shortBottleWeightMaxG: 35,
   binEmptyCm: 40,
   binFullCm: 8,
-  tofMountMm: 650,
+  tofMountMm: 500,
   sizes: [
-    { label: "Small-Medium", minWeight: 10, maxWeight: 19, credits: 3 },
-    { label: "Large-XL",     minWeight: 20, maxWeight: 68, credits: 5 },
+    { label: "Small-Large", minWeight: 9, maxWeight: 26, credits: 3 },
+    { label: "XL",     minWeight: 40, maxWeight: 68, credits: 5 },
   ],
 };
 
@@ -108,7 +110,7 @@ function validate(cal: SensorCalibration) {
         throw new Error(`Size "${s.label}": minHeight must be less than maxHeight.`);
       }
       if (!(s.minHeight! >= cal.tofMinMm && s.maxHeight! <= cal.tofMaxMm)) {
-        throw new Error(`Size "${s.label}": height range must fall within the global ToF range (${cal.tofMinMm}-${cal.tofMaxMm}mm).`);
+throw new Error(`Size "${s.label}": height range must fall within the global ToF range (${cm(cal.tofMinMm)}-${cm(cal.tofMaxMm)} cm).`);
       }
     }
   }
@@ -153,7 +155,7 @@ export function classifyBottle(heightMm: number | null, weightG: number | null):
     return { band: null, mode: "none", stage: "loadcell", reason: `Too heavy (${weightG}g, max ${cal.weightMaxRejectG}g), likely contains liquid.` };
   }
   if (weightOk && heightOk && heightMm! < cal.shortBottleHeightMm && weightG! > cal.shortBottleWeightMaxG) {
-    return { band: null, mode: "none", stage: "loadcell+tof", reason: `Weight too high for a short bottle (${heightMm}mm, ${weightG}g).` };
+    return { band: null, mode: "none", stage: "loadcell+tof", reason: `Weight too high for a short bottle (${cm(heightMm!)} cm, ${weightG}g).` };
   }
 
   const mode: ClassifyMode = weightOk && heightOk ? "both" : weightOk ? "weight-only" : "height-only";
@@ -170,5 +172,5 @@ export function classifyBottle(heightMm: number | null, weightG: number | null):
 
   if (mode === "both")        return { band: null, mode, stage: "loadcell+tof", reason: "Size mismatch: weight and height don't agree on a size." };
   if (mode === "weight-only") return { band: null, mode, stage: "loadcell",     reason: `Weight ${weightG}g doesn't match any size band.` };
-  return                             { band: null, mode, stage: "tof",          reason: `Height ${heightMm}mm doesn't match any size band.` };
+  return                             { band: null, mode, stage: "tof",          reason: `Height ${cm(heightMm!)} cm doesn't match any size band.` };
 }

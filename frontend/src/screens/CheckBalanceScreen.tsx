@@ -24,6 +24,9 @@ export default function CheckBalanceScreen({ onBack }: Props) {
   const [transferAmount, setTransferAmount] = useState("");
   const [transferMsg, setTransferMsg] = useState("");
   const [transferLoading, setTransferLoading] = useState(false);
+  const parsedTransferAmount = Number.parseInt(transferAmount, 10);
+  const hasTransferAmount = Number.isInteger(parsedTransferAmount) && parsedTransferAmount > 0;
+  const remainingCredits = (user?.credits ?? 0) - parsedTransferAmount;
 
   // Transfer PIN Verification Step
   const [transferPinError, setTransferPinError] = useState("");
@@ -126,6 +129,21 @@ export default function CheckBalanceScreen({ onBack }: Props) {
     setTransferStep("confirm");
   };
 
+  const enterTransferDigit = (digit: string) => {
+    setTransferAmount(amount => amount + digit);
+    setTransferMsg("");
+  };
+
+  const clearTransferAmount = () => {
+    setTransferAmount("");
+    setTransferMsg("");
+  };
+
+  const deleteTransferDigit = () => {
+    setTransferAmount(amount => amount.slice(0, -1));
+    setTransferMsg("");
+  };
+
   const handleProceedToPin = () => {
     setTransferPinError("");
     setTransferStep("pin");
@@ -196,7 +214,6 @@ export default function CheckBalanceScreen({ onBack }: Props) {
           </div>
         ) : (
             <div style={scrollWrap}>
-
               {/* profile card */}
               <div style={profileCard}>
                 <div style={avatar}>{user.name.charAt(0).toUpperCase()}</div>
@@ -227,7 +244,7 @@ export default function CheckBalanceScreen({ onBack }: Props) {
                     setShowTransfer(true); 
                     setTransferMsg(""); 
                     setSearchQuery(""); 
-                    setSelectedRecipient(null); 
+                    setSelectedRecipient(null);
                     setTransferAmount(""); 
                   }}
                   style={{
@@ -304,7 +321,7 @@ export default function CheckBalanceScreen({ onBack }: Props) {
       {/* Step 1: Transfer Search & Amount Modal */}
       {showTransfer && transferStep === "search" && (
         <div style={overlay}>
-          <div style={modal}>
+          <div style={{ ...modal, maxHeight: "calc(100% - 32px)", overflowY: "auto" }}>
             <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>Transfer Credits</div>
             <div style={{ fontSize: 13, color: "#666", marginBottom: 20 }}>Type recipient's name or student ID</div>
 
@@ -346,7 +363,11 @@ export default function CheckBalanceScreen({ onBack }: Props) {
                         {searchResults.map(r => (
                           <div
                             key={r.rfid}
-                            onClick={() => { setSelectedRecipient(r); setSearchResults([]); }}
+                            onClick={() => {
+                              setSelectedRecipient(r);
+                              setSearchResults([]);
+                              if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+                            }}
                             style={{ padding: "10px 14px", cursor: "pointer", borderBottom: "1px solid #333", fontSize: 13 }}
                           >
                             <div style={{ fontWeight: 700, color: "#fff" }}>{r.name}</div>
@@ -362,18 +383,43 @@ export default function CheckBalanceScreen({ onBack }: Props) {
               {selectedRecipient && (
                 <div>
                   <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Amount to Transfer</div>
-                  <input
-                    type="number"
-                    value={transferAmount}
-                    onChange={e => setTransferAmount(e.target.value)}
-                    placeholder="Enter credit amount"
-                    min={1}
-                    max={user?.credits ?? 0}
-                    style={inputStyle}
-                    autoFocus
-                  />
-                  <div style={{ fontSize: 11, color: "#888", marginTop: 4 }}>
-                    Available balance: <strong style={{ color: "#f0a500" }}>{user?.credits ?? 0} credits</strong>
+                  <div
+                    aria-live="polite"
+                    aria-label={`Transfer amount: ${transferAmount || "not entered"} credits`}
+                    style={transferAmountDisplay}
+                  >
+                    {transferAmount || <span style={{ color: "#666" }}>Enter amount</span>}
+                    {transferAmount && <span style={{ fontSize: 14, color: "#888", marginLeft: 8 }}>credits</span>}
+                  </div>
+                  <div style={transferKeypad}>
+                    {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map(digit => (
+                      <button key={digit} type="button" onClick={() => enterTransferDigit(digit)} style={transferKey}>
+                        {digit}
+                      </button>
+                    ))}
+                    <button type="button" onClick={clearTransferAmount} style={transferUtilityKey}>Clear</button>
+                    <button type="button" onClick={() => enterTransferDigit("0")} style={transferKey}>0</button>
+                    <button type="button" onClick={deleteTransferDigit} aria-label="Delete last digit" style={transferUtilityKey}>⌫</button>
+                  </div>
+                  <div style={{
+                    display: "flex", justifyContent: "space-between", gap: 12, marginTop: 8,
+                    padding: "10px 12px", background: "#1b1b1b", border: "1px solid #3a3a3a", borderRadius: 8,
+                  }}>
+                    <div>
+                      <div style={{ fontSize: 11, color: "#888" }}>Available now</div>
+                      <div style={{ fontSize: 17, fontWeight: 700, color: "#f0a500" }}>
+                        {user?.credits ?? 0} credits
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ fontSize: 11, color: "#888" }}>After transfer</div>
+                      <div style={{
+                        fontSize: 17, fontWeight: 700,
+                        color: hasTransferAmount && remainingCredits < 0 ? "#e74c3c" : "#fff",
+                      }}>
+                        {hasTransferAmount && remainingCredits >= 0 ? `${remainingCredits} credits` : hasTransferAmount ? "Not enough" : "—"}
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}
@@ -414,10 +460,23 @@ export default function CheckBalanceScreen({ onBack }: Props) {
             <div style={{ fontSize: 14, color: "#ccc", marginBottom: 24, lineHeight: 1.5 }}>
               Are you sure you want to transfer <strong style={{ color: "#f0a500" }}>{transferAmount} credits</strong> to <strong style={{ color: "#fff" }}>{selectedRecipient?.name}</strong>?
             </div>
+            <div style={{
+              display: "flex", justifyContent: "space-between", marginBottom: 20,
+              padding: "10px 12px", background: "#1b1b1b", border: "1px solid #3a3a3a", borderRadius: 8,
+              fontSize: 13, color: "#aaa",
+            }}>
+              <span>Balance after transfer</span>
+              <strong style={{ color: "#f0a500" }}>{remainingCredits} credits</strong>
+            </div>
 
             <div style={{ display: "flex", gap: 10 }}>
               <button onClick={() => setTransferStep("search")} style={ghostBtn}>Back</button>
-              <button onClick={handleProceedToPin} style={confirmBtn}>
+              <button
+                onClick={() => {
+                  handleProceedToPin();
+                }}
+                style={confirmBtn}
+              >
                 Yes, Proceed
               </button>
             </div>
@@ -509,4 +568,21 @@ const confirmBtn: React.CSSProperties = {
   flex: 1, padding: "11px", borderRadius: 8, fontWeight: 700,
   fontSize: 14, background: "#f0a500", color: "#000",
   border: "none", cursor: "pointer",
+};
+const transferAmountDisplay: React.CSSProperties = {
+  minHeight: 56, display: "flex", alignItems: "center", justifyContent: "center",
+  padding: "8px 14px", marginBottom: 8, background: "#111",
+  border: "1px solid #555", borderRadius: 8, color: "#fff",
+  fontSize: 30, fontWeight: 700, fontVariantNumeric: "tabular-nums",
+};
+const transferKeypad: React.CSSProperties = {
+  display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+  gap: 8,
+};
+const transferKey: React.CSSProperties = {
+  height: 48, borderRadius: 8, border: "1px solid #444", background: "#333",
+  color: "#fff", fontSize: 22, fontWeight: 700, cursor: "pointer", touchAction: "manipulation",
+};
+const transferUtilityKey: React.CSSProperties = {
+  ...transferKey, background: "#242424", color: "#f0a500", fontSize: 15,
 };

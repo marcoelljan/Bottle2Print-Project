@@ -649,7 +649,7 @@ export default function PrintScreen({ onBack }: Props) {
                 <div style={{ fontSize: 13, color: "#aaa" }}>{kioskSession.errorMsg}</div>
                 {!!(kioskSession.heightMm || kioskSession.weightG) && (
                   <div style={{ fontSize: 13, color: "#f0a500", marginTop: 8 }}>
-                    {kioskSession.heightMm ? `Height ${kioskSession.heightMm}mm` : ""}
+                   {kioskSession.heightMm ? `Height ${(kioskSession.heightMm / 10).toFixed(1)} cm` : ""}
                     {kioskSession.heightMm && kioskSession.weightG ? " · " : ""}
                     {kioskSession.weightG ? `Weight ${kioskSession.weightG}g` : ""}
                   </div>

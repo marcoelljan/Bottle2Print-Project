@@ -112,7 +112,10 @@ export function recordIdleStatus(sensor: string, value: string) {
   switch (sensor) {
     case "TOF":
       if (bad) recordSensorActivity("tof", "Idle check: no reading", "fault");
-      else recordSensorActivity("tof", `Idle distance: ${value} mm`);
+      else {
+  const mm = parseFloat(value);
+  recordSensorActivity("tof", Number.isFinite(mm) ? `Idle distance: ${(mm / 10).toFixed(1)} cm` : "Idle reading");
+}
       break;
     case "LOADCELL":
       if (bad) recordSensorActivity("loadcell", "Idle check: no signal from load cell", "fault");

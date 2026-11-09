@@ -83,6 +83,8 @@ const formatAgo = (secs: number | null) => {
   if (h < 24) return `${h}h ${m % 60}m ago`;
   return `${Math.floor(h / 24)}d ${h % 24}h ago`;
 };
+const mmToCm = (mm: number) => (mm / 10).toFixed(1);
+const cmToMm = (cm: number) => Math.round(cm * 10);
 
 const CONTROL_LABELS: Record<string, string> = { deposit: "Deposit bottles", print: "Print", balance: "Check balance", register: "Register RFID", rfid: "Card reader (RFID)" };
 
@@ -559,7 +561,7 @@ const measureEmpty = async () => {
     const data = await res.json();
     if (res.ok && data.success) {
       setCalForm(prev => (prev ? { ...prev, tofMountMm: data.config.tofMountMm } : prev));
-      setCalMsg(`Saved: empty reading ${data.mean} mm (spread ${data.spread} mm)`);
+      setCalMsg(`Saved: empty reading ${mmToCm(data.mean)} cm (spread ${mmToCm(data.spread)} cm)`);
     } else {
       setCalMsg(data.error ?? "Measurement failed.");
     }
@@ -1455,7 +1457,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                         </td>
                         <td style={td}>
   {(() => {
-    const h = t.height_mm != null ? `${t.height_mm} mm` : "—";
+    const h = t.height_mm != null ? `${mmToCm(t.height_mm)} cm` : "—";
     const w = t.weight_g != null ? `${t.weight_g} g` : "—";
     const sub = <div style={{ fontSize: 11, color: "#666", marginTop: 2 }}>Height {h} · Weight {w}</div>;
     if (t.type === "reject") {
@@ -1719,21 +1721,24 @@ const adjustCredits = async (mode: "add" | "remove") => {
                                <div style={{ background: "#242424", border: "1px solid #333", borderRadius: 10, padding: 16, display: "flex", flexDirection: "column", gap: 14, ...(isSuperAdmin ? {} : { pointerEvents: "none" as const, opacity: 0.6 }) }}>
                   {!isSuperAdmin && <div style={{ fontSize: 12, color: "#f0a500" }}>View only. Only a super-admin can change calibration.</div>}
                   <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-                    <label style={calLabel}>ToF sanity min (mm)
-                      <input type="number" value={calForm.tofMinMm} onChange={e => setCalForm({ ...calForm, tofMinMm: +e.target.value })} style={inputStyle} />
-                    </label>
-                    <label style={calLabel}>ToF sanity max (mm)
-                      <input type="number" value={calForm.tofMaxMm} onChange={e => setCalForm({ ...calForm, tofMaxMm: +e.target.value })} style={inputStyle} />
-                    </label>
+                   <label style={calLabel}>ToF sanity min (cm)
+            <input type="number" step="0.1" value={calForm.tofMinMm / 10}
+    onChange={e => setCalForm({ ...calForm, tofMinMm: cmToMm(+e.target.value) })} style={inputStyle} />
+</label>
+<label style={calLabel}>ToF sanity max (cm)
+  <input type="number" step="0.1" value={calForm.tofMaxMm / 10}
+    onChange={e => setCalForm({ ...calForm, tofMaxMm: cmToMm(+e.target.value) })} style={inputStyle} />
+</label>
                     <label style={calLabel}>Reject weight above (g)
                       <input type="number" value={calForm.weightMaxRejectG} onChange={e => setCalForm({ ...calForm, weightMaxRejectG: +e.target.value })} style={inputStyle} />
                     </label>
                   </div>
 
                                    <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-                    <label style={calLabel}>"Short bottle" height gate (mm)
-                      <input type="number" value={calForm.shortBottleHeightMm} onChange={e => setCalForm({ ...calForm, shortBottleHeightMm: +e.target.value })} style={inputStyle} />
-                    </label>
+                   <label style={calLabel}>"Short bottle" height gate (cm)
+  <input type="number" step="0.1" value={calForm.shortBottleHeightMm / 10}
+    onChange={e => setCalForm({ ...calForm, shortBottleHeightMm: cmToMm(+e.target.value) })} style={inputStyle} />
+</label>
                     <label style={calLabel}>Max weight if short (g)
                       <input type="number" value={calForm.shortBottleWeightMaxG} onChange={e => setCalForm({ ...calForm, shortBottleWeightMaxG: +e.target.value })} style={inputStyle} />
                     </label>
@@ -1749,7 +1754,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                   </div>
                                     <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
                     <div style={{ fontSize: 13, color: "#ccc" }}>
-                      Empty chamber reading: <strong style={{ color: "#f0a500" }}>{calForm.tofMountMm} mm</strong>
+                     Empty chamber reading: <strong style={{ color: "#f0a500" }}>{mmToCm(calForm.tofMountMm)} cm</strong>
                     </div>
                     <button
                       onClick={measureEmpty}
@@ -1842,33 +1847,29 @@ const adjustCredits = async (mode: "add" | "remove") => {
                         </button>
                       </div>
                       <div style={{ display: "flex", gap: 10, alignItems: "flex-end", paddingLeft: 4 }}>
-                        <span style={{ fontSize: 11, color: "#666", width: 140 }}>↳ Height range (mm)</span>
-                        <label style={calLabel}>Min height
-                          <input
-                            type="number"
-                            value={s.minHeight ?? ""}
-                            placeholder="blank = skip"
-                            onChange={e => {
-                              const v = e.target.value === "" ? undefined : +e.target.value;
-                              const sizes = [...calForm.sizes]; sizes[i] = { ...s, minHeight: v };
-                              setCalForm({ ...calForm, sizes });
-                            }}
-                            style={inputStyle}
-                          />
-                        </label>
-                        <label style={calLabel}>Max height
-                          <input
-                            type="number"
-                            value={s.maxHeight ?? ""}
-                            placeholder="blank = skip"
-                            onChange={e => {
-                              const v = e.target.value === "" ? undefined : +e.target.value;
-                              const sizes = [...calForm.sizes]; sizes[i] = { ...s, maxHeight: v };
-                              setCalForm({ ...calForm, sizes });
-                            }}
-                            style={inputStyle}
-                          />
-                        </label>
+                        <span style={{ fontSize: 11, color: "#666", width: 140 }}>↳ Height range (cm)</span>
+<label style={calLabel}>Min height
+  <input type="number" step="0.1"
+    value={s.minHeight != null ? s.minHeight / 10 : ""}
+    placeholder="blank = skip"
+    onChange={e => {
+      const v = e.target.value === "" ? undefined : cmToMm(+e.target.value);
+      const sizes = [...calForm.sizes]; sizes[i] = { ...s, minHeight: v };
+      setCalForm({ ...calForm, sizes });
+    }}
+    style={inputStyle} />
+</label>
+<label style={calLabel}>Max height
+  <input type="number" step="0.1"
+    value={s.maxHeight != null ? s.maxHeight / 10 : ""}
+    placeholder="blank = skip"
+    onChange={e => {
+      const v = e.target.value === "" ? undefined : cmToMm(+e.target.value);
+      const sizes = [...calForm.sizes]; sizes[i] = { ...s, maxHeight: v };
+      setCalForm({ ...calForm, sizes });
+    }}
+    style={inputStyle} />
+</label>
                       </div>
                     </div>
                   ))}
