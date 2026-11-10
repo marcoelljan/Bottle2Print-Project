@@ -255,6 +255,15 @@ export default function PrintScreen({ onBack }: Props) {
   const creditsPerPage = colorMode === "color" ? 8 : 3;
   const creditCost = (selectedPageCount ?? 0) * creditsPerPage;
 
+  const requestedPreviewRange = pageRange === "all" ? "all" : customRange.trim();
+  const [previewRange, setPreviewRange] = useState("all");
+  useEffect(() => {
+    if (requestedPreviewRange !== "all" && !rangeIsValid) return;
+    const id = setTimeout(() => setPreviewRange(requestedPreviewRange || "all"), 400);
+    return () => clearTimeout(id);
+  }, [requestedPreviewRange, rangeIsValid]);
+  const previewIsCurrent = rangeIsValid && previewRange === (requestedPreviewRange || "all");
+
   // Non-RFID is blocked if Print is off, or if Deposit is off and the guest's banked credits can't cover the job
   const guestCanCover = guestCredits >= creditCost && creditCost > 0;
   const guestBlocked = printOff || (depositOff && !guestCanCover);
@@ -414,7 +423,11 @@ export default function PrintScreen({ onBack }: Props) {
             {/* Left Column: Live Preview with toolbar/navbars hidden */}
             <div style={previewPane}>
               <div style={{ fontSize: 13, color: "#aaa", marginBottom: 6, fontWeight: 600 }}>
-                {selectedPageCount ?? 0} sheet{(selectedPageCount ?? 0) === 1 ? "" : "s"} of paper preview
+                {!rangeIsValid
+                  ? "Preview paused — enter a valid page range"
+                  : !previewIsCurrent
+                    ? "Updating page preview..."
+                    : `${selectedPageCount} sheet${selectedPageCount === 1 ? "" : "s"} of paper preview`}
               </div>
               {sessionId && (() => {
   const isLandscape = supportsLandscape && layout === "landscape";
@@ -450,23 +463,32 @@ export default function PrintScreen({ onBack }: Props) {
           transition: "filter 0.25s",
         } as React.CSSProperties}
       >
-        <iframe
-          src={`${API}/api/print/preview/${sessionId}#toolbar=0&navpanes=0`}
-          title="Print preview"
-          style={
-            isLandscape
-              ? {
-                  position: "absolute",
-                  top: "50%",
-                  left: "50%",
-                  width: "100cqh",
-                  height: "100cqw",
-                  transform: "translate(-50%, -50%) rotate(90deg)",
-                  border: "none",
-                }
-              : { width: "100%", height: "100%", border: "none" }
+{previewIsCurrent ? (
+  <iframe
+    key={previewRange}
+    src={`${API}/api/print/preview/${sessionId}?pages=${encodeURIComponent(previewRange)}#toolbar=0&navpanes=0`}
+    title="Print preview"
+    style={
+      isLandscape
+        ? {
+            position: "absolute",
+            top: "50%",
+            left: "50%",
+            width: "100cqh",
+            height: "100cqw",
+            transform: "translate(-50%, -50%) rotate(90deg)",
+            border: "none",
           }
-        />
+        : { width: "100%", height: "100%", border: "none" }
+    }
+  />
+) : (
+  <div style={previewStatus}>
+    {!rangeIsValid
+      ? "The page range is invalid. Correct it to see the matching preview."
+      : "Updating the preview to match your page selection..."}
+  </div>
+)}
       </div>
     </div>
   );
@@ -496,6 +518,18 @@ export default function PrintScreen({ onBack }: Props) {
               </div>
               <div style={{ fontSize: 11, lineHeight: 1.4, color: "#f0a500", background: "#2a2418", border: "1px solid #5a4a1a", borderRadius: 6, padding: "6px 8px" }}>
                 Select the same paper size that is loaded in the printer. A different size will not print.
+              </div>
+
+                            <div style={{ ...infoRow, alignItems: "center" }}>
+                <span style={infoLabel}>Pages</span>
+                <select
+                  value={pageRange === "all" ? "all" : "custom"}
+                  onChange={e => setPageRange(e.target.value === "all" ? "all" : "custom")}
+                  style={selectStyle}
+                >
+                  <option value="all">All pages ({pageCount})</option>
+                  <option value="custom">Select pages</option>
+                </select>
               </div>
 
               {pageRange !== "all" && (
@@ -775,6 +809,10 @@ const splitContainer: React.CSSProperties = {
 };
 const previewPane: React.CSSProperties = {
   flex: 1.2, display: "flex", flexDirection: "column", background: "#242424", border: "1px solid #333", borderRadius: 14, padding: 16, boxSizing: "border-box", overflow: "hidden",
+};
+const previewStatus: React.CSSProperties = {
+  width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center",
+  padding: 20, boxSizing: "border-box", textAlign: "center", color: "#aaa", fontSize: 14,
 };
 const settingsPane: React.CSSProperties = {
   flex: 1, background: "#242424", border: "1px solid #333", borderRadius: 14, padding: "16px 20px", display: "flex", flexDirection: "column", justifyContent: "space-between", height: "100%", boxSizing: "border-box",

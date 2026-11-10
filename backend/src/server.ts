@@ -564,9 +564,13 @@ lineBus.on("data", (raw: string) => {
     if (line.startsWith("TOFCAL:")) { handleTofCalLine(line); return; }
     if (line === "VERDICT:ACCEPTED" || line === "VERDICT:REJECTED") return;   // sent != worked, wait for CONFIRM
 
-  if (line.startsWith("RFID:")) {
+    if (line.startsWith("RFID:")) {
     recordSensorActivity("rfid");
     if (isDisabled("rfid")) return;   // card reader switched off: ignore taps
+    if (kioskMode === "idle") {       // nobody is waiting for a card
+      sendToArduino("IGNORE");
+      return;
+    }
     const rfid = line.split(":")[1];
     const newSessionId = Date.now();
     session.rfid      = null;

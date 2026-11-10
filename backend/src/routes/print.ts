@@ -13,6 +13,7 @@ import { isVerified } from "../pinAuth";
 import { isDisabled, disabledMessage } from "../kioskControls";
 import { sendMail } from "../alerts";
 import { printerReady } from "../sensorHealth";
+import { PDFDocument } from "pdf-lib";
 
 const router = Router();
 const PI_IP = process.env.PI_IP || "localhost";
@@ -312,13 +313,33 @@ router.post("/api/print/qr-upload/:sessionId", upload.single("file"), async (req
   }
 });
 
-router.get("/api/print/preview/:sessionId", (req, res) => {
+router.get("/api/print/preview/:sessionId", async (req, res) => {
   const session = getSession(req.params.sessionId);
   if (!session || !session.pdfPath) {
     return res.status(404).send("No file found for this session.");
   }
-  res.setHeader("Content-Type", "application/pdf");
-  res.sendFile(path.resolve(session.pdfPath));
+
+  const range = String(req.query.pages ?? "all").trim();
+  if (range === "all" || range === "") {
+    res.setHeader("Content-Type", "application/pdf");
+    return res.sendFile(path.resolve(session.pdfPath));
+  }
+
+  try {
+    const src = await PDFDocument.load(fs.readFileSync(session.pdfPath), { ignoreEncryption: true });
+    const pages = parsePageRange(range, src.getPageCount());
+    if (!pages) return res.status(400).send("Invalid page range.");
+
+    const out = await PDFDocument.create();
+    const copied = await out.copyPages(src, pages.map(p => p - 1));
+    copied.forEach(p => out.addPage(p));
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Cache-Control", "no-store");
+    res.send(Buffer.from(await out.save()));
+  } catch {
+    res.status(500).send("Could not build preview.");
+  }
 });
 
 router.post("/api/print/qr-confirm/:sessionId", async (req, res) => {

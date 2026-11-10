@@ -65,11 +65,11 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
   const guestReason = off.deposit ?? "";
   const tileOff: React.CSSProperties = { opacity: 0.45, cursor: "not-allowed" };
 
-  useEffect(() => {
+    useEffect(() => {
     fetch(`${API}/api/mode`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "deposit" }),
+      body: JSON.stringify({ mode: "idle" }),   // cards are ignored until the user picks "Tap RFID Card"
     });
     return () => {
       fetch(`${API}/api/mode`, {
@@ -126,6 +126,17 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
     } catch {}
   };
 
+      const handlePickRfid = async () => {
+    try {
+      await fetch(`${API}/api/mode`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "deposit" }),
+      });
+    } catch {}
+    setShowRfidPrompt(true);
+  };
+
     const handleFinishRfid = async () => {
     try { await fetch(`${API}/api/deposit/finish`, { method: "POST" }); } catch {}
   };
@@ -170,7 +181,7 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
             <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 18 }}>How would you like to deposit?</div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18, maxWidth: 640, margin: "0 auto" }}>
             <button
-  onClick={() => { if (!rfidBlocked) setShowRfidPrompt(true); }}
+  onClick={() => { if (!rfidBlocked) handlePickRfid(); }}
   disabled={rfidBlocked}
   style={{ ...choiceTileStyle, ...(rfidBlocked ? tileOff : {}) }}
 >
