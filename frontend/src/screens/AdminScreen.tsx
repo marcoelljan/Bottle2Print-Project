@@ -49,6 +49,7 @@ interface Feedback {
 interface AdminAccount {
   id: number; username: string; email: string; role: Role; created_at: string;
 }
+interface PrintPricing { bwCreditsPerPage: number; colorCreditsPerPage: number; }
 
 interface SensorStatus {
   overall: "online" | "unresponsive" | "offline";
@@ -112,7 +113,7 @@ const LOG_GROUPS: Record<string, { label: string; actions: string[] }> = {
   admins:   { label: "Admin Accounts",      actions: ["CREATE_ADMIN", "EDIT_ADMIN", "DELETE_ADMIN"] },
   security: { label: "Password & Security", actions: ["REQUEST_PASSWORD_RESET", "RESET_PASSWORD"] },
   backup:   { label: "Backup & Restore",    actions: ["EXPORT_BACKUP", "RESTORE_BACKUP","EMAIL_BACKUP", "EMAIL_BACKUP_FAILED"] },
-  system:   { label: "System Control",      actions: ["SHUTDOWN_PI", "REBOOT_PI", "UPDATE_SENSOR_CONFIG"] },
+  system:   { label: "System Control",      actions: ["SHUTDOWN_PI", "REBOOT_PI", "UPDATE_SENSOR_CONFIG", "UPDATE_PRINT_PRICING"] },
   hardware: { label: "Hardware Alerts",     actions: ["SENSOR_FAULT", "SENSOR_RECOVERED", "ARDUINO_OFFLINE", "ARDUINO_UNRESPONSIVE", "ARDUINO_ONLINE", "PRINTER_NOT_READY", "PRINT_FAILED", "PRINT_REFUND"] },
   kiosk:    { label: "Kiosk Controls",      actions: ["KIOSK_PART_DISABLED", "KIOSK_PART_ENABLED"] },
 };
@@ -161,6 +162,7 @@ export default function AdminScreen({}: Props) {
   const [pwInput, setPwInput]       = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [pwError, setPwError]       = useState("");
+  const [sessionNotice, setSessionNotice] = useState("");
   const [pwLoading, setPwLoading]   = useState(false);
 
   const [forgotUsername, setForgotUsername] = useState("");
@@ -236,6 +238,9 @@ export default function AdminScreen({}: Props) {
   const [calForm, setCalForm]           = useState<SensorCalibration | null>(null);
   const [calMsg, setCalMsg]             = useState("");
   const [calSaving, setCalSaving]       = useState(false);
+  const [printPricingForm, setPrintPricingForm] = useState<PrintPricing | null>(null);
+  const [printPricingMsg, setPrintPricingMsg] = useState("");
+  const [printPricingSaving, setPrintPricingSaving] = useState(false);
   const [tofCalBusy, setTofCalBusy] = useState(false);
   const [driveBusy, setDriveBusy] = useState(false);
   const [backupTime, setBackupTime] = useState("17:00");
@@ -393,6 +398,7 @@ useEffect(() => {
         setPwError("");
       } else if (res.ok && data.token) {
         setToken(data.token);
+        setSessionNotice("");
         setMyAdminId(data.adminId);
         setMyUsername(data.username);
         setMyEmail(data.email || "");
@@ -642,6 +648,9 @@ const loadAll = async (tk: string | null, superAdmin: boolean) => {
   };
   const jobs: Promise<any>[] = [
     get(`/api/admin/stats`).then(setStats),
+    get(`/api/admin/print-pricing`).then((pricing: PrintPricing) => {
+      setPrintPricingForm(prev => prev ?? pricing);
+    }),
     loadLists(tk, superAdmin),
     Promise.all([get(`/api/admin/sensors/status`), get(`/api/admin/sensors/config`)]).then(([status, config]) => {
       setSensorStatus(status);
@@ -649,6 +658,36 @@ const loadAll = async (tk: string | null, superAdmin: boolean) => {
     }),
   ];
   (await Promise.allSettled(jobs)).forEach(r => { if (r.status === "rejected") console.error(r.reason); });
+};
+
+const savePrintPricing = async () => {
+  if (!printPricingForm) return;
+  setPrintPricingSaving(true);
+  setPrintPricingMsg("");
+  try {
+    const res = await authFetch(`/api/admin/print-pricing`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(printPricingForm),
+    });
+    const data = await res.json();
+    if (res.status === 401) {
+      setToken(null);
+      setPrintPricingForm(null);
+      setSessionNotice("Your admin session expired. Log in again, then save the print rates.");
+      return;
+    }
+    if (res.ok && data.success) {
+      setPrintPricingForm(data.pricing);
+      setPrintPricingMsg("Print pricing saved. New print jobs will use these rates.");
+    } else {
+      setPrintPricingMsg(data.error ?? "Failed to save print pricing.");
+    }
+  } catch {
+    setPrintPricingMsg("Could not reach backend.");
+  } finally {
+    setPrintPricingSaving(false);
+  }
 };
 
 // Same name as before, so Refresh and your edit/delete handlers keep working
@@ -885,6 +924,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
   const handleLogout = () => {
     if (window.confirm("Log out of the admin panel?")) {
       setToken(null);
+      setPrintPricingForm(null);
       setPasswordChanged(true);
       setLoginStep("username");
       setUserInput("");
@@ -914,6 +954,11 @@ const adjustCredits = async (mode: "add" | "remove") => {
         </div>
         <div style={loginBody}>
           <div style={loginPanel}>
+            {sessionNotice && (
+              <div style={{ fontSize: 13, lineHeight: 1.5, color: "#f0a500", background: "#2a2418", border: "1px solid #5a4a1a", borderRadius: 8, padding: 10 }}>
+                {sessionNotice}
+              </div>
+            )}
             {authView === "reset" ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 <div style={{ fontSize: 13, color: "#888", fontWeight: 600 }}>New Password</div>
@@ -1562,7 +1607,6 @@ const adjustCredits = async (mode: "add" | "remove") => {
         {!loading && tab === "sensors" && (
           <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 16, height: "100%", overflowY: "auto" }}>
             
-
                         {/* Kiosk controls */}
             <div>
               <div style={{ fontSize: 13, fontWeight: 700, color: "#888", marginBottom: 8 }}>KIOSK CONTROLS</div>
@@ -1882,6 +1926,51 @@ const adjustCredits = async (mode: "add" | "remove") => {
                   >
                     + Add Band
                   </button>
+
+                  <div style={{ height: 1, background: "#333", margin: "8px 0" }} />
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#f0a500", marginBottom: 4 }}>PRINT PRICING</div>
+                    <div style={{ fontSize: 12, color: "#888", lineHeight: 1.5, marginBottom: 12 }}>
+                      Print cost = number of pages × credits per page. These rates change print charges only; bottle credit rewards stay separate. Save here to update the total shown on the Print screen.
+                    </div>
+                    <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
+                      {printPricingForm ? (
+                        <>
+                          <label style={calLabel}>Black-and-white (credits/page)
+                            <input
+                              type="number" min="1" max="1000000" step="1"
+                              value={printPricingForm.bwCreditsPerPage}
+                              onChange={e => setPrintPricingForm({ ...printPricingForm, bwCreditsPerPage: +e.target.value })}
+                              style={inputStyle}
+                              disabled={!isSuperAdmin}
+                            />
+                          </label>
+                          <label style={calLabel}>Color (credits/page)
+                            <input
+                              type="number" min="1" max="1000000" step="1"
+                              value={printPricingForm.colorCreditsPerPage}
+                              onChange={e => setPrintPricingForm({ ...printPricingForm, colorCreditsPerPage: +e.target.value })}
+                              style={inputStyle}
+                              disabled={!isSuperAdmin}
+                            />
+                          </label>
+                          {isSuperAdmin && (
+                            <button
+                              onClick={savePrintPricing}
+                              disabled={printPricingSaving}
+                              style={{ ...confirmBtn, flex: "0 0 auto", padding: "10px 20px", opacity: printPricingSaving ? 0.5 : 1 }}
+                            >
+                              {printPricingSaving ? "Saving..." : "Save Print Pricing"}
+                            </button>
+                          )}
+                        </>
+                      ) : (
+                        <div style={{ fontSize: 12, color: "#aaa" }}>Loading print rates...</div>
+                      )}
+                    </div>
+                    {!isSuperAdmin && <div style={{ fontSize: 12, color: "#f0a500", marginTop: 8 }}>View only. Only a super-admin can change print rates.</div>}
+                    {printPricingMsg && <div style={{ fontSize: 12, color: printPricingMsg.startsWith("Print pricing saved") ? "#2ecc71" : "#e74c3c", marginTop: 8 }}>{printPricingMsg}</div>}
+                  </div>
 
                   {calMsg && <div style={{ fontSize: 12, color: calMsg.startsWith("Saved") ? "#2ecc71" : "#e74c3c" }}>{calMsg}</div>}
 

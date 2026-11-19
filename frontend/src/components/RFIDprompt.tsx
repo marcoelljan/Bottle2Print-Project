@@ -139,7 +139,10 @@ export default function RFIDprompt({ onIdentified, onBack }: Props) {
         disabled={verifyingPin}
         disabledMessage={verifyingPin ? (pinMode === "new" ? "Saving new PIN..." : "Verifying PIN...") : undefined}
         onSubmit={handlePinSubmit}
-        onCancel={() => setAwaitingPin(false)}
+        onCancel={() => {
+          setAwaitingPin(false);
+          setPinError("");
+        }}
       />
     );
   }
@@ -148,23 +151,23 @@ export default function RFIDprompt({ onIdentified, onBack }: Props) {
     <div style={{
       display: "flex", flexDirection: "column",
       alignItems: "center", justifyContent: "center",
-      flex: 1, gap: 24,
+      width: "100%", minHeight: "100%", flex: 1, gap: 30,
     }}>
       <div style={{
-        width: 100, height: 100, borderRadius: "50%",
-        border: `3px solid ${status === "error" ? "#e74c3c" : "#f0a500"}`,
+        width: 150, height: 150, borderRadius: "50%",
+        border: `4px solid ${status === "error" ? "#e74c3c" : "var(--kiosk-accent-text)"}`,
         display: "flex", alignItems: "center", justifyContent: "center",
         opacity: pulse ? 1 : 0.5,
         transition: "opacity 0.4s",
-        boxShadow: pulse ? `0 0 24px ${status === "error" ? "#e74c3c55" : "#f0a50055"}` : "none",
+        boxShadow: pulse ? `0 0 32px ${status === "error" ? "#e74c3c55" : "#f0a50055"}` : "none",
       }}>
-        <CreditCardIcon size={42} color={status === "error" ? "#e74c3c" : "#f0a500"} />
+        <CreditCardIcon size={64} color={status === "error" ? "#e74c3c" : "var(--kiosk-accent-text)"} />
       </div>
       <div style={{ textAlign: "center" }}>
-        <p style={{ fontSize: 18, color: status === "error" ? "#e74c3c" : "#f0a500", fontWeight: 600 }}>
+        <p style={{ fontSize: 28, color: status === "error" ? "var(--kiosk-danger-text)" : "var(--kiosk-accent-text)", fontWeight: 700 }}>
           {status === "found" ? msg : status === "error" ? msg : "Tap your RFID card"}
         </p>
-        <p style={{ fontSize: 13, color: "#555", marginTop: 6 }}>
+        <p style={{ fontSize: 18, color: "var(--kiosk-muted)", marginTop: 10 }}>
           {status === "waiting" ? "Hold your card near the reader" : ""}
         </p>
       </div>
@@ -173,14 +176,15 @@ export default function RFIDprompt({ onIdentified, onBack }: Props) {
         <button 
           onClick={onBack} 
           style={{
-            background: "transparent", border: "1px solid #3a3a3a", 
-            color: "#aaa", padding: "10px 24px", borderRadius: 10, 
-            cursor: "pointer", fontSize: 13, fontWeight: 600, marginTop: 10
+            background: "transparent", border: "1px solid var(--kiosk-border-strong)",
+            color: "var(--kiosk-text-secondary)", padding: "14px 28px", borderRadius: 10,
+            cursor: "pointer", fontSize: 16, fontWeight: 600, marginTop: 8
           }}
         >
           Back to payment options
         </button>
       )}
+
     </div>
   );
 }

@@ -40,14 +40,14 @@ export default function FeedbackModal({ context, rfid, onClose }: Props) {
         {submitted ? (
           <div style={{ textAlign: "center", padding: "20px 0" }}>
             <div style={{ marginBottom: 10 }}><CheckCircleIcon size={40} color="#2ecc71" /></div>
-            <div style={{ fontSize: 16, color: "#2ecc71", fontWeight: 700 }}>Thanks for your feedback!</div>
+            <div style={{ fontSize: 16, color: "var(--kiosk-success-text)", fontWeight: 700 }}>Thanks for your feedback!</div>
           </div>
         ) : (
           <>
             <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 6, textAlign: "center" }}>
               How was your experience?
             </div>
-            <div style={{ fontSize: 12, color: "#666", marginBottom: 20, textAlign: "center" }}>
+            <div style={{ fontSize: 12, color: "var(--kiosk-muted-low)", marginBottom: 20, textAlign: "center" }}>
               {context === "print" && "Rate your printing experience"}
               {context === "deposit" && "Rate your bottle deposit experience"}
               {context === "general" && "Tell us how we're doing"}
@@ -63,7 +63,7 @@ export default function FeedbackModal({ context, rfid, onClose }: Props) {
                   style={{
                     background: "none", border: "none", cursor: "pointer",
                     padding: 2, display: "flex",
-                    color: (hover || rating) >= n ? "#f0a500" : "#3a3a3a",
+                    color: (hover || rating) >= n ? "#f0a500" : "var(--kiosk-border-strong)",
                     transition: "color 0.15s",
                   }}
                   aria-label={`${n} star${n > 1 ? "s" : ""}`}
@@ -90,8 +90,8 @@ export default function FeedbackModal({ context, rfid, onClose }: Props) {
                   flex: 1, padding: "12px", borderRadius: 10, fontWeight: 700,
                   fontSize: 14, border: "none",
                   cursor: rating === 0 || submitting ? "not-allowed" : "pointer",
-                  background: rating === 0 || submitting ? "#333" : "#f0a500",
-                  color: rating === 0 || submitting ? "#555" : "#000",
+                  background: rating === 0 || submitting ? "var(--kiosk-border)" : "var(--kiosk-accent-text)",
+                  color: rating === 0 || submitting ? "var(--kiosk-muted-dim)" : "#000",
                 }}
               >
                 {submitting ? "Sending..." : "Submit"}
@@ -110,21 +110,21 @@ const overlay: React.CSSProperties = {
 };
 const modal: React.CSSProperties = {
   position: "relative",
-  background: "#242424", border: "1px solid #444", borderRadius: 16,
+  background: "var(--kiosk-surface)", border: "1px solid var(--kiosk-muted-faint)", borderRadius: 16,
   padding: "32px 32px 24px", textAlign: "center", maxWidth: 400, width: "100%",
 };
 const closeBtn: React.CSSProperties = {
   position: "absolute", top: 12, right: 14,
-  background: "none", border: "none", color: "#666",
+  background: "none", border: "none", color: "var(--kiosk-muted-low)",
   fontSize: 18, cursor: "pointer", lineHeight: 1,
 };
 const textarea: React.CSSProperties = {
-  width: "100%", padding: "10px 12px", background: "#1e1e1e",
-  border: "1px solid #3a3a3a", borderRadius: 8, color: "#fff",
+  width: "100%", padding: "10px 12px", background: "var(--kiosk-input)",
+  border: "1px solid var(--kiosk-border-strong)", borderRadius: 8, color: "var(--kiosk-text)",
   fontSize: 13, outline: "none", resize: "none", fontFamily: "inherit",
 };
 const ghostBtn: React.CSSProperties = {
   flex: 1, padding: "12px", borderRadius: 10, fontWeight: 600,
-  fontSize: 14, background: "transparent", color: "#aaa",
-  border: "1px solid #3a3a3a", cursor: "pointer",
+  fontSize: 14, background: "transparent", color: "var(--kiosk-muted)",
+  border: "1px solid var(--kiosk-border-strong)", cursor: "pointer",
 };

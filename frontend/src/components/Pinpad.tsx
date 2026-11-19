@@ -51,7 +51,7 @@ export default function PINpad({
     <div style={overlay}>
       <div style={modal}>
         <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>{title}</div>
-        {subtitle && <div style={{ fontSize: 12, color: "#888", marginBottom: 18 }}>{subtitle}</div>}
+        {subtitle && <div style={{ fontSize: 12, color: "var(--kiosk-muted-secondary)", marginBottom: 18 }}>{subtitle}</div>}
 
         <div style={{ display: "flex", justifyContent: "center", gap: 12, marginBottom: 18 }}>
           {Array.from({ length }).map((_, i) => (
@@ -60,7 +60,7 @@ export default function PINpad({
               style={{
                 width: 16, height: 16, borderRadius: "50%",
                 background: i < digits.length ? "#f0a500" : "transparent",
-                border: `2px solid ${i < digits.length ? "#f0a500" : "#444"}`,
+                border: `2px solid ${i < digits.length ? "#f0a500" : "var(--kiosk-muted-faint)"}`,
                 transition: "background 0.15s",
               }}
             />
@@ -68,10 +68,10 @@ export default function PINpad({
         </div>
 
         {!disabled && error && (
-          <div style={{ color: "#e74c3c", fontSize: 13, marginBottom: 14, minHeight: 16 }}>{error}</div>
+          <div style={{ color: "var(--kiosk-danger-text)", fontSize: 13, marginBottom: 14, minHeight: 16 }}>{error}</div>
         )}
         {disabled && disabledMessage && (
-          <div style={{ color: "#e74c3c", fontSize: 13, marginBottom: 14, minHeight: 16 }}>{disabledMessage}</div>
+          <div style={{ color: "var(--kiosk-danger-text)", fontSize: 13, marginBottom: 14, minHeight: 16 }}>{disabledMessage}</div>
         )}
         {!error && !(disabled && disabledMessage) && <div style={{ marginBottom: 14, minHeight: 16 }} />}
 
@@ -86,8 +86,8 @@ export default function PINpad({
                 disabled={disabled}
                 style={{
                   width: 64, height: 64, borderRadius: "50%",
-                  background: "#242424", border: "1px solid #3a3a3a",
-                  color: disabled ? "#555" : "#fff", fontSize: 22, fontWeight: 600,
+                  background: "var(--kiosk-surface)", border: "1px solid var(--kiosk-border-strong)",
+                  color: disabled ? "var(--kiosk-muted-dim)" : "var(--kiosk-text)", fontSize: 22, fontWeight: 600,
                   cursor: disabled ? "not-allowed" : "pointer",
                 }}
               >
@@ -100,7 +100,7 @@ export default function PINpad({
         {onCancel && (
           <button
             onClick={onCancel}
-            style={{ marginTop: 20, background: "none", border: "none", color: "#888", fontSize: 13, cursor: "pointer" }}
+            style={{ marginTop: 20, background: "none", border: "none", color: "var(--kiosk-muted-secondary)", fontSize: 13, cursor: "pointer" }}
           >
             Cancel
           </button>
@@ -115,6 +115,6 @@ const overlay: React.CSSProperties = {
   display: "flex", alignItems: "center", justifyContent: "center", zIndex: 300,
 };
 const modal: React.CSSProperties = {
-  background: "#1a1a1a", border: "1px solid #333", borderRadius: 18,
+  background: "var(--kiosk-bg)", border: "1px solid var(--kiosk-border)", borderRadius: 18,
   padding: "28px 32px", textAlign: "center",
 };

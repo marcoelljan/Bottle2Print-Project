@@ -64,6 +64,62 @@
   box-sizing: border-box;
 }
 
+#kiosk-app {
+  --kiosk-bg: #1a1a1a;
+  --kiosk-surface: #242424;
+  --kiosk-input: #1e1e1e;
+  --kiosk-surface-hover: #2a2a2a;
+  --kiosk-border: #333;
+  --kiosk-border-strong: #3a3a3a;
+  --kiosk-text: #fff;
+  --kiosk-text-secondary: #ccc;
+  --kiosk-muted: #aaa;
+  --kiosk-muted-secondary: #888;
+  --kiosk-muted-low: #666;
+  --kiosk-muted-dim: #555;
+  --kiosk-muted-faint: #444;
+  --kiosk-deep: #111;
+  --kiosk-accent-text: #f0a500;
+  --kiosk-success-text: #2ecc71;
+  --kiosk-danger-text: #e74c3c;
+  --kiosk-info-text: #3498db;
+  --kiosk-warning-bg: #2a2418;
+  --kiosk-warning-border: #5a4a1a;
+  --kiosk-danger-bg: #2a1818;
+  --kiosk-danger-border: #5a1a1a;
+  --kiosk-success-bg: #1e3a2a;
+  color-scheme: dark;
+  background: var(--kiosk-bg);
+  color: var(--kiosk-text);
+}
+
+#kiosk-app[data-kiosk-theme="light"] {
+  --kiosk-bg: #f3f5f7;
+  --kiosk-surface: #fff;
+  --kiosk-input: #fff;
+  --kiosk-surface-hover: #edf1f4;
+  --kiosk-border: #d3dae1;
+  --kiosk-border-strong: #b9c4cf;
+  --kiosk-text: #17212b;
+  --kiosk-text-secondary: #344252;
+  --kiosk-muted: #344252;
+  --kiosk-muted-secondary: #465362;
+  --kiosk-muted-low: #526171;
+  --kiosk-muted-dim: #596675;
+  --kiosk-muted-faint: #596675;
+  --kiosk-deep: #e9edf1;
+  --kiosk-accent-text: #865400;
+  --kiosk-success-text: #16703b;
+  --kiosk-danger-text: #b42318;
+  --kiosk-info-text: #15508a;
+  --kiosk-warning-bg: #fff4d6;
+  --kiosk-warning-border: #c9a64b;
+  --kiosk-danger-bg: #fde8e7;
+  --kiosk-danger-border: #d98b86;
+  --kiosk-success-bg: #e5f4e9;
+  color-scheme: light;
+}
+
 body, html {
   margin: 0;
   padding: 0;
@@ -114,4 +170,50 @@ code {
   line-height: 135%;
   padding: 4px 8px;
   background: var(--code-bg);
+}
+
+.registration-field {
+  transition: font-size 0.15s, border-color 0.15s, min-height 0.15s;
+}
+
+.registration-field:focus {
+  font-size: 18px !important;
+  min-height: 52px;
+  border-color: #f0a500 !important;
+}
+
+.rfid-prompt-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 100%;
+  flex: 1;
+  box-sizing: border-box;
+}
+
+@media (max-width: 1100px) {
+  .print-settings-actions {
+    flex-wrap: wrap;
+  }
+
+  .print-settings-actions button {
+    flex: 1 1 130px !important;
+  }
+}
+
+@media (max-width: 800px) {
+  .print-split-container {
+    flex-direction: column;
+  }
+
+  .print-preview-pane {
+    min-height: 380px !important;
+  }
+}
+
+@media (max-width: 650px) {
+  .home-function-grid {
+    grid-template-columns: 1fr !important;
+  }
 }

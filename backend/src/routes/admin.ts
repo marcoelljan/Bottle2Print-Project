@@ -14,6 +14,7 @@ import { getSensorStatus } from "../sensorHealth";
 import { getCalibration, updateCalibration, invalidateCalibrationCache } from "../sensorConfig";
 import { requestTofCal } from "../tofCal";
 import { clearVerified } from "../pinAuth";
+import { getPrintPricing, isValidPrintRate, savePrintPricing } from "../printPricing";
 
 const router = Router();
 
@@ -323,6 +324,22 @@ router.get("/api/admin/sensors/config", (_req, res) => {
   res.json(getCalibration());
 });
 
+router.get("/api/admin/print-pricing", (_req, res) => {
+  res.json(getPrintPricing());
+});
+
+router.patch("/api/admin/print-pricing", requireSuperAdmin, (req: any, res) => {
+  const { bwCreditsPerPage, colorCreditsPerPage } = req.body;
+  if (!isValidPrintRate(bwCreditsPerPage) || !isValidPrintRate(colorCreditsPerPage)) {
+    return res.status(400).json({ error: "Each print rate must be a whole number from 1 to 1,000,000 credits per page." });
+  }
+
+  const pricing = savePrintPricing({ bwCreditsPerPage, colorCreditsPerPage });
+  logActivity(req.admin.username, "UPDATE_PRINT_PRICING",
+    `Black-and-white: ${pricing.bwCreditsPerPage} credits/page; color: ${pricing.colorCreditsPerPage} credits/page`);
+  res.json({ success: true, pricing });
+});
+
 router.patch("/api/admin/sensors/config", requireSuperAdmin, (req: any, res) => {
   try {
     const updated = updateCalibration(req.body);
@@ -473,6 +490,7 @@ router.get("/api/admin/backup", requireSuperAdmin, (req: any, res) => {
       feedback: db.prepare("SELECT * FROM feedback").all(),
       activity_logs: db.prepare("SELECT * FROM activity_logs").all(),
       sensor_config: db.prepare("SELECT * FROM sensor_config").all(),
+      print_pricing: db.prepare("SELECT * FROM print_pricing").all(),
       version: 1,
       exported_at: new Date().toISOString()
     };
@@ -575,6 +593,18 @@ router.post("/api/admin/restore", requireSuperAdmin, (req: any, res) => {
         for (const row of data.sensor_config) {
           stmt.run(cols.map(c => row[c]));
         }
+      }
+
+      if (Array.isArray(data.print_pricing) && data.print_pricing.length > 0) {
+        const pricing = data.print_pricing[0];
+        if (!isValidPrintRate(pricing.bw_credits_per_page) || !isValidPrintRate(pricing.color_credits_per_page)) {
+          throw new Error("Backup contains invalid print pricing.");
+        }
+        db.prepare(`
+          UPDATE print_pricing
+          SET bw_credits_per_page = ?, color_credits_per_page = ?
+          WHERE id = 1
+        `).run(pricing.bw_credits_per_page, pricing.color_credits_per_page);
       }
     })();
 

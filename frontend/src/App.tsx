@@ -10,6 +10,10 @@ export type Screen = "home" | "print" | "balance" | "deposit" | "register" | "ad
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>("home");
+  const [theme, setTheme] = useState<"dark" | "light">(() => {
+    const savedTheme = window.localStorage.getItem("kiosk-theme");
+    return savedTheme === "light" ? "light" : "dark";
+  });
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -24,12 +28,17 @@ export default function App() {
     }
   }, []);
 
+  useEffect(() => {
+    document.documentElement.dataset.kioskTheme = theme;
+    window.localStorage.setItem("kiosk-theme", theme);
+  }, [theme]);
+
   const go = (s: Screen) => setScreen(s);
   const home = () => setScreen("home");
 
   return (
-    <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
-      {screen === "home"     && <HomeScreen onNavigate={go} />}
+    <div id="kiosk-app" data-kiosk-theme={theme} style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
+      {screen === "home"     && <HomeScreen onNavigate={go} theme={theme} onToggleTheme={() => setTheme(current => current === "dark" ? "light" : "dark")} />}
       {screen === "print"    && <PrintScreen onBack={home} />}
       {screen === "balance"  && <CheckBalanceScreen onBack={home} />}
       {screen === "deposit"  && <DepositScreen onBack={home} onNavigate={go} />}

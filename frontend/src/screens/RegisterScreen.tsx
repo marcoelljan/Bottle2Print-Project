@@ -217,20 +217,20 @@ export default function RegisterScreen({ onBack }: Props) {
 
       <div style={body}>
         {step === "tap" && (
-          <div style={{ textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: 20 }}>
+          <div style={{ width: "100%", minHeight: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 30, textAlign: "center" }}>
             <div style={{
-              width: 100, height: 100, borderRadius: "50%",
-              border: `3px solid #f0a500`,
+              width: 150, height: 150, borderRadius: "50%",
+              border: `4px solid #f0a500`,
               display: "flex", alignItems: "center", justifyContent: "center",
               opacity: pulse ? 1 : 0.4,
               transition: "opacity 0.4s",
-              boxShadow: pulse ? "0 0 24px #f0a50055" : "none",
+              boxShadow: pulse ? "0 0 32px #f0a50055" : "none",
             }}>
-              <CreditCardIcon size={42} color="#f0a500" />
+              <CreditCardIcon size={64} color="#f0a500" />
             </div>
             <div>
-              <div style={{ fontSize: 18, color: "#f0a500", fontWeight: 600 }}>Tap your RFID card</div>
-              <div style={{ fontSize: 13, color: "#555", marginTop: 6 }}>Hold your card near the reader to begin</div>
+              <div style={{ fontSize: 28, color: "var(--kiosk-accent-text)", fontWeight: 700 }}>Tap your RFID card</div>
+              <div style={{ fontSize: 18, color: "var(--kiosk-muted)", marginTop: 10 }}>Hold your card near the reader to begin</div>
             </div>
           </div>
         )}
@@ -239,38 +239,42 @@ export default function RegisterScreen({ onBack }: Props) {
           <div style={card}>
             <div style={{ marginBottom: 14 }}>
               <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 2 }}>Enter your details</div>
-              <div style={{ fontSize: 12, color: "#555" }}>RFID: {rfid}</div>
+              <div style={{ fontSize: 12, color: "var(--kiosk-muted-dim)" }}>RFID: {rfid}</div>
             </div>
 
             <div style={fieldGroup}>
-              <label style={fieldLabel}>Surname (Last Name) <span style={{ color: "#e74c3c" }}>*</span></label>
+              <label style={fieldLabel}>Surname (Last Name) <span style={{ color: "var(--kiosk-danger-text)" }}>*</span></label>
               <input
                 value={surname}
                 onChange={e => setSurname(formatTitleCase(e.target.value))}
+                onFocus={e => e.currentTarget.scrollIntoView({ block: "center", behavior: "smooth" })}
                 placeholder="e.g. Dela Cruz"
+                className="registration-field"
                 style={{
                   ...input,
-                  borderColor: attemptedSubmit && !surname.trim() ? "#e74c3c" : "#3a3a3a"
+                  borderColor: attemptedSubmit && !surname.trim() ? "#e74c3c" : "var(--kiosk-border-strong)"
                 }}
               />
               {attemptedSubmit && !surname.trim() && (
-                <div style={{ fontSize: 10, color: "#e74c3c", marginTop: 3 }}>Surname is required.</div>
+                <div style={{ fontSize: 10, color: "var(--kiosk-danger-text)", marginTop: 3 }}>Surname is required.</div>
               )}
             </div>
 
             <div style={fieldGroup}>
-              <label style={fieldLabel}>Firstname <span style={{ color: "#e74c3c" }}>*</span></label>
+              <label style={fieldLabel}>Firstname <span style={{ color: "var(--kiosk-danger-text)" }}>*</span></label>
               <input
                 value={firstname}
                 onChange={e => setFirstname(formatTitleCase(e.target.value))}
+                onFocus={e => e.currentTarget.scrollIntoView({ block: "center", behavior: "smooth" })}
                 placeholder="e.g. Juan"
+                className="registration-field"
                 style={{
                   ...input,
-                  borderColor: attemptedSubmit && !firstname.trim() ? "#e74c3c" : "#3a3a3a"
+                  borderColor: attemptedSubmit && !firstname.trim() ? "#e74c3c" : "var(--kiosk-border-strong)"
                 }}
               />
               {attemptedSubmit && !firstname.trim() && (
-                <div style={{ fontSize: 10, color: "#e74c3c", marginTop: 3 }}>Firstname is required.</div>
+                <div style={{ fontSize: 10, color: "var(--kiosk-danger-text)", marginTop: 3 }}>Firstname is required.</div>
               )}
             </div>
 
@@ -279,25 +283,29 @@ export default function RegisterScreen({ onBack }: Props) {
               <input
                 value={middlename}
                 onChange={e => setMiddlename(formatTitleCase(e.target.value))}
+                onFocus={e => e.currentTarget.scrollIntoView({ block: "center", behavior: "smooth" })}
                 placeholder="e.g. Santos or S."
+                className="registration-field"
                 style={input}
               />
             </div>
 
             <div style={fieldGroup}>
-              <label style={fieldLabel}>Student ID Layout (e.g. 123-12345M) <span style={{ color: "#e74c3c" }}>*</span></label>
+              <label style={fieldLabel}>Student ID Layout (e.g. 123-12345M) <span style={{ color: "var(--kiosk-danger-text)" }}>*</span></label>
               <input
                 data-kb="digits"
                 value={studentId}
                 onChange={e => setStudentId(e.target.value.toUpperCase())}
+                onFocus={e => e.currentTarget.scrollIntoView({ block: "center", behavior: "smooth" })}
                 placeholder="123-12345M"
+                className="registration-field"
                 style={{
                   ...input,
-                  borderColor: showStudentIdError ? "#e74c3c" : "#3a3a3a"
+                  borderColor: showStudentIdError ? "#e74c3c" : "var(--kiosk-border-strong)"
                 }}
               />
                {showStudentIdError && (
-                <div style={{ fontSize: 11, color: "#e74c3c", marginTop: 3 }}>{studentIdProblem}</div>
+                <div style={{ fontSize: 11, color: "var(--kiosk-danger-text)", marginTop: 3 }}>{studentIdProblem}</div>
               )}
             </div>
 
@@ -307,14 +315,14 @@ export default function RegisterScreen({ onBack }: Props) {
                 id="terms"
                 checked={agreed}
                 onChange={e => setAgreed(e.target.checked)}
-                style={{ marginTop: 3, cursor: "pointer", accentColor: "#f0a500" }}
+                style={{ marginTop: 3, cursor: "pointer", accentColor: "var(--kiosk-accent-text)" }}
               />
-              <label htmlFor="terms" style={{ fontSize: 11, color: attemptedSubmit && !agreed ? "#e74c3c" : "#888", lineHeight: 1.4, cursor: "pointer" }}>
-                I agree to the <strong style={{ color: "#aaa" }}>Data Privacy Policy</strong>. I consent to the collection of my credentials and recycling metrics for tracking. <span style={{ color: "#e74c3c" }}>*</span>
+              <label htmlFor="terms" style={{ fontSize: 11, color: attemptedSubmit && !agreed ? "var(--kiosk-danger-text)" : "var(--kiosk-muted-secondary)", lineHeight: 1.4, cursor: "pointer" }}>
+                I agree to the <strong style={{ color: "var(--kiosk-muted)" }}>Data Privacy Policy</strong>. I consent to the collection of my credentials and recycling metrics for tracking. <span style={{ color: "var(--kiosk-danger-text)" }}>*</span>
               </label>
             </div>
                            {attemptedSubmit && !isFormValid && (
-              <div style={{ fontSize: 12, color: "#e74c3c", marginBottom: 10, textAlign: "left" }}>
+              <div style={{ fontSize: 12, color: "var(--kiosk-danger-text)", marginBottom: 10, textAlign: "left" }}>
                 Please fix the highlighted fields before continuing.
               </div>
             )}
@@ -325,7 +333,7 @@ export default function RegisterScreen({ onBack }: Props) {
                 style={{
                   flex: 1, padding: "13px", borderRadius: 10, fontWeight: 700,
                   fontSize: 15, border: "none", cursor: "pointer",
-                  background: isFormValid ? "#f0a500" : "#f0a500",
+                  background: isFormValid ? "#f0a500" : "var(--kiosk-accent-text)",
                   color: "black",
                 }}
               >
@@ -362,30 +370,30 @@ export default function RegisterScreen({ onBack }: Props) {
         )}
         {step === "reset_done" && (
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 22, color: "#2ecc71", fontWeight: 700, marginBottom: 16 }}>New PIN saved</div>
+            <div style={{ fontSize: 22, color: "var(--kiosk-success-text)", fontWeight: 700, marginBottom: 16 }}>New PIN saved</div>
             <button onClick={onBack} style={doneBtn}>Done</button>
           </div>
         )}
 
         {step === "saving" && (
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 18, color: "#f0a500" }}>Saving account & PIN...</div>
+            <div style={{ fontSize: 18, color: "var(--kiosk-accent-text)" }}>Saving account & PIN...</div>
           </div>
         )}
 
         {step === "success" && (
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 22, color: "#2ecc71", fontWeight: 700, marginBottom: 8 }}>Registered!</div>
-            <div style={{ fontSize: 14, color: "#aaa", marginBottom: 4 }}>{surname}, {firstname} {middlename}</div>
-            <div style={{ fontSize: 12, color: "#666", marginBottom: 24 }}>Student ID: {studentId}</div>
+            <div style={{ fontSize: 22, color: "var(--kiosk-success-text)", fontWeight: 700, marginBottom: 8 }}>Registered!</div>
+            <div style={{ fontSize: 14, color: "var(--kiosk-muted)", marginBottom: 4 }}>{surname}, {firstname} {middlename}</div>
+            <div style={{ fontSize: 12, color: "var(--kiosk-muted-low)", marginBottom: 24 }}>Student ID: {studentId}</div>
             <button onClick={onBack} style={doneBtn}>Done</button>
           </div>
         )}
 
         {step === "already" && (
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 20, color: "#f0a500", fontWeight: 700, marginBottom: 8 }}>Card already registered</div>
-            <div style={{ fontSize: 14, color: "#aaa", marginBottom: 24 }}>
+            <div style={{ fontSize: 20, color: "var(--kiosk-accent-text)", fontWeight: 700, marginBottom: 8 }}>Card already registered</div>
+            <div style={{ fontSize: 14, color: "var(--kiosk-muted)", marginBottom: 24 }}>
               This RFID card is already linked to an account.
             </div>
             <button onClick={onBack} style={doneBtn}>Back to home</button>
@@ -394,8 +402,8 @@ export default function RegisterScreen({ onBack }: Props) {
 
         {step === "error" && (
           <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 20, color: "#e74c3c", fontWeight: 700, marginBottom: 8 }}>Registration failed</div>
-            <div style={{ fontSize: 14, color: "#aaa", marginBottom: 24 }}>{errorMsg}</div>
+            <div style={{ fontSize: 20, color: "var(--kiosk-danger-text)", fontWeight: 700, marginBottom: 8 }}>Registration failed</div>
+            <div style={{ fontSize: 14, color: "var(--kiosk-muted)", marginBottom: 24 }}>{errorMsg}</div>
             <button onClick={() => setStep("form")} style={doneBtn}>Try again</button>
           </div>
         )}
@@ -405,40 +413,40 @@ export default function RegisterScreen({ onBack }: Props) {
 }
 
 const fullScreen: React.CSSProperties = {
-  width: "100%", height: "100%", flex: 1, background: "#1a1a1a",
+  width: "100%", height: "100%", flex: 1, background: "var(--kiosk-bg)",
   display: "flex", flexDirection: "column", position: "relative",
   fontFamily: "'Inter', 'Segoe UI', sans-serif", overflow: "hidden",
   boxSizing: "border-box",
 };
 const headerBar: React.CSSProperties = {
-  padding: "14px 24px", borderBottom: "1px solid #2a2a2a",
+  padding: "14px 24px", borderBottom: "1px solid var(--kiosk-surface-hover)",
   display: "flex", alignItems: "center", gap: 12, paddingLeft: 80,
   flexShrink: 0,
 };
-const headerTitle: React.CSSProperties = { fontWeight: 700, fontSize: 15, color: "#fff" };
-const headerSub: React.CSSProperties = { fontSize: 11, color: "#555" };
+const headerTitle: React.CSSProperties = { fontWeight: 700, fontSize: 15, color: "var(--kiosk-text)" };
+const headerSub: React.CSSProperties = { fontSize: 11, color: "var(--kiosk-muted-dim)" };
 const body: React.CSSProperties = {
-  flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 24,
-  overflow: "hidden",
+  flex: 1, minHeight: 0, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: 16,
+  overflowY: "auto",
 };
 const card: React.CSSProperties = {
-  background: "#242424", border: "1px solid #333", borderRadius: 14,
+  background: "var(--kiosk-surface)", border: "1px solid var(--kiosk-border)", borderRadius: 14,
   padding: "20px 28px", width: "100%", maxWidth: 460,
-  maxHeight: "100%", overflowY: "auto", boxSizing: "border-box",
+  boxSizing: "border-box",
 };
 const fieldGroup: React.CSSProperties = { marginBottom: 12 };
-const fieldLabel: React.CSSProperties = { fontSize: 11, color: "#888", display: "block", marginBottom: 4 };
+const fieldLabel: React.CSSProperties = { fontSize: 11, color: "var(--kiosk-muted-secondary)", display: "block", marginBottom: 4 };
 const input: React.CSSProperties = {
-  width: "100%", padding: "10px 12px", background: "#1e1e1e",
-  border: "1px solid #3a3a3a", borderRadius: 8, color: "#fff",
-  fontSize: 14, outline: "none", boxSizing: "border-box",
+  width: "100%", padding: "10px 12px", background: "var(--kiosk-input)",
+  border: "1px solid var(--kiosk-border-strong)", borderRadius: 8, color: "var(--kiosk-text)",
+  fontSize: 16, outline: "none", boxSizing: "border-box",
 };
 const ghostBtn: React.CSSProperties = {
   flex: 1, padding: "13px", borderRadius: 10, fontWeight: 600,
-  fontSize: 14, background: "transparent", color: "#aaa",
-  border: "1px solid #3a3a3a", cursor: "pointer",
+  fontSize: 14, background: "transparent", color: "var(--kiosk-muted)",
+  border: "1px solid var(--kiosk-border-strong)", cursor: "pointer",
 };
 const doneBtn: React.CSSProperties = {
-  padding: "12px 40px", borderRadius: 10, background: "#f0a500",
+  padding: "12px 40px", borderRadius: 10, background: "var(--kiosk-accent-text)",
   color: "#000", fontWeight: 700, fontSize: 15, border: "none", cursor: "pointer",
 };

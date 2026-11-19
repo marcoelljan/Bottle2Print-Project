@@ -17,9 +17,9 @@ export default function BackButton({ onBack }: Props) {
         width: 52,
         height: 52,
         borderRadius: 12,
-        background: "#242424",
-        border: "1px solid #333",
-        color: "#f0a500",
+        background: "var(--kiosk-surface)",
+        border: "1px solid var(--kiosk-border)",
+        color: "var(--kiosk-accent-text)",
         fontSize: 20,
         display: "flex",
         alignItems: "center",
@@ -28,7 +28,7 @@ export default function BackButton({ onBack }: Props) {
         transition: "border-color 0.2s",
       }}
       onMouseEnter={(e) => (e.currentTarget.style.borderColor = "#f0a500")}
-      onMouseLeave={(e) => (e.currentTarget.style.borderColor = "#333")}
+      onMouseLeave={(e) => (e.currentTarget.style.borderColor = "var(--kiosk-border)")}
       aria-label="Back"
     >
       <ArrowBackIcon size={22} color="#f0a500" />

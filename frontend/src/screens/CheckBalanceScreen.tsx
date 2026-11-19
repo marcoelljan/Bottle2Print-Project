@@ -209,7 +209,7 @@ export default function CheckBalanceScreen({ onBack }: Props) {
 
       <div style={body}>
         {!user ? (
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 16, width: "100%", maxWidth: 400 }}>
+          <div className="rfid-prompt-stage">
             <RFIDprompt onIdentified={handleIdentified} />
           </div>
         ) : (
@@ -219,20 +219,20 @@ export default function CheckBalanceScreen({ onBack }: Props) {
                 <div style={avatar}>{user.name.charAt(0).toUpperCase()}</div>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontWeight: 700, fontSize: 18 }}>{user.name}</div>
-                  <div style={{ fontSize: 12, color: "#666", marginTop: 2 }}>ID: {user.studentId || "Not set"}</div>
-                  <div style={{ fontSize: 11, color: "#444", marginTop: 2 }}>RFID: {user.rfid}</div>
+                  <div style={{ fontSize: 12, color: "var(--kiosk-muted-low)", marginTop: 2 }}>ID: {user.studentId || "Not set"}</div>
+                  <div style={{ fontSize: 11, color: "var(--kiosk-muted-faint)", marginTop: 2 }}>RFID: {user.rfid}</div>
                 </div>
                 <div style={{ textAlign: "right" }}>
-                  <div style={{ fontSize: 11, color: "#666" }}>Available credits</div>
-                  <div style={{ fontSize: 40, fontWeight: 800, color: "#f0a500", lineHeight: 1.1 }}>{user.credits}</div>
-                  <div style={{ fontSize: 11, color: "#555" }}>credits</div>
+                  <div style={{ fontSize: 11, color: "var(--kiosk-muted-low)" }}>Available credits</div>
+                  <div style={{ fontSize: 40, fontWeight: 800, color: "var(--kiosk-accent-text)", lineHeight: 1.1 }}>{user.credits}</div>
+                  <div style={{ fontSize: 11, color: "var(--kiosk-muted-dim)" }}>credits</div>
                 </div>
               </div>
 
                                {!showTransfer && transferMsg && (
                 <div style={{ fontSize: 13, fontWeight: 600, padding: "10px 14px", borderRadius: 8,
-                  color: transferMsg.startsWith("Successfully") ? "#2ecc71" : "#e74c3c",
-                  border: `1px solid ${transferMsg.startsWith("Successfully") ? "#2ecc71" : "#e74c3c"}` }}>
+                  color: transferMsg.startsWith("Successfully") ? "var(--kiosk-success-text)" : "var(--kiosk-danger-text)",
+                  border: `1px solid ${transferMsg.startsWith("Successfully") ? "#2ecc71" : "var(--kiosk-danger-text)"}` }}>
                   {transferMsg}
                 </div>
               )}
@@ -248,8 +248,8 @@ export default function CheckBalanceScreen({ onBack }: Props) {
                     setTransferAmount(""); 
                   }}
                   style={{
-                    flex: 1, padding: "12px", borderRadius: 10, background: "#2a2a2a",
-                    border: "1px solid #3a3a3a", color: "#f0a500", fontWeight: 700, fontSize: 14, cursor: "pointer"
+                    flex: 1, padding: "12px", borderRadius: 10, background: "var(--kiosk-surface-hover)",
+                    border: "1px solid var(--kiosk-border-strong)", color: "var(--kiosk-accent-text)", fontWeight: 700, fontSize: 14, cursor: "pointer"
                   }}
                 >
                    Transfer Credits to Another User
@@ -264,13 +264,13 @@ export default function CheckBalanceScreen({ onBack }: Props) {
                 </div>
                 <div style={statCard}>
                   <div style={statLabel}>Plastic Deposited in kg</div>
-                  <div style={{ ...statVal, fontSize: 18, color: "#2ecc71" }}>
+                  <div style={{ ...statVal, fontSize: 18, color: "var(--kiosk-success-text)" }}>
                     {(allTxns.filter(h => h.type === "deposit").reduce((a, h) => a + (h.weight_g ?? 0), 0) / 1000).toFixed(2)} kg
                   </div>
                 </div>
                 <div style={statCard}>
                   <div style={statLabel}>CO2 Saved</div>
-                  <div style={{ ...statVal, fontSize: 18, color: "#3498db" }}>
+                  <div style={{ ...statVal, fontSize: 18, color: "var(--kiosk-info-text)" }}>
                     {(allTxns.filter(h => h.type === "deposit").reduce((a, h) => a + (h.co2_saved_g ?? 0), 0)).toFixed(0)} g
                   </div>
                 </div>
@@ -282,28 +282,28 @@ export default function CheckBalanceScreen({ onBack }: Props) {
 
               {/* recent activity */}
               {history.length > 0 && (
-                <div style={{ background: "#242424", border: "1px solid #333", borderRadius: 12, padding: "16px 20px" }}>
-                  <div style={{ fontSize: 12, color: "#666", marginBottom: 12, fontWeight: 600, letterSpacing: 1 }}>
+                <div style={{ background: "var(--kiosk-surface)", border: "1px solid var(--kiosk-border)", borderRadius: 12, padding: "16px 20px" }}>
+                  <div style={{ fontSize: 12, color: "var(--kiosk-muted-low)", marginBottom: 12, fontWeight: 600, letterSpacing: 1 }}>
                     RECENT ACTIVITY
                   </div>
                   {history.map((h, i) => (
                     <div key={i} style={{
                       display: "flex", justifyContent: "space-between", alignItems: "center",
-                      padding: "8px 0", borderBottom: i < history.length - 1 ? "1px solid #2a2a2a" : "none",
+                      padding: "8px 0", borderBottom: i < history.length - 1 ? "1px solid var(--kiosk-surface-hover)" : "none",
                     }}>
                       <div>
-                        <div style={{ fontSize: 13, color: "#ccc", display: "flex", alignItems: "center", gap: 7 }}>
+                        <div style={{ fontSize: 13, color: "var(--kiosk-text-secondary)", display: "flex", alignItems: "center", gap: 7 }}>
                           {h.type === "deposit" && <><RecyclingIcon size={16} color="#2ecc71" /> Bottle deposited ({h.size ?? "—"}, {h.weight_g ?? 0}g)</>}
                           {h.type === "print" && <><PrintIcon size={16} color="#e74c3c" /> Print job voucher</>}
                           {h.type === "transfer_out" && <>Transferred credits</>}
                           {h.type === "transfer_in" && <>Received credits</>}
                           {h.type === "adjust" && <>Admin adjustment</>}
                         </div>
-                        <div style={{ fontSize: 11, color: "#555", marginTop: 2 }}>{new Date(h.created_at).toLocaleString()}</div>
+                        <div style={{ fontSize: 11, color: "var(--kiosk-muted-dim)", marginTop: 2 }}>{new Date(h.created_at).toLocaleString()}</div>
                       </div>
                       <div style={{
                         fontWeight: 700, fontSize: 14,
-                        color: signedCredits(h) > 0 ? "#2ecc71" : signedCredits(h) < 0 ? "#e74c3c" : "#aaa",
+                        color: signedCredits(h) > 0 ? "var(--kiosk-success-text)" : signedCredits(h) < 0 ? "var(--kiosk-danger-text)" : "var(--kiosk-muted)",
                       }}>
                         {signedCredits(h) > 0 ? `+${signedCredits(h)}` : signedCredits(h) < 0 ? `-${Math.abs(signedCredits(h))}` : `0`}
                       </div>
@@ -323,23 +323,23 @@ export default function CheckBalanceScreen({ onBack }: Props) {
         <div style={overlay}>
           <div style={{ ...modal, maxHeight: "calc(100% - 32px)", overflowY: "auto" }}>
             <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>Transfer Credits</div>
-            <div style={{ fontSize: 13, color: "#666", marginBottom: 20 }}>Type recipient's name or student ID</div>
+            <div style={{ fontSize: 13, color: "var(--kiosk-muted-low)", marginBottom: 20 }}>Type recipient's name or student ID</div>
 
             <div style={{ display: "flex", flexDirection: "column", gap: 12, textAlign: "left" }}>
               <div>
-                <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Find Recipient</div>
+                <div style={{ fontSize: 12, color: "var(--kiosk-muted-secondary)", marginBottom: 4 }}>Find Recipient</div>
                 {selectedRecipient ? (
                   <div style={{ 
                     display: "flex", justifyContent: "space-between", alignItems: "center",
-                    padding: "10px 14px", background: "#1e3a2a", border: "1px solid #2ecc71", borderRadius: 8 
+                    padding: "10px 14px", background: "var(--kiosk-success-bg)", border: "1px solid var(--kiosk-success-text)", borderRadius: 8
                   }}>
                     <div>
-                      <div style={{ fontWeight: 700, color: "#fff", fontSize: 14 }}>{selectedRecipient.name}</div>
-                      <div style={{ fontSize: 11, color: "#aaa" }}>ID: {selectedRecipient.studentId || "None"}</div>
+                      <div style={{ fontWeight: 700, color: "var(--kiosk-text)", fontSize: 14 }}>{selectedRecipient.name}</div>
+                      <div style={{ fontSize: 11, color: "var(--kiosk-muted)" }}>ID: {selectedRecipient.studentId || "None"}</div>
                     </div>
                     <button 
                       onClick={() => { setSelectedRecipient(null); setSearchQuery(""); }} 
-                      style={{ background: "none", border: "none", color: "#e74c3c", cursor: "pointer", fontWeight: 700 }}
+                      style={{ background: "none", border: "none", color: "var(--kiosk-danger-text)", cursor: "pointer", fontWeight: 700 }}
                     >
                       Change
                     </button>
@@ -357,8 +357,8 @@ export default function CheckBalanceScreen({ onBack }: Props) {
                     />
                     {searchResults.length > 0 && (
                       <div style={{
-                        position: "absolute", top: "100%", left: 0, right: 0, background: "#222",
-                        border: "1px solid #444", borderRadius: 8, marginTop: 4, zIndex: 10, maxHeight: 150, overflowY: "auto"
+                        position: "absolute", top: "100%", left: 0, right: 0, background: "var(--kiosk-surface)",
+                        border: "1px solid var(--kiosk-muted-faint)", borderRadius: 8, marginTop: 4, zIndex: 10, maxHeight: 150, overflowY: "auto"
                       }}>
                         {searchResults.map(r => (
                           <div
@@ -368,10 +368,10 @@ export default function CheckBalanceScreen({ onBack }: Props) {
                               setSearchResults([]);
                               if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
                             }}
-                            style={{ padding: "10px 14px", cursor: "pointer", borderBottom: "1px solid #333", fontSize: 13 }}
+                            style={{ padding: "10px 14px", cursor: "pointer", borderBottom: "1px solid var(--kiosk-border)", fontSize: 13 }}
                           >
-                            <div style={{ fontWeight: 700, color: "#fff" }}>{r.name}</div>
-                            <div style={{ fontSize: 11, color: "#888" }}>ID: {r.studentId || "None"}</div>
+                            <div style={{ fontWeight: 700, color: "var(--kiosk-text)" }}>{r.name}</div>
+                            <div style={{ fontSize: 11, color: "var(--kiosk-muted-secondary)" }}>ID: {r.studentId || "None"}</div>
                           </div>
                         ))}
                       </div>
@@ -382,14 +382,14 @@ export default function CheckBalanceScreen({ onBack }: Props) {
 
               {selectedRecipient && (
                 <div>
-                  <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Amount to Transfer</div>
+                  <div style={{ fontSize: 12, color: "var(--kiosk-muted-secondary)", marginBottom: 4 }}>Amount to Transfer</div>
                   <div
                     aria-live="polite"
                     aria-label={`Transfer amount: ${transferAmount || "not entered"} credits`}
                     style={transferAmountDisplay}
                   >
-                    {transferAmount || <span style={{ color: "#666" }}>Enter amount</span>}
-                    {transferAmount && <span style={{ fontSize: 14, color: "#888", marginLeft: 8 }}>credits</span>}
+                    {transferAmount || <span style={{ color: "var(--kiosk-muted-low)" }}>Enter amount</span>}
+                    {transferAmount && <span style={{ fontSize: 14, color: "var(--kiosk-muted-secondary)", marginLeft: 8 }}>credits</span>}
                   </div>
                   <div style={transferKeypad}>
                     {["1", "2", "3", "4", "5", "6", "7", "8", "9"].map(digit => (
@@ -403,19 +403,19 @@ export default function CheckBalanceScreen({ onBack }: Props) {
                   </div>
                   <div style={{
                     display: "flex", justifyContent: "space-between", gap: 12, marginTop: 8,
-                    padding: "10px 12px", background: "#1b1b1b", border: "1px solid #3a3a3a", borderRadius: 8,
+                    padding: "10px 12px", background: "var(--kiosk-input)", border: "1px solid var(--kiosk-border-strong)", borderRadius: 8,
                   }}>
                     <div>
-                      <div style={{ fontSize: 11, color: "#888" }}>Available now</div>
-                      <div style={{ fontSize: 17, fontWeight: 700, color: "#f0a500" }}>
+                      <div style={{ fontSize: 11, color: "var(--kiosk-muted-secondary)" }}>Available now</div>
+                      <div style={{ fontSize: 17, fontWeight: 700, color: "var(--kiosk-accent-text)" }}>
                         {user?.credits ?? 0} credits
                       </div>
                     </div>
                     <div style={{ textAlign: "right" }}>
-                      <div style={{ fontSize: 11, color: "#888" }}>After transfer</div>
+                      <div style={{ fontSize: 11, color: "var(--kiosk-muted-secondary)" }}>After transfer</div>
                       <div style={{
                         fontSize: 17, fontWeight: 700,
-                        color: hasTransferAmount && remainingCredits < 0 ? "#e74c3c" : "#fff",
+                        color: hasTransferAmount && remainingCredits < 0 ? "var(--kiosk-danger-text)" : "var(--kiosk-text)",
                       }}>
                         {hasTransferAmount && remainingCredits >= 0 ? `${remainingCredits} credits` : hasTransferAmount ? "Not enough" : "—"}
                       </div>
@@ -428,11 +428,11 @@ export default function CheckBalanceScreen({ onBack }: Props) {
             {transferMsg && (
               <div style={{ 
                 background: transferMsg.startsWith("Successfully") ? "rgba(46, 204, 113, 0.1)" : "rgba(231, 76, 60, 0.15)",
-                border: `1px solid ${transferMsg.startsWith("Successfully") ? "#2ecc71" : "#e74c3c"}`,
+                border: `1px solid ${transferMsg.startsWith("Successfully") ? "#2ecc71" : "var(--kiosk-danger-text)"}`,
                 borderRadius: 8,
                 padding: "10px 14px",
                 fontSize: 13, 
-                color: transferMsg.startsWith("Successfully") ? "#2ecc71" : "#e74c3c", 
+                color: transferMsg.startsWith("Successfully") ? "var(--kiosk-success-text)" : "var(--kiosk-danger-text)",
                 marginTop: 12,
                 textAlign: "left",
                 fontWeight: 600
@@ -457,16 +457,16 @@ export default function CheckBalanceScreen({ onBack }: Props) {
           <div style={modal}>
             <div style={{ marginBottom: 12 }}><AlertTriangleIcon size={36} color="#f0a500" /></div>
             <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 8 }}>Confirm Transfer</div>
-            <div style={{ fontSize: 14, color: "#ccc", marginBottom: 24, lineHeight: 1.5 }}>
-              Are you sure you want to transfer <strong style={{ color: "#f0a500" }}>{transferAmount} credits</strong> to <strong style={{ color: "#fff" }}>{selectedRecipient?.name}</strong>?
+            <div style={{ fontSize: 14, color: "var(--kiosk-text-secondary)", marginBottom: 24, lineHeight: 1.5 }}>
+              Are you sure you want to transfer <strong style={{ color: "var(--kiosk-accent-text)" }}>{transferAmount} credits</strong> to <strong style={{ color: "var(--kiosk-text)" }}>{selectedRecipient?.name}</strong>?
             </div>
             <div style={{
               display: "flex", justifyContent: "space-between", marginBottom: 20,
-              padding: "10px 12px", background: "#1b1b1b", border: "1px solid #3a3a3a", borderRadius: 8,
-              fontSize: 13, color: "#aaa",
+              padding: "10px 12px", background: "var(--kiosk-input)", border: "1px solid var(--kiosk-border-strong)", borderRadius: 8,
+              fontSize: 13, color: "var(--kiosk-muted)",
             }}>
               <span>Balance after transfer</span>
-              <strong style={{ color: "#f0a500" }}>{remainingCredits} credits</strong>
+              <strong style={{ color: "var(--kiosk-accent-text)" }}>{remainingCredits} credits</strong>
             </div>
 
             <div style={{ display: "flex", gap: 10 }}>
@@ -506,43 +506,43 @@ const signedCredits = (h: any) =>
   : h.credits < 0 ? h.credits : 0;
 
 const fullScreen: React.CSSProperties = {
-  width: "100%", height: "100%", flex: 1, background: "#1a1a1a",
+  width: "100%", height: "100%", flex: 1, background: "var(--kiosk-bg)",
   display: "flex", flexDirection: "column", position: "relative",
   fontFamily: "'Inter', 'Segoe UI', sans-serif", overflow: "hidden",
   boxSizing: "border-box",
 };
 const header: React.CSSProperties = {
-  padding: "14px 24px", borderBottom: "1px solid #2a2a2a",
+  padding: "14px 24px", borderBottom: "1px solid var(--kiosk-surface-hover)",
   display: "flex", alignItems: "center", gap: 12, paddingLeft: 80,
   flexShrink: 0,
 };
-const headerTitle: React.CSSProperties = { fontWeight: 700, fontSize: 15, color: "#fff" };
-const headerSub: React.CSSProperties = { fontSize: 11, color: "#555" };
+const headerTitle: React.CSSProperties = { fontWeight: 700, fontSize: 15, color: "var(--kiosk-text)" };
+const headerSub: React.CSSProperties = { fontSize: 11, color: "var(--kiosk-muted-dim)" };
 const body: React.CSSProperties = {
-  flex: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 24,
-  overflow: "hidden",
+  flex: 1, minHeight: 0, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: 16,
+  overflowY: "auto",
 };
 const scrollWrap: React.CSSProperties = {
-  width: "100%", maxWidth: 580, maxHeight: "100%", overflowY: "auto",
+  width: "100%", maxWidth: 580, overflow: "visible",
   display: "flex", flexDirection: "column", gap: 16, boxSizing: "border-box",
 };
 const profileCard: React.CSSProperties = {
-  background: "#242424", border: "1px solid #333", borderRadius: 14,
+  background: "var(--kiosk-surface)", border: "1px solid var(--kiosk-border)", borderRadius: 14,
   padding: "20px 24px", display: "flex", alignItems: "center", gap: 16,
 };
 const avatar: React.CSSProperties = {
-  width: 52, height: 52, borderRadius: "50%", background: "#f0a500",
+  width: 52, height: 52, borderRadius: "50%", background: "var(--kiosk-accent-text)",
   color: "#000", fontWeight: 800, fontSize: 22,
   display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
 };
 const statCard: React.CSSProperties = {
-  background: "#242424", border: "1px solid #333", borderRadius: 12,
+  background: "var(--kiosk-surface)", border: "1px solid var(--kiosk-border)", borderRadius: 12,
   padding: "14px 18px",
 };
-const statLabel: React.CSSProperties = { fontSize: 11, color: "#666", marginBottom: 4 };
-const statVal: React.CSSProperties = { fontSize: 26, fontWeight: 700, color: "#fff" };
+const statLabel: React.CSSProperties = { fontSize: 11, color: "var(--kiosk-muted-low)", marginBottom: 4 };
+const statVal: React.CSSProperties = { fontSize: 26, fontWeight: 700, color: "var(--kiosk-text)" };
 const backBtn: React.CSSProperties = {
-  padding: "12px", borderRadius: 10, background: "#f0a500",
+  padding: "12px", borderRadius: 10, background: "var(--kiosk-accent-text)",
   color: "#000", fontWeight: 700, fontSize: 15, border: "none",
   cursor: "pointer", width: "100%",
 };
@@ -551,28 +551,28 @@ const overlay: React.CSSProperties = {
   display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100,
 };
 const modal: React.CSSProperties = {
-  background: "#242424", border: "1px solid #444", borderRadius: 16,
+  background: "var(--kiosk-surface)", border: "1px solid var(--kiosk-muted-faint)", borderRadius: 16,
   padding: "32px 36px", textAlign: "center", maxWidth: 380, width: "100%",
 };
 const inputStyle: React.CSSProperties = {
-  width: "100%", padding: "12px 14px", background: "#1e1e1e",
-  border: "1px solid #3a3a3a", borderRadius: 8, color: "#fff",
+  width: "100%", padding: "12px 14px", background: "var(--kiosk-input)",
+  border: "1px solid var(--kiosk-border-strong)", borderRadius: 8, color: "var(--kiosk-text)",
   fontSize: 15, outline: "none", boxSizing: "border-box",
 };
 const ghostBtn: React.CSSProperties = {
   flex: 1, padding: "11px", borderRadius: 8, fontWeight: 600,
-  fontSize: 14, background: "transparent", color: "#aaa",
-  border: "1px solid #3a3a3a", cursor: "pointer",
+  fontSize: 14, background: "transparent", color: "var(--kiosk-muted)",
+  border: "1px solid var(--kiosk-border-strong)", cursor: "pointer",
 };
 const confirmBtn: React.CSSProperties = {
   flex: 1, padding: "11px", borderRadius: 8, fontWeight: 700,
-  fontSize: 14, background: "#f0a500", color: "#000",
+  fontSize: 14, background: "var(--kiosk-accent-text)", color: "#000",
   border: "none", cursor: "pointer",
 };
 const transferAmountDisplay: React.CSSProperties = {
   minHeight: 56, display: "flex", alignItems: "center", justifyContent: "center",
-  padding: "8px 14px", marginBottom: 8, background: "#111",
-  border: "1px solid #555", borderRadius: 8, color: "#fff",
+  padding: "8px 14px", marginBottom: 8, background: "var(--kiosk-deep)",
+  border: "1px solid var(--kiosk-muted-dim)", borderRadius: 8, color: "var(--kiosk-text)",
   fontSize: 30, fontWeight: 700, fontVariantNumeric: "tabular-nums",
 };
 const transferKeypad: React.CSSProperties = {
@@ -580,9 +580,9 @@ const transferKeypad: React.CSSProperties = {
   gap: 8,
 };
 const transferKey: React.CSSProperties = {
-  height: 48, borderRadius: 8, border: "1px solid #444", background: "#333",
-  color: "#fff", fontSize: 22, fontWeight: 700, cursor: "pointer", touchAction: "manipulation",
+  height: 48, borderRadius: 8, border: "1px solid var(--kiosk-muted-faint)", background: "var(--kiosk-border)",
+  color: "var(--kiosk-text)", fontSize: 22, fontWeight: 700, cursor: "pointer", touchAction: "manipulation",
 };
 const transferUtilityKey: React.CSSProperties = {
-  ...transferKey, background: "#242424", color: "#f0a500", fontSize: 15,
+  ...transferKey, background: "var(--kiosk-surface)", color: "var(--kiosk-accent-text)", fontSize: 15,
 };

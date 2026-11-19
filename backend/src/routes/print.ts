@@ -14,6 +14,7 @@ import { isDisabled, disabledMessage } from "../kioskControls";
 import { sendMail } from "../alerts";
 import { printerReady } from "../sensorHealth";
 import { PDFDocument } from "pdf-lib";
+import { getPrintPricing } from "../printPricing";
 
 const router = Router();
 const PI_IP = process.env.PI_IP || "localhost";
@@ -122,6 +123,9 @@ let lastPrinterMail = 0;
 const cancelledJobs = new Set<string>();   // jobs cancelled because they never finished
 
 
+router.get("/api/print/pricing", (_req, res) => {
+  res.json(getPrintPricing());
+});
 
 // If a queued job is still waiting after limitMs, cancel it and run onStuck
 function watchJob(jobId: string, limitMs: number, onStuck: () => void) {
@@ -291,7 +295,11 @@ router.post("/api/print/qr-upload/:sessionId", upload.single("file"), async (req
     });
 
     const user = db.prepare("SELECT * FROM users WHERE rfid = ?").get(session.rfid) as any;
-    const costs = { bw: pageCount * 3, color: pageCount * 8 };
+    const pricing = getPrintPricing();
+    const costs = {
+      bw: pageCount * pricing.bwCreditsPerPage,
+      color: pageCount * pricing.colorCreditsPerPage,
+    };
       
     broadcast({
       type: "qr-upload",
@@ -382,7 +390,21 @@ router.post("/api/print/qr-confirm/:sessionId", async (req, res) => {
     cupsRangeFlag = `-P ${selectedPages.join(",")}`;
   }
 
-  const creditsPerPage = colorMode === "color" ? 8 : 3;
+  const pricing = getPrintPricing();
+  const expectedPricing = req.body.pricing;
+  if (
+    expectedPricing &&
+    (expectedPricing.bwCreditsPerPage !== pricing.bwCreditsPerPage ||
+      expectedPricing.colorCreditsPerPage !== pricing.colorCreditsPerPage)
+  ) {
+    return res.status(409).json({
+      error: "Print pricing changed. Please review the updated total before continuing.",
+      pricing,
+    });
+  }
+  const creditsPerPage = colorMode === "color"
+    ? pricing.colorCreditsPerPage
+    : pricing.bwCreditsPerPage;
   const totalCost = selectedPages.length * creditsPerPage;
 
   const isGuest = rfid === "GUEST";
