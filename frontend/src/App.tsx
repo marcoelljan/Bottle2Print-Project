@@ -66,65 +66,62 @@ export default function App() {
       target.scrollTop += event.deltaY;
     };
 
-    let touchY: number | null = null;
-    const onTouchStart = (event: TouchEvent) => {
-      touchY = event.touches.length === 1 ? event.touches[0].clientY : null;
+    let activePointer: number | null = null;
+    let pointerY = 0;
+    let pointerOrigin: EventTarget | null = null;
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.pointerType === "mouse" || !event.isPrimary) return;
+      activePointer = event.pointerId;
+      pointerY = event.clientY;
+      pointerOrigin = event.target;
     };
-    const onTouchMove = (event: TouchEvent) => {
-      if (touchY === null || event.touches.length !== 1) return;
-      const nextY = event.touches[0].clientY;
-      const delta = touchY - nextY;
-      touchY = nextY;
+    const onPointerMove = (event: PointerEvent) => {
+      if (event.pointerId !== activePointer) return;
+      const delta = pointerY - event.clientY;
+      pointerY = event.clientY;
       if (!delta) return;
 
-      const target = findScrollTarget(event.target, delta);
+      const target = findScrollTarget(pointerOrigin, delta);
       if (!target) return;
       event.preventDefault();
       target.scrollTop += delta;
     };
-    const onTouchEnd = () => { touchY = null; };
+    const onPointerEnd = (event: PointerEvent) => {
+      if (event.pointerId !== activePointer) return;
+      activePointer = null;
+      pointerOrigin = null;
+    };
 
     root.addEventListener("wheel", onWheel, { passive: false });
-    root.addEventListener("touchstart", onTouchStart, { passive: true });
-    root.addEventListener("touchmove", onTouchMove, { passive: false });
-    root.addEventListener("touchend", onTouchEnd);
-    root.addEventListener("touchcancel", onTouchEnd);
+    root.addEventListener("pointerdown", onPointerDown);
+    root.addEventListener("pointermove", onPointerMove, { passive: false });
+    root.addEventListener("pointerup", onPointerEnd);
+    root.addEventListener("pointercancel", onPointerEnd);
     return () => {
       root.removeEventListener("wheel", onWheel);
-      root.removeEventListener("touchstart", onTouchStart);
-      root.removeEventListener("touchmove", onTouchMove);
-      root.removeEventListener("touchend", onTouchEnd);
-      root.removeEventListener("touchcancel", onTouchEnd);
+      root.removeEventListener("pointerdown", onPointerDown);
+      root.removeEventListener("pointermove", onPointerMove);
+      root.removeEventListener("pointerup", onPointerEnd);
+      root.removeEventListener("pointercancel", onPointerEnd);
     };
   }, []);
 
   const go = (s: Screen) => setScreen(s);
   const home = () => setScreen("home");
+  const toggleTheme = () => setTheme(current => current === "dark" ? "light" : "dark");
 
   return (
     <div id="kiosk-app" data-kiosk-theme={theme} style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
-      {screen === "home"     && <HomeScreen onNavigate={go} />}
-      {screen === "print"    && <PrintScreen onBack={home} />}
-      {screen === "balance"  && <CheckBalanceScreen onBack={home} />}
-      {screen === "deposit"  && <DepositScreen onBack={home} onNavigate={go} />}
-      {screen === "register" && <RegisterScreen onBack={home} />}
-      {screen === "admin"    && <AdminScreen theme={theme} onToggleTheme={() => setTheme(current => current === "dark" ? "light" : "dark")} />}
-      {screen !== "admin" && <button
-        type="button"
-        role="switch"
-        aria-checked={theme === "light"}
-        aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-        onClick={() => setTheme(current => current === "dark" ? "light" : "dark")}
-        style={{
-          position: "fixed", right: 16, bottom: 16, zIndex: 50,
-          display: "flex", alignItems: "center", gap: 8, padding: "10px 14px",
-          borderRadius: 999, border: "1px solid var(--kiosk-border-strong)",
-          background: "var(--kiosk-surface)", color: "var(--kiosk-text)",
-          fontSize: 14, fontWeight: 600, cursor: "pointer",
-        }}
-      >
-        {theme === "dark" ? "Dark mode" : "Light mode"}
-      </button>}
+      {screen === "home"     && <HomeScreen
+        onNavigate={go}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+      />}
+      {screen === "print"    && <PrintScreen onBack={home} theme={theme} onToggleTheme={toggleTheme} />}
+      {screen === "balance"  && <CheckBalanceScreen onBack={home} theme={theme} onToggleTheme={toggleTheme} />}
+      {screen === "deposit"  && <DepositScreen onBack={home} onNavigate={go} theme={theme} onToggleTheme={toggleTheme} />}
+      {screen === "register" && <RegisterScreen onBack={home} theme={theme} onToggleTheme={toggleTheme} />}
+      {screen === "admin"    && <AdminScreen theme={theme} onToggleTheme={toggleTheme} />}
     </div>
   );
 }

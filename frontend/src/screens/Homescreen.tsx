@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import type { Screen } from "../App";
 import FeedbackModal from "../components/FeedbackModal";
+import KioskThemeToggle from "../components/KioskThemeToggle";
 import {
   PrintIcon,
   CreditCardIcon,
@@ -13,6 +14,8 @@ import { API } from "../config";
 
 interface Props {
   onNavigate: (s: Screen) => void;
+  theme: "dark" | "light";
+  onToggleTheme: () => void;
 }
 
 interface Tile {
@@ -30,7 +33,7 @@ const TILES: Tile[] = [
   { screen: "register", icon: <AccountCircleIcon size={28} color="#f0a500" />, label: "Register RFID", sub: "Link a new card", color: "var(--kiosk-accent-text)" },
 ];
 
-export default function HomeScreen({ onNavigate }: Props) {
+export default function HomeScreen({ onNavigate, theme, onToggleTheme }: Props) {
   const [showFeedback, setShowFeedback] = useState(false);
     const [off, setOff] = useState<Record<string, string>>({});   // feature -> message while switched off
   useEffect(() => {
@@ -72,11 +75,12 @@ export default function HomeScreen({ onNavigate }: Props) {
             IOT PRINTING KIOSK
           </span>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
           <div style={{ fontSize: 15, color: "var(--kiosk-success-text)", display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--kiosk-success-text)", display: "inline-block" }} />
             Online
           </div>
+          <KioskThemeToggle theme={theme} onToggleTheme={onToggleTheme} />
         </div>
       </div>
 

@@ -14,8 +14,9 @@ import {
   SignalIcon,
   XCircleIcon,
 } from "../components/KioskIcons";
+import KioskThemeToggle from "../components/KioskThemeToggle";
 
-interface Props { onBack: () => void; }
+interface Props { onBack: () => void; theme: "dark" | "light"; onToggleTheme: () => void; }
 interface User { rfid: string; name: string; studentId: string; credits: number; }
 interface PrintPricing { bwCreditsPerPage: number; colorCreditsPerPage: number; }
 
@@ -82,7 +83,7 @@ async function fetchPrintPricing(): Promise<PrintPricing> {
   return pricing;
 }
 
-export default function PrintScreen({ onBack }: Props) {
+export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
   const [step, setStep] = useState<Step>("qr");
   const [user, setUser] = useState<User | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -463,6 +464,9 @@ export default function PrintScreen({ onBack }: Props) {
             Your credits: <strong style={{ color: "var(--kiosk-accent-text)", fontSize: 16 }}>{guestCredits}</strong>
           </div>
         )}
+        <div style={{ marginLeft: showGuestBadge ? 14 : "auto" }}>
+          <KioskThemeToggle theme={theme} onToggleTheme={onToggleTheme} />
+        </div>
       </div>
 
       <div className="print-screen-body kiosk-page-scroll" style={body}>

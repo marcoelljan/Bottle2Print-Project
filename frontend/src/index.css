@@ -65,6 +65,7 @@
 }
 
 #kiosk-app {
+  touch-action: none;
   --kiosk-bg: #1a1a1a;
   --kiosk-surface: #242424;
   --kiosk-input: #1e1e1e;
@@ -147,6 +148,7 @@
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
   scroll-behavior: smooth;
+  touch-action: none;
 }
 
 body, html {

@@ -4,13 +4,14 @@ import RFIDprompt from "../components/RFIDprompt";
 import PINpad from "../components/Pinpad";
 import { API } from "../config";
 import { AlertTriangleIcon, CreditCardIcon, PrintIcon, RecyclingIcon } from "../components/KioskIcons";
+import KioskThemeToggle from "../components/KioskThemeToggle";
 
-interface Props { onBack: () => void; }
+interface Props { onBack: () => void; theme: "dark" | "light"; onToggleTheme: () => void; }
 interface User { rfid: string; name: string; studentId: string; credits: number; }
 
 type TransferStep = "search" | "confirm" | "pin";
 
-export default function CheckBalanceScreen({ onBack }: Props) {
+export default function CheckBalanceScreen({ onBack, theme, onToggleTheme }: Props) {
   const [user, setUser] = useState<User | null>(null);
   const [history, setHistory] = useState<any[]>([]);
   const [allTxns, setAllTxns] = useState<any[]>([]);
@@ -204,6 +205,9 @@ export default function CheckBalanceScreen({ onBack }: Props) {
         <div>
           <div style={headerTitle}>Check Balance</div>
           <div style={headerSub}>View your print credits & recycling history</div>
+        </div>
+        <div style={{ marginLeft: "auto" }}>
+          <KioskThemeToggle theme={theme} onToggleTheme={onToggleTheme} />
         </div>
       </div>
 

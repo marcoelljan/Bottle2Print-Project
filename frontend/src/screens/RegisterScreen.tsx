@@ -4,12 +4,13 @@ import PINpad from "../components/Pinpad";
 import { API, WS_URL } from "../config";
 import { AccountCircleIcon, CreditCardIcon } from "../components/KioskIcons";
 import RFIDprompt from "../components/RFIDprompt";
+import KioskThemeToggle from "../components/KioskThemeToggle";
 
-interface Props { onBack: () => void; }
+interface Props { onBack: () => void; theme: "dark" | "light"; onToggleTheme: () => void; }
 
 type Step = "tap" | "form" | "pin" | "confirm_pin" | "saving" | "success" | "error" | "already" | "reset" | "reset_done";
 
-export default function RegisterScreen({ onBack }: Props) {
+export default function RegisterScreen({ onBack, theme, onToggleTheme }: Props) {
   const [step, setStep]         = useState<Step>("tap");
   const [rfid, setRfid]         = useState("");
   const [surname, setSurname]   = useState("");
@@ -207,6 +208,9 @@ export default function RegisterScreen({ onBack }: Props) {
           <div style={headerTitle}>Register RFID</div>
           <div style={headerSub}>Link a new card to your account</div>
         </div>
+        <div style={{ marginLeft: "auto" }}>
+          <KioskThemeToggle theme={theme} onToggleTheme={onToggleTheme} />
+        </div>
       </div>
 
       <div className="kiosk-page-scroll" style={body}>
@@ -376,10 +380,10 @@ export default function RegisterScreen({ onBack }: Props) {
         )}
 
         {step === "success" && (
-          <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 22, color: "var(--kiosk-success-text)", fontWeight: 700, marginBottom: 8 }}>Registered!</div>
-            <div style={{ fontSize: 14, color: "var(--kiosk-muted)", marginBottom: 4 }}>{surname}, {firstname} {middlename}</div>
-            <div style={{ fontSize: 12, color: "var(--kiosk-muted-low)", marginBottom: 24 }}>Student ID: {studentId}</div>
+          <div style={{ width: "100%", minHeight: "100%", alignSelf: "stretch", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center" }}>
+            <div style={{ fontSize: 28, color: "var(--kiosk-success-text)", fontWeight: 700, marginBottom: 10 }}>Registered!</div>
+            <div style={{ fontSize: 18, color: "var(--kiosk-muted)", marginBottom: 6 }}>{surname}, {firstname} {middlename}</div>
+            <div style={{ fontSize: 15, color: "var(--kiosk-muted-secondary)", marginBottom: 26 }}>Student ID: {studentId}</div>
             <button onClick={onBack} style={doneBtn}>Done</button>
           </div>
         )}

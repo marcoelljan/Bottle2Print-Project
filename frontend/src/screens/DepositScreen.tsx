@@ -18,8 +18,9 @@ import {
   XCircleIcon,
 } from "../components/KioskIcons";
 import useKioskControls from "../components/useKioskControls";
+import KioskThemeToggle from "../components/KioskThemeToggle";
 
-interface Props { onBack: () => void; onNavigate: (s: Screen, params?: any) => void; }
+interface Props { onBack: () => void; onNavigate: (s: Screen, params?: any) => void; theme: "dark" | "light"; onToggleTheme: () => void; }
 interface User { rfid: string; name: string; studentId: string; credits: number; }
 
 type StepStatus = "pending" | "running" | "pass" | "fail";
@@ -48,7 +49,7 @@ const STATUS_COLOR: Record<StepStatus, string> = {
   pending: "var(--kiosk-border-strong)", running: "var(--kiosk-accent-text)", pass: "var(--kiosk-success-text)", fail: "var(--kiosk-danger-text)",
 };
 
-export default function DepositScreen({ onBack, onNavigate }: Props) {
+export default function DepositScreen({ onBack, onNavigate, theme, onToggleTheme }: Props) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [connected, setConnected] = useState(false);
@@ -209,6 +210,7 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
           <span style={{ width: 6, height: 6, borderRadius: "50%", background: connected ? "#2ecc71" : "var(--kiosk-danger-text)", display: "inline-block" }} />
           {connected ? "Online" : "Offline"}
         </div>
+        <KioskThemeToggle theme={theme} onToggleTheme={onToggleTheme} />
       </div>
 
       <div className="kiosk-page-scroll" style={body}>
