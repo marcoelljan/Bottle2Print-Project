@@ -425,7 +425,7 @@ router.get("/api/admin/kiosk-controls", (_req, res) => {
   res.json(getControls());
 });
 
-router.patch("/api/admin/kiosk-controls/:feature", (req: any, res) => {
+router.patch("/api/admin/kiosk-controls/:feature", requireSuperAdmin, (req: any, res) => {
   const feature = req.params.feature as Feature;
   if (!FEATURES.includes(feature)) return res.status(400).json({ error: "Unknown feature." });
   const disabled = req.body.disabled === true;
@@ -667,7 +667,7 @@ router.patch("/api/admin/user/:rfid", requireAuth, (req: any, res) => {
   res.json({ success: true });
 });
 
-router.post("/api/admin/user/:rfid/credits", (req: any, res) => {
+router.post("/api/admin/user/:rfid/credits", requireSuperAdmin, (req: any, res) => {
   const { rfid } = req.params;
   const amount = Math.floor(Number(req.body.amount));
   const mode = req.body.mode === "remove" ? "remove" : "add";
@@ -821,7 +821,7 @@ router.post("/api/admin/admins", requireSuperAdmin, async (req: any, res) => {
 
 router.patch("/api/admin/admins/:id", requireAuth, async (req: any, res) => {
   const targetId = parseInt(req.params.id);
-  const { username, email, password, role } = req.body;
+  const { username, email, password, currentPassword, role } = req.body;
 
   if (req.admin.role !== "super_admin" && req.admin.adminId !== targetId) {
     return res.status(403).json({ error: "Unauthorized." });
@@ -829,6 +829,15 @@ router.patch("/api/admin/admins/:id", requireAuth, async (req: any, res) => {
 
   const target = db.prepare("SELECT * FROM admins WHERE id = ?").get(targetId) as any;
   if (!target) return res.status(404).json({ error: "Admin not found." });
+
+  if (password) {
+    if (password.length < 8) return res.status(400).json({ error: "Password must be at least 8 characters." });
+    if (req.admin.adminId === targetId) {
+      if (!currentPassword) return res.status(400).json({ error: "Enter your current password to change it." });
+      const currentPasswordMatches = await bcrypt.compare(currentPassword, target.password_hash);
+      if (!currentPasswordMatches) return res.status(403).json({ error: "Current password is incorrect." });
+    }
+  }
 
   if (username && username !== target.username) {
     const clash = db.prepare("SELECT id FROM admins WHERE username = ? AND id != ?").get(username, targetId);
@@ -843,9 +852,7 @@ router.patch("/api/admin/admins/:id", requireAuth, async (req: any, res) => {
   if (role && req.admin.role === "super_admin") {
     db.prepare("UPDATE admins SET role = ? WHERE id = ?").run(role === "super_admin" ? "super_admin" : "admin", targetId);
   }
-
   if (password) {
-    if (password.length < 8) return res.status(400).json({ error: "Password must be at least 8 characters." });
     const hash = await bcrypt.hash(password, 10);
     db.prepare("UPDATE admins SET password_hash = ?, password_changed = 1 WHERE id = ?").run(hash, targetId);
   }

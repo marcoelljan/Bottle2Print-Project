@@ -276,6 +276,7 @@ useEffect(() => {
   const [creditAmount, setCreditAmount] = useState("");
   const [creditReason, setCreditReason] = useState("");
   const [creditMsg, setCreditMsg]       = useState("");
+  const [userDeleteMsg, setUserDeleteMsg] = useState("");
 
   const [adminModal, setAdminModal] = useState<null | { mode: "create" } | { mode: "edit"; admin: AdminAccount }>(null);
   const [adminForm, setAdminForm]   = useState({ username: "", email: "", password: "", role: "admin" as Role });
@@ -286,7 +287,7 @@ useEffect(() => {
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const [showAccountModal, setShowAccountModal] = useState(false);
-  const [settingsForm, setSettingsForm]     = useState({ username: "", email: "", newPassword: "", confirmPassword: "" });
+  const [settingsForm, setSettingsForm]     = useState({ username: "", email: "", currentPassword: "", newPassword: "", confirmPassword: "" });
   const [showSettingsPass, setShowSettingsPass] = useState(false);
   const [settingsMsg, setSettingsMsg]       = useState("");
 
@@ -517,6 +518,11 @@ useEffect(() => {
         setSettingsMsg("New passwords do not match.");
         return;
       }
+      if (!settingsForm.currentPassword) {
+        setSettingsMsg("Enter your current password to change it.");
+        return;
+      }
+      payload.currentPassword = settingsForm.currentPassword;
       payload.password = settingsForm.newPassword;
     }
 
@@ -530,6 +536,7 @@ useEffect(() => {
       if (data.success) {
         setMyUsername(settingsForm.username.trim());
         setMyEmail(settingsForm.email.trim());
+        setSettingsForm({ username: settingsForm.username.trim(), email: settingsForm.email.trim(), currentPassword: "", newPassword: "", confirmPassword: "" });
         setShowAccountModal(false);
         setSettingsMsg("");
         fetchData();
@@ -740,8 +747,19 @@ const adjustCredits = async (mode: "add" | "remove") => {
 
   const handleDeleteUser = async (rfid: string) => {
     if (!window.confirm("Are you sure you want to delete this user?")) return;
-    await authFetch(`/api/admin/user/${rfid}`, { method: "DELETE" });
-    fetchData();
+    setUserDeleteMsg("");
+    try {
+      const res = await authFetch(`/api/admin/user/${rfid}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setUserDeleteMsg(data.error ?? "Could not delete the user.");
+        return;
+      }
+      setUserDeleteMsg(`User ${rfid} and their associated records were deleted.`);
+      await fetchData();
+    } catch {
+      setUserDeleteMsg("Could not reach the server. The user was not deleted.");
+    }
   };
 
   const openCreateAdmin = () => {
@@ -960,7 +978,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
             )}
             {authView === "reset" ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div style={{ fontSize: 13, color: "#888", fontWeight: 600 }}>New Password</div>
+                <div style={{ fontSize: 13, color: "var(--admin-muted-strong)", fontWeight: 600 }}>New Password</div>
                 <div style={{ position: "relative" }}>
                   <input
                     type={showResetPass ? "text" : "password"}
@@ -975,14 +993,14 @@ const adjustCredits = async (mode: "add" | "remove") => {
                     onClick={() => setShowResetPass(!showResetPass)}
                     style={{
                       position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)",
-                      background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: 13
+                      background: "none", border: "none", color: "var(--admin-muted)", cursor: "pointer", fontSize: 13
                     }}
                   >
                     {showResetPass ? "Hide" : "Show"}
                   </button>
                 </div>
 
-                <div style={{ fontSize: 13, color: "#888", fontWeight: 600, marginTop: 4 }}>Confirm New Password</div>
+                <div style={{ fontSize: 13, color: "var(--admin-muted-strong)", fontWeight: 600, marginTop: 4 }}>Confirm New Password</div>
                 <input
                   type="password"
                   value={resetConfirmPass}
@@ -1010,7 +1028,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
               </div>
             ) : authView === "forgot" ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div style={{ fontSize: 13, color: "#888", fontWeight: 600 }}>Username</div>
+                <div style={{ fontSize: 13, color: "var(--admin-muted-strong)", fontWeight: 600 }}>Username</div>
                 <input
                   type="text"
                   value={forgotUsername}
@@ -1019,7 +1037,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                   style={inputStyle}
                   autoFocus
                 />
-                <div style={{ fontSize: 13, color: "#888", fontWeight: 600, marginTop: 4 }}>Registered Gmail Address</div>
+                <div style={{ fontSize: 13, color: "var(--admin-muted-strong)", fontWeight: 600, marginTop: 4 }}>Registered Gmail Address</div>
                 <input
                   type="email"
                   value={forgotEmail}
@@ -1037,14 +1055,14 @@ const adjustCredits = async (mode: "add" | "remove") => {
                 </button>
                 <button
                   onClick={() => { setAuthView("login"); setForgotMsg(""); }}
-                  style={{ background: "none", border: "none", color: "#888", fontSize: 12, cursor: "pointer", marginTop: 4 }}
+                  style={{ background: "none", border: "none", color: "var(--admin-muted)", fontSize: 12, cursor: "pointer", marginTop: 4 }}
                 >
                   ← Back to Log In
                 </button>
               </div>
             ) : loginStep === "username" ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <div style={{ fontSize: 13, color: "#888", fontWeight: 600 }}>Username</div>
+                <div style={{ fontSize: 13, color: "var(--admin-muted-strong)", fontWeight: 600 }}>Username</div>
                 <input
                   type="text"
                   value={userInput}
@@ -1073,7 +1091,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div style={{ fontSize: 13, color: "#888", fontWeight: 600 }}>Password</div>
+                  <div style={{ fontSize: 13, color: "var(--admin-muted-strong)", fontWeight: 600 }}>Password</div>
                   <button
                     onClick={() => { setLoginStep("username"); setPwInput(""); setPwError(""); }}
                     disabled={lockoutRemaining > 0}
@@ -1097,7 +1115,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
                     disabled={lockoutRemaining > 0}
-                    style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: 13 }}
+                    style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "var(--admin-muted)", cursor: "pointer", fontSize: 13 }}
                   >
                     {showPassword ? "Hide" : "Show"}
                   </button>
@@ -1153,7 +1171,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
         <div style={loginBody}>
           <div style={loginPanel}>
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              <div style={{ fontSize: 13, color: "#888", fontWeight: 600 }}>New Password</div>
+              <div style={{ fontSize: 13, color: "var(--admin-muted-strong)", fontWeight: 600 }}>New Password</div>
               <div style={{ position: "relative" }}>
                 <input
                   type={showForcePass ? "text" : "password"}
@@ -1165,12 +1183,12 @@ const adjustCredits = async (mode: "add" | "remove") => {
                 <button
                   type="button"
                   onClick={() => setShowForcePass(!showForcePass)}
-                  style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: 13 }}
+                  style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "var(--admin-muted)", cursor: "pointer", fontSize: 13 }}
                 >
                   {showForcePass ? "Hide" : "Show"}
                 </button>
               </div>
-              <div style={{ fontSize: 13, color: "#888", fontWeight: 600, marginTop: 6 }}>Confirm New Password</div>
+              <div style={{ fontSize: 13, color: "var(--admin-muted-strong)", fontWeight: 600, marginTop: 6 }}>Confirm New Password</div>
               <input
                 type="password"
                 value={forceConfirmPass}
@@ -1257,7 +1275,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
               <button
                 onClick={() => {
                   setShowDropdown(false);
-                  setSettingsForm({ username: myUsername, email: myEmail, newPassword: "", confirmPassword: "" });
+                  setSettingsForm({ username: myUsername, email: myEmail, currentPassword: "", newPassword: "", confirmPassword: "" });
                   setSettingsMsg("");
                   setShowAccountModal(true);
                 }}
@@ -1421,6 +1439,16 @@ const adjustCredits = async (mode: "add" | "remove") => {
                 <button onClick={() => { setSearchQuery(""); setFilterValue("all"); }} style={actionBtn("var(--admin-hover)", "var(--admin-muted)")}>Clear</button>
               )}
             </div>
+            <div style={{ fontSize: 12, color: isSuperAdmin ? "var(--admin-muted)" : "var(--kiosk-accent-text)" }}>
+              {isSuperAdmin
+                ? "Deleting a user permanently removes their account and associated records."
+                : "Only a super-admin can delete users because deletion permanently removes the account and its associated records."}
+            </div>
+            {userDeleteMsg && (
+              <div role="status" style={{ fontSize: 12, color: userDeleteMsg.startsWith("User ") ? "var(--kiosk-success-text)" : "var(--kiosk-danger-text)" }}>
+                {userDeleteMsg}
+              </div>
+            )}
             <div style={{ ...tableWrap, overflowY: "auto", flex: 1 }}>
               <table style={table}>
                 <thead>
@@ -1437,7 +1465,18 @@ const adjustCredits = async (mode: "add" | "remove") => {
                         <td style={td}>
                           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                             <button onClick={() => { setEditUserModal(u); setEditName(u.name); setEditStudentId(u.studentId); setEditMsg("");setCreditAmount(""); setCreditReason(""); setCreditMsg(""); }} style={actionBtn("#1e293b", "#38bdf8")}>Edit</button>
-                            <button onClick={() => handleDeleteUser(u.rfid)} style={actionBtn("#3a1a1a", "#e74c3c")}>Delete</button>
+                            <button
+                              onClick={() => handleDeleteUser(u.rfid)}
+                              disabled={!isSuperAdmin}
+                              title={isSuperAdmin ? "Permanently delete this user and associated records" : "Only a super-admin can delete users"}
+                              style={{
+                                ...actionBtn("#3a1a1a", "#e74c3c"),
+                                opacity: isSuperAdmin ? 1 : 0.65,
+                                cursor: isSuperAdmin ? "pointer" : "not-allowed",
+                              }}
+                            >
+                              Delete
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -1622,12 +1661,15 @@ const adjustCredits = async (mode: "add" | "remove") => {
                     </span>
                     <input value={ctlMsg[c.feature] ?? c.message} onChange={e => setCtlMsg({ ...ctlMsg, [c.feature]: e.target.value })}
                       maxLength={140} placeholder="Message shown to users"
+                      disabled={!isSuperAdmin}
                       style={{ ...inputStyle, flex: 1, minWidth: 220, padding: "7px 10px", fontSize: 12 }} />
                     {c.disabled && (
-                      <button onClick={() => toggleControl(c.feature, true)} style={{ ...actionBtn("#2a2a2a", "#38bdf8"), padding: "7px 12px" }}>Update message</button>
+                      <button onClick={() => toggleControl(c.feature, true)} disabled={!isSuperAdmin}
+                        style={{ ...actionBtn("#2a2a2a", "#38bdf8"), padding: "7px 12px", opacity: isSuperAdmin ? 1 : 0.8, cursor: isSuperAdmin ? "pointer" : "not-allowed" }}>Update message</button>
                     )}
                     <button onClick={() => toggleControl(c.feature, !c.disabled)}
-                      style={{ ...actionBtn(c.disabled ? "#1a3a2a" : "#3a1a1a", c.disabled ? "#2ecc71" : "#e74c3c"), padding: "7px 14px" }}>
+                      disabled={!isSuperAdmin}
+                      style={{ ...actionBtn(c.disabled ? "#1a3a2a" : "#3a1a1a", c.disabled ? "#2ecc71" : "#e74c3c"), padding: "7px 14px", opacity: isSuperAdmin ? 1 : 0.8, cursor: isSuperAdmin ? "pointer" : "not-allowed" }}>
                       {c.disabled ? "Switch ON" : "Switch OFF"}
                     </button>
                     {c.disabled && c.changedBy && (
@@ -1639,6 +1681,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
               <div style={{ fontSize: 11, color: "var(--admin-muted)", marginTop: 6 }}>
                 Switching a part off greys it out for new users and refuses new requests. A user already depositing finishes the current bottle.
               </div>
+              {!isSuperAdmin && <div style={{ fontSize: 11, color: "var(--kiosk-accent-text)", marginTop: 4 }}>View only. Only a super-admin can change kiosk controls.</div>}
             </div>
 
             {/* Live connection status */}
@@ -1765,7 +1808,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
             {calForm && (
               <div>
                 <div style={{ fontSize: 13, fontWeight: 700, color: "var(--admin-muted-strong)", marginBottom: 8 }}>CALIBRATION</div>
-                                 <div style={{ background: "var(--admin-surface)", border: "1px solid var(--admin-border-strong)", borderRadius: 10, padding: 16, display: "flex", flexDirection: "column", gap: 14, ...(isSuperAdmin ? {} : { pointerEvents: "none" as const, opacity: 0.6 }) }}>
+                                 <div style={{ background: "var(--admin-surface)", border: "1px solid var(--admin-border-strong)", borderRadius: 10, padding: 16, display: "flex", flexDirection: "column", gap: 14, ...(isSuperAdmin ? {} : { pointerEvents: "none" as const }) }}>
                   {!isSuperAdmin && <div style={{ fontSize: 12, color: "#f0a500" }}>View only. Only a super-admin can change calibration.</div>}
                   <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
                    <label style={calLabel}>ToF sanity min (cm)
@@ -1821,7 +1864,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
   const lc  = sensorStatus?.sensors?.loadcell?.state ?? "unknown";
   const tof = sensorStatus?.sensors?.tof?.state ?? "unknown";
 
-  let color = "#666";
+  let color = "var(--admin-muted)";
   let text  = "Waiting for the first bottle to check sensor status.";
 
   if (sensorStatus && sensorStatus.overall !== "online") {
@@ -1930,10 +1973,10 @@ const adjustCredits = async (mode: "add" | "remove") => {
                     + Add Band
                   </button>
 
-                  <div style={{ height: 1, background: "#333", margin: "8px 0" }} />
+                  <div style={{ height: 1, background: "var(--admin-border-strong)", margin: "8px 0" }} />
                   <div>
                     <div style={{ fontSize: 13, fontWeight: 700, color: "#f0a500", marginBottom: 4 }}>PRINT PRICING</div>
-                    <div style={{ fontSize: 12, color: "#888", lineHeight: 1.5, marginBottom: 12 }}>
+                    <div style={{ fontSize: 12, color: "var(--admin-muted)", lineHeight: 1.5, marginBottom: 12 }}>
                       Print cost = number of pages × credits per page. These rates change print charges only; bottle credit rewards stay separate. Save here to update the total shown on the Print screen.
                     </div>
                     <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
@@ -1968,7 +2011,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                           )}
                         </>
                       ) : (
-                        <div style={{ fontSize: 12, color: "#aaa" }}>Loading print rates...</div>
+                        <div style={{ fontSize: 12, color: "var(--admin-muted)" }}>Loading print rates...</div>
                       )}
                     </div>
                     {!isSuperAdmin && <div style={{ fontSize: 12, color: "#f0a500", marginTop: 8 }}>View only. Only a super-admin can change print rates.</div>}
@@ -2077,6 +2120,27 @@ const adjustCredits = async (mode: "add" | "remove") => {
               <span style={{ fontSize: 17, fontWeight: 700, color: "var(--admin-text)" }}>Account Settings</span>
             </div>
 
+            <div style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              marginBottom: 16,
+              textAlign: "left",
+            }}>
+              <span style={{ color: "var(--admin-text)", fontWeight: 700 }}>{myUsername}</span>
+              <span style={{
+                padding: "3px 9px",
+                borderRadius: 999,
+                background: "var(--admin-hover)",
+                border: "1px solid var(--admin-border-strong)",
+                color: "var(--admin-muted-strong)",
+                fontSize: 11,
+                fontWeight: 700,
+              }}>
+                {myRole === "super_admin" ? "Super-admin" : "Admin"}
+              </span>
+            </div>
+
             <div style={{ display: "flex", flexDirection: "column", gap: 12, textAlign: "left" }}>
               <div>
                 <div style={{ fontSize: 12, color: "var(--admin-muted-strong)", marginBottom: 4 }}>Username</div>
@@ -2122,22 +2186,44 @@ const adjustCredits = async (mode: "add" | "remove") => {
               </div>
 
               {settingsForm.newPassword && (
-                <div>
-                  <div style={{ fontSize: 12, color: "var(--admin-muted-strong)", marginBottom: 4 }}>Confirm New Password</div>
-                  <input
-                    type="password"
-                    value={settingsForm.confirmPassword}
-                    onChange={e => setSettingsForm({ ...settingsForm, confirmPassword: e.target.value })}
-                    style={inputStyle}
-                  />
-                </div>
+                <>
+                  <div>
+                    <div style={{ fontSize: 12, color: "var(--admin-muted-strong)", marginBottom: 4 }}>Current Password</div>
+                    <input
+                      type="password"
+                      value={settingsForm.currentPassword}
+                      onChange={e => setSettingsForm({ ...settingsForm, currentPassword: e.target.value })}
+                      autoComplete="current-password"
+                      style={inputStyle}
+                    />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, color: "var(--admin-muted-strong)", marginBottom: 4 }}>Confirm New Password</div>
+                    <input
+                      type="password"
+                      value={settingsForm.confirmPassword}
+                      onChange={e => setSettingsForm({ ...settingsForm, confirmPassword: e.target.value })}
+                      autoComplete="new-password"
+                      style={inputStyle}
+                    />
+                  </div>
+                </>
               )}
             </div>
 
             {settingsMsg && <div style={{ fontSize: 13, color: "#e74c3c", marginTop: 12 }}>{settingsMsg}</div>}
 
             <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
-              <button onClick={() => setShowAccountModal(false)} style={ghostBtn}>Cancel</button>
+              <button
+                onClick={() => {
+                  setShowAccountModal(false);
+                  setSettingsForm({ username: myUsername, email: myEmail, currentPassword: "", newPassword: "", confirmPassword: "" });
+                  setSettingsMsg("");
+                }}
+                style={ghostBtn}
+              >
+                Cancel
+              </button>
               <button onClick={handleSaveSettings} style={confirmBtn}>Save Profile</button>
             </div>
           </div>
@@ -2282,19 +2368,25 @@ const adjustCredits = async (mode: "add" | "remove") => {
                 />
               </div>
             </div>
-                           <div style={{ borderTop: "1px solid var(--admin-border)", marginTop: 14, paddingTop: 12, textAlign: "left" }}>
+            <div style={{ borderTop: "1px solid var(--admin-border)", marginTop: 14, paddingTop: 12, textAlign: "left" }}>
               <div style={{ fontSize: 12, color: "var(--admin-muted-strong)", marginBottom: 6 }}>
                 Credits · current balance: <strong style={{ color: "#f0a500" }}>{editUserModal.credits}</strong>
               </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <input type="number" min={1} value={creditAmount} onChange={e => setCreditAmount(e.target.value)} placeholder="Amount" style={{ ...inputStyle, width: 100 }} />
-                <input value={creditReason} onChange={e => setCreditReason(e.target.value)} placeholder="Reason *" required style={inputStyle} />
-              </div>
-              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                <button onClick={() => adjustCredits("add")} style={{ ...actionBtn("#1a3a2a", "#2ecc71"), flex: 1, padding: "8px" }}>+ Add</button>
-                <button onClick={() => adjustCredits("remove")} style={{ ...actionBtn("#3a1a1a", "#e74c3c"), flex: 1, padding: "8px" }}>− Remove</button>
-              </div>
-                            <button onClick={resetUserPin} style={{ ...actionBtn("#2a2a2a", "#f0a500"), width: "100%", padding: "8px", marginTop: 10 }}>
+                           {isSuperAdmin ? (
+                             <>
+                               <div style={{ display: "flex", gap: 8 }}>
+                                 <input type="number" min={1} value={creditAmount} onChange={e => setCreditAmount(e.target.value)} placeholder="Amount" style={{ ...inputStyle, width: 100 }} />
+                                 <input value={creditReason} onChange={e => setCreditReason(e.target.value)} placeholder="Reason *" required style={inputStyle} />
+                               </div>
+                               <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                                 <button onClick={() => adjustCredits("add")} style={{ ...actionBtn("#1a3a2a", "#2ecc71"), flex: 1, padding: "8px" }}>+ Add</button>
+                                 <button onClick={() => adjustCredits("remove")} style={{ ...actionBtn("#3a1a1a", "#e74c3c"), flex: 1, padding: "8px" }}>− Remove</button>
+                               </div>
+                             </>
+                           ) : (
+                             <div style={{ fontSize: 11, color: "var(--kiosk-accent-text)" }}>Only a super-admin can adjust credits.</div>
+                           )}
+                                         <button onClick={resetUserPin} style={{ ...actionBtn("#2a2a2a", "#f0a500"), width: "100%", padding: "8px", marginTop: 10 }}>
                 Reset PIN (user sets a new one at the kiosk)
               </button>
               {creditMsg && <div style={{ fontSize: 12, marginTop: 6, color: creditMsg.startsWith("Done") ? "#2ecc71" : "#e74c3c" }}>{creditMsg}</div>}
@@ -2349,7 +2441,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                   Check the Pi. Once the green light has stopped blinking, it is safe to unplug.
                 </div>
               )}
-              <div style={{ fontSize: 12, color: "#666", maxWidth: 440, lineHeight: 1.5 }}>
+              <div style={{ fontSize: 12, color: "var(--admin-muted)", maxWidth: 440, lineHeight: 1.5 }}>
                 This page cannot confirm the shutdown finished, because the server stops before it can
                 report back. The green light on the Pi is the real signal. The kiosk stays off until
                 power is reconnected.
@@ -2359,7 +2451,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
             <>
               <CheckCircleIcon size={40} color="#2ecc71" />
               <div style={{ fontSize: 22, fontWeight: 700, color: "#fff" }}>The Pi is back online</div>
-              <div style={{ fontSize: 13, color: "#aaa" }}>All admin sessions were cleared by the reboot. Log in again to continue.</div>
+              <div style={{ fontSize: 13, color: "var(--admin-muted)" }}>All admin sessions were cleared by the reboot. Log in again to continue.</div>
               <button onClick={() => window.location.reload()} style={{ ...confirmBtn, flex: "unset", padding: "12px 28px", marginTop: 8 }}>
                 Reload and log in
               </button>
@@ -2392,7 +2484,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                   <br/><br/>
                   Initial default password for first login: <strong>{createdDefaultPassNotice}</strong>
                   <br/><br/>
-                  <span style={{ color: "#aaa", fontSize: 11 }}>The new admin will be forced to update this password upon their first login.</span>
+                  <span style={{ color: "var(--admin-muted)", fontSize: 11 }}>The new admin will be forced to update this password upon their first login.</span>
                 </div>
                 <button
                   onClick={() => { setAdminModal(null); fetchData(); }}
@@ -2405,7 +2497,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
               <>
                 <div style={{ display: "flex", flexDirection: "column", gap: 12, textAlign: "left" }}>
                   <div>
-                    <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Username</div>
+                    <div style={{ fontSize: 12, color: "var(--admin-muted-strong)", marginBottom: 4 }}>Username</div>
                     <input
                       value={adminForm.username}
                       onChange={e => setAdminForm({ ...adminForm, username: e.target.value })}
@@ -2414,7 +2506,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                   </div>
 
                   <div>
-                    <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Gmail Address</div>
+                    <div style={{ fontSize: 12, color: "var(--admin-muted-strong)", marginBottom: 4 }}>Gmail Address</div>
                     <input
                       type="email"
                       value={adminForm.email}
@@ -2425,7 +2517,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                   </div>
 
                   <div>
-                    <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Role</div>
+                    <div style={{ fontSize: 12, color: "var(--admin-muted-strong)", marginBottom: 4 }}>Role</div>
                     <select
                       value={adminForm.role}
                       onChange={e => setAdminForm({ ...adminForm, role: e.target.value as Role })}

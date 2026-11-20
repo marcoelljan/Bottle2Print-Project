@@ -556,8 +556,9 @@ export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
             height: "100cqw",
             transform: "translate(-50%, -50%) rotate(90deg)",
             border: "none",
+            touchAction: "pan-x pan-y",
           }
-        : { width: "100%", height: "100%", border: "none" }
+        : { width: "100%", height: "100%", border: "none", touchAction: "pan-x pan-y" }
     }
   />
 ) : (
