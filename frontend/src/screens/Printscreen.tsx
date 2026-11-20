@@ -465,7 +465,7 @@ export default function PrintScreen({ onBack }: Props) {
         )}
       </div>
 
-      <div className="print-screen-body" style={body}>
+      <div className="print-screen-body kiosk-page-scroll" style={body}>
         {step === "qr" && (
           <div style={{ ...card, alignSelf: "center", marginBlock: "auto" }}>
             <div style={{ textAlign: "center" }}>
@@ -856,9 +856,9 @@ export default function PrintScreen({ onBack }: Props) {
         )}
 
         {step === "error" && (
-          <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 20, color: "var(--kiosk-danger-text)", fontWeight: 700, marginBottom: 8 }}>Print failed</div>
-            <div style={{ fontSize: 14, color: "var(--kiosk-muted)", marginBottom: 24 }}>{errorMsg}</div>
+          <div style={{ width: "100%", minHeight: "100%", alignSelf: "stretch", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center" }}>
+            <div style={{ fontSize: 24, color: "var(--kiosk-danger-text)", fontWeight: 700, marginBottom: 10 }}>Print failed</div>
+            <div style={{ fontSize: 17, color: "var(--kiosk-muted)", marginBottom: 24, maxWidth: 560 }}>{errorMsg}</div>
             <button onClick={() => (printCancelled ? onBack() : setStep("confirm"))} style={primaryBtn(true)}>
               {printCancelled ? "Back to home" : "Back to job summary"}
             </button>

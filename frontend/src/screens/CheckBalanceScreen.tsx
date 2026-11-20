@@ -207,7 +207,7 @@ export default function CheckBalanceScreen({ onBack }: Props) {
         </div>
       </div>
 
-      <div style={body}>
+      <div className="kiosk-page-scroll" style={body}>
         {!user ? (
           <div className="rfid-prompt-stage">
             <RFIDprompt onIdentified={handleIdentified} />

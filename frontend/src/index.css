@@ -88,6 +88,17 @@
   --kiosk-danger-bg: #2a1818;
   --kiosk-danger-border: #5a1a1a;
   --kiosk-success-bg: #1e3a2a;
+  --admin-bg: var(--kiosk-bg);
+  --admin-surface: var(--kiosk-surface);
+  --admin-input: var(--kiosk-input);
+  --admin-hover: var(--kiosk-surface-hover);
+  --admin-border: var(--kiosk-border);
+  --admin-border-strong: #424a52;
+  --admin-row-border: #343c44;
+  --admin-text: var(--kiosk-text);
+  --admin-secondary: var(--kiosk-text-secondary);
+  --admin-muted: var(--kiosk-muted);
+  --admin-muted-strong: var(--kiosk-muted-secondary);
   color-scheme: dark;
   background: var(--kiosk-bg);
   color: var(--kiosk-text);
@@ -117,7 +128,25 @@
   --kiosk-danger-bg: #fde8e7;
   --kiosk-danger-border: #d98b86;
   --kiosk-success-bg: #e5f4e9;
+  --admin-bg: #f3f5f7;
+  --admin-surface: #fff;
+  --admin-input: #fff;
+  --admin-hover: #edf1f4;
+  --admin-border: #cbd5df;
+  --admin-border-strong: #aab8c6;
+  --admin-row-border: #d6dee6;
+  --admin-text: #17212b;
+  --admin-secondary: #344252;
+  --admin-muted: #465362;
+  --admin-muted-strong: #344252;
   color-scheme: light;
+}
+
+#kiosk-app [style*="overflow-y: auto"],
+#kiosk-app [style*="overflow: auto"] {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
 }
 
 body, html {

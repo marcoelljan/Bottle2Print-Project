@@ -363,12 +363,6 @@ router.post("/api/admin/sensors/tof-calibrate", requireSuperAdmin, async (req: a
   }
 });
 
-router.post("/api/admin/alerts/test", async (req: any, res) => {
-  const r = await sendMail("Test email", "This is a test sent from the Bottle2Print admin panel by " + req.admin.username + ".");
-  logActivity(req.admin.username, "TEST_EMAIL", r.ok ? "Test email sent" : "Test email failed: " + r.error);
-  if (r.ok) res.json({ success: true }); else res.status(500).json({ error: r.error });
-});
-
 router.post("/api/admin/user/:rfid/reset-pin", (req: any, res) => {
   const { rfid } = req.params;
   if (!db.prepare("SELECT rfid FROM users WHERE rfid = ?").get(rfid)) return res.status(404).json({ error: "User not found." });
@@ -677,11 +671,13 @@ router.post("/api/admin/user/:rfid/credits", (req: any, res) => {
   const { rfid } = req.params;
   const amount = Math.floor(Number(req.body.amount));
   const mode = req.body.mode === "remove" ? "remove" : "add";
-  const reason = String(req.body.reason ?? "").trim().slice(0, 80);
+  const reasonInput = String(req.body.reason ?? "").trim();
 
   if (!Number.isFinite(amount) || amount <= 0 || amount > 10000) {
     return res.status(400).json({ error: "Enter a whole number of credits above 0." });
   }
+  if (!reasonInput) return res.status(400).json({ error: "A reason is required for credit adjustments." });
+  const reason = reasonInput.slice(0, 80);
   const user = db.prepare("SELECT credits FROM users WHERE rfid = ?").get(rfid) as any;
   if (!user) return res.status(404).json({ error: "User not found." });
   if (mode === "remove" && user.credits < amount) {
@@ -708,7 +704,11 @@ router.delete("/api/admin/user/:rfid", requireSuperAdmin, (req: any, res) => {
   const user = db.prepare("SELECT * FROM users WHERE rfid = ?").get(rfid);
   if (!user) return res.status(404).json({ error: "User not found." });
 
-  db.prepare("DELETE FROM users WHERE rfid = ?").run(rfid);
+  db.transaction(() => {
+    db.prepare("DELETE FROM transactions WHERE rfid = ?").run(rfid);
+    db.prepare("DELETE FROM feedback WHERE rfid = ?").run(rfid);
+    db.prepare("DELETE FROM users WHERE rfid = ?").run(rfid);
+  })();
   logActivity(req.admin.username, "DELETE_USER", `Deleted user RFID ${rfid}`);
   res.json({ success: true });
 });

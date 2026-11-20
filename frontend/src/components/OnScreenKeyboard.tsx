@@ -45,6 +45,7 @@ export default function OnScreenKeyboard() {
   const [field, setField] = useState<Field | null>(null);
   const [symbols, setSymbols] = useState(false);
   const [shift, setShift] = useState(false);
+  const [shiftLocked, setShiftLocked] = useState(false);
   const [pressed, setPressed] = useState<string | null>(null);
   const kbRef = useRef<HTMLDivElement>(null);
   const open = wanted && !!field;
@@ -67,6 +68,7 @@ export default function OnScreenKeyboard() {
       setField(t);
       setSymbols(false);
       setShift(isWordField(t) && t.value === "");
+      setShiftLocked(false);
       setTimeout(() => t.scrollIntoView({ block: "center", behavior: "smooth" }), 250);
     };
     const onOut = () => setTimeout(() => { if (!isTextField(document.activeElement)) setField(null); }, 150);
@@ -110,12 +112,25 @@ export default function OnScreenKeyboard() {
       v += shift && /^[a-z]$/.test(k) ? k.toUpperCase() : k;
     }
     setValue(field, v);
-    setShift(isWordField(field) && (v === "" || k === " "));   // capital at the start and after a space
+    if (k === " ") {
+      setShift(isWordField(field));
+      setShiftLocked(false);
+    } else if (!shiftLocked) {
+      setShift(isWordField(field) && v === "");
+    }
     field.focus();
   };
 
   const act = (k: string) => {
-    if (k === "SHIFT") setShift(s => !s);
+    if (k === "SHIFT") {
+      if (shiftLocked) {
+        setShiftLocked(false);
+        setShift(false);
+      } else {
+        setShift(true);
+        setShiftLocked(true);
+      }
+    }
     else if (k === "SYM") setSymbols(s => !s);
     else if (k === "DONE") { field.blur(); setField(null); }
     else press(k);

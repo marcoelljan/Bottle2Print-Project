@@ -17,7 +17,10 @@ import {
 } from "../components/KioskIcons";
 import { API } from "../config";
 
-interface Props { onBack: () => void; }
+interface Props {
+  theme: "dark" | "light";
+  onToggleTheme: () => void;
+}
 type Tab = "logs" | "users" | "transactions" | "feedback" | "admins" | "sensors";
 type Role = "admin" | "super_admin";
 
@@ -142,7 +145,7 @@ const PAGE = 100;
 type ListKey = "logs" | "txns" | "feedback" | "users" | "admins";
 const FRESH_LIMITS: Record<ListKey, number> = { logs: PAGE, txns: PAGE, feedback: PAGE, users: PAGE, admins: PAGE };
 
-export default function AdminScreen({}: Props) {
+export default function AdminScreen({ theme, onToggleTheme }: Props) {
   const [token, setToken]           = useState<string | null>(null);
   const [myAdminId, setMyAdminId]   = useState<number | null>(null);
   const [myUsername, setMyUsername] = useState<string>("");
@@ -707,6 +710,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
   if (!editUserModal) return;
   const amount = parseInt(creditAmount, 10);
   if (!Number.isFinite(amount) || amount <= 0) { setCreditMsg("Enter a whole number above 0."); return; }
+  if (!creditReason.trim()) { setCreditMsg("Enter a reason for this credit adjustment."); return; }
   if (!window.confirm(`${mode === "add" ? "Add" : "Remove"} ${amount} credits ${mode === "add" ? "to" : "from"} ${editUserModal.name}?`)) return;
   try {
     const res = await authFetch(`/api/admin/user/${editUserModal.rfid}/credits`, {
@@ -913,14 +917,6 @@ const adjustCredits = async (mode: "add" | "remove") => {
     } catch { alert("Could not reach backend."); }
   };  
 
-   const sendTestEmail = async () => {
-    try {
-      const res = await authFetch(`/api/admin/alerts/test`, { method: "POST" });
-      const data = await res.json();
-      alert(res.ok && data.success ? "Test email sent to every admin with a Gmail saved." : "Failed: " + (data.error ?? "unknown error"));
-    } catch { alert("Could not reach backend."); }
-  };
-
   const handleLogout = () => {
     if (window.confirm("Log out of the admin panel?")) {
       setToken(null);
@@ -950,6 +946,9 @@ const adjustCredits = async (mode: "add" | "remove") => {
             <div style={headerSub}>
               {authView === "reset" ? "Reset your password" : authView === "forgot" ? "Password Recovery" : loginStep === "username" ? "Enter your admin username" : `Logging in as: ${userInput}`}
             </div>
+          </div>
+          <div style={{ marginLeft: "auto" }}>
+            <ThemeToggle theme={theme} onToggleTheme={onToggleTheme} />
           </div>
         </div>
         <div style={loginBody}>
@@ -1147,6 +1146,9 @@ const adjustCredits = async (mode: "add" | "remove") => {
             <div style={headerTitle}>Security Update Required</div>
             <div style={headerSub}>You must change your default password to continue</div>
           </div>
+          <div style={{ marginLeft: "auto" }}>
+            <ThemeToggle theme={theme} onToggleTheme={onToggleTheme} />
+          </div>
         </div>
         <div style={loginBody}>
           <div style={loginPanel}>
@@ -1244,8 +1246,9 @@ const adjustCredits = async (mode: "add" | "remove") => {
           <div style={headerTitle}>Admin Panel</div>
           <div style={headerSub}>Logged in as {myUsername} {isSuperAdmin && "· super-admin"}</div>
         </div>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 8, position: "relative" }} ref={dropdownRef}>
-          <button onClick={() => setShowDropdown(!showDropdown)} style={actionBtn("#2a2a2a", "#f0a500")}>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, position: "relative" }} ref={dropdownRef}>
+          <ThemeToggle theme={theme} onToggleTheme={onToggleTheme} />
+          <button onClick={() => setShowDropdown(!showDropdown)} style={actionBtn("var(--admin-hover)", "var(--kiosk-accent-text)")}>
             <SettingsIcon size={15} /> Settings ▾
           </button>
           
@@ -1275,7 +1278,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                 </button>
               )}
 
-              <div style={{ height: "1px", background: "#333", margin: "4px 0" }} />
+              <div style={{ height: "1px", background: "var(--admin-border)", margin: "4px 0" }} />
 
               <button onClick={handleLogout} style={{ ...dropdownItem, color: "#e74c3c" }}>
                 <LogOutIcon size={16} /> Log Out
@@ -1304,8 +1307,8 @@ const adjustCredits = async (mode: "add" | "remove") => {
             if (t !== "sensors") markSeen(t);                     // tells the server you've seen it
             }} style={{
             ...tabBtn,
-            color: tab === t ? "#f0a500" : "#666",
-            borderBottom: tab === t ? "2px solid #f0a500" : "2px solid transparent",
+            color: tab === t ? "var(--kiosk-accent-text)" : "var(--admin-muted)",
+            borderBottom: tab === t ? "2px solid var(--kiosk-accent-text)" : "2px solid transparent",
           }}>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
               {label}
@@ -1336,7 +1339,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
           </div>
         </div>
 
-        {loading && <div style={{ color: "#666", fontSize: 14 }}>Loading...</div>}
+        {loading && <div style={{ color: "var(--admin-muted)", fontSize: 14 }}>Loading...</div>}
 
          {/* 1. ACTIVITY LOGS */}
         {!loading && tab === "logs" && (
@@ -1366,7 +1369,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                 style={{ ...inputStyle, maxWidth: 140, padding: "8px 12px", fontSize: 13, colorScheme: "dark", cursor: "pointer" }}
               />
               {(searchQuery || filterValue !== "all" || dateFilter) && (
-                <button onClick={() => { setSearchQuery(""); setFilterValue("all"); setDateFilter(""); }} style={actionBtn("#2a2a2a", "#aaa")}>Clear</button>
+                <button onClick={() => { setSearchQuery(""); setFilterValue("all"); setDateFilter(""); }} style={actionBtn("var(--admin-hover)", "var(--admin-muted)")}>Clear</button>
               )}
             </div>
             <div style={{ ...tableWrap, overflowY: "auto", flex: 1 }}>
@@ -1376,14 +1379,14 @@ const adjustCredits = async (mode: "add" | "remove") => {
                 </thead>
                 <tbody>
                   {activityLogs.map(l => (
-                      <tr key={l.id} style={{ borderBottom: "1px solid #2a2a2a" }}>
+                      <tr key={l.id} style={{ borderBottom: "1px solid var(--admin-row-border)" }}>
                         <td style={td}>{formatPhTime(l.created_at)}</td>
                         <td style={{ ...td, fontWeight: 600, color: "#f0a500" }}>{l.admin_user}</td>
-                        <td style={td}><span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, background: "#2a2a2a", color: "#fff" }}>{l.action}</span></td>
+                        <td style={td}><span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, background: "var(--admin-hover)", color: "var(--admin-text)" }}>{l.action}</span></td>
                         <td style={td}>{l.details}</td>
                       </tr>
                     ))}
-                  {activityLogs.length === 0 && <tr><td colSpan={4} style={{ ...td, textAlign: "center", color: "#555" }}>{hasFilter ? "No matching logs" : "No activity logs recorded yet"}</td></tr>}
+                  {activityLogs.length === 0 && <tr><td colSpan={4} style={{ ...td, textAlign: "center", color: "var(--admin-muted)" }}>{hasFilter ? "No matching logs" : "No activity logs recorded yet"}</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -1415,7 +1418,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                 <option value="credits_desc">Credits: High to Low</option>
               </select>
               {(searchQuery || filterValue !== "all") && (
-                <button onClick={() => { setSearchQuery(""); setFilterValue("all"); }} style={actionBtn("#2a2a2a", "#aaa")}>Clear</button>
+                <button onClick={() => { setSearchQuery(""); setFilterValue("all"); }} style={actionBtn("var(--admin-hover)", "var(--admin-muted)")}>Clear</button>
               )}
             </div>
             <div style={{ ...tableWrap, overflowY: "auto", flex: 1 }}>
@@ -1425,12 +1428,12 @@ const adjustCredits = async (mode: "add" | "remove") => {
                 </thead>
                 <tbody>
                   {users.map(u => (
-                      <tr key={u.rfid} style={{ borderBottom: "1px solid #2a2a2a" }}>
+                      <tr key={u.rfid} style={{ borderBottom: "1px solid var(--admin-row-border)" }}>
                         <td style={td}>{u.name}</td>
-                        <td style={td}>{u.studentId || <span style={{ color: "#444" }}>—</span>}</td>
-                        <td style={{ ...td, fontFamily: "monospace", fontSize: 11, color: "#666" }}>{u.rfid}</td>
-                        <td style={{ ...td, color: "#f0a500", fontWeight: 700 }}>{u.credits}</td>
-                        <td style={{ ...td, fontSize: 11, color: "#555" }}>{new Date(u.created_at).toLocaleDateString()}</td>
+                        <td style={td}>{u.studentId || <span style={{ color: "var(--admin-muted)" }}>—</span>}</td>
+                        <td style={{ ...td, fontFamily: "monospace", fontSize: 11, color: "var(--admin-muted-strong)" }}>{u.rfid}</td>
+                        <td style={{ ...td, color: "var(--kiosk-accent-text)", fontWeight: 700 }}>{u.credits}</td>
+                        <td style={{ ...td, fontSize: 11, color: "var(--admin-muted)" }}>{new Date(u.created_at).toLocaleDateString()}</td>
                         <td style={td}>
                           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
                             <button onClick={() => { setEditUserModal(u); setEditName(u.name); setEditStudentId(u.studentId); setEditMsg("");setCreditAmount(""); setCreditReason(""); setCreditMsg(""); }} style={actionBtn("#1e293b", "#38bdf8")}>Edit</button>
@@ -1439,7 +1442,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                         </td>
                       </tr>
                     ))}
-                  {users.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: "center", color: "#555" }}>{hasFilter ? "No matching users" : "No users yet"}</td></tr>}
+                  {users.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: "center", color: "var(--admin-muted)" }}>{hasFilter ? "No matching users" : "No users yet"}</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -1479,7 +1482,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                 style={{ ...inputStyle, maxWidth: 140, padding: "8px 12px", fontSize: 13, colorScheme: "dark", cursor: "pointer" }}
               />
               {(searchQuery || filterValue !== "all" || dateFilter) && (
-                <button onClick={() => { setSearchQuery(""); setFilterValue("all"); setDateFilter(""); }} style={actionBtn("#2a2a2a", "#aaa")}>Clear</button>
+                <button onClick={() => { setSearchQuery(""); setFilterValue("all"); setDateFilter(""); }} style={actionBtn("var(--admin-hover)", "var(--admin-muted)")}>Clear</button>
               )}
             </div>
             <div style={{ ...tableWrap, overflowY: "auto", flex: 1 }}>
@@ -1489,10 +1492,10 @@ const adjustCredits = async (mode: "add" | "remove") => {
                 </thead>
                 <tbody>
                  {txns.map(t => (
-                      <tr key={t.id} style={{ borderBottom: "1px solid #2a2a2a" }}>
-                        <td style={{ ...td, fontWeight: 600, color: "#fff" }}>{t.user_name ? t.user_name : t.rfid === "GUEST" ? <span style={{ color: "#aaa" }}>Guest</span> : <span style={{ color: "#e74c3c", fontStyle: "italic" }}>Unknown</span>}</td>
+                      <tr key={t.id} style={{ borderBottom: "1px solid var(--admin-row-border)" }}>
+                        <td style={{ ...td, fontWeight: 600, color: "var(--admin-text)" }}>{t.user_name ? t.user_name : t.rfid === "GUEST" ? <span style={{ color: "var(--admin-muted)" }}>Guest</span> : <span style={{ color: "var(--kiosk-danger-text)", fontStyle: "italic" }}>Unknown</span>}</td>
                         <td style={td}>{formatPhTime(t.created_at)}</td>
-                        <td style={{ ...td, fontFamily: "monospace", fontSize: 11, color: "#666" }}>{t.rfid}</td>
+                        <td style={{ ...td, fontFamily: "monospace", fontSize: 11, color: "var(--admin-muted-strong)" }}>{t.rfid}</td>
                         <td style={td}>
                           <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11,
                             background: t.type === "reject" ? "#3a1a1a" : "#2a2a2a",
@@ -1504,7 +1507,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
   {(() => {
     const h = t.height_mm != null ? `${mmToCm(t.height_mm)} cm` : "—";
     const w = t.weight_g != null ? `${t.weight_g} g` : "—";
-    const sub = <div style={{ fontSize: 11, color: "#666", marginTop: 2 }}>Height {h} · Weight {w}</div>;
+    const sub = <div style={{ fontSize: 11, color: "var(--admin-muted)", marginTop: 2 }}>Height {h} · Weight {w}</div>;
     if (t.type === "reject") {
       const labels: Record<string, string> = {
         capacitive: "Capacitive", tof: "ToF", loadcell: "Load cell", "loadcell+tof": "Load cell + ToF",storage: "Storage",
@@ -1532,7 +1535,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
 </td>
                       </tr>
                     ))}
-                  {txns.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: "center", color: "#555" }}>{hasFilter ? "No matching transactions" : "No transactions yet"}</td></tr>}
+                  {txns.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: "center", color: "var(--admin-muted)" }}>{hasFilter ? "No matching transactions" : "No transactions yet"}</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -1572,7 +1575,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                 style={{ ...inputStyle, maxWidth: 140, padding: "8px 12px", fontSize: 13, colorScheme: "dark", cursor: "pointer" }}
               />
               {(searchQuery || filterValue !== "all" || dateFilter) && (
-                <button onClick={() => { setSearchQuery(""); setFilterValue("all"); setDateFilter(""); }} style={actionBtn("#2a2a2a", "#aaa")}>Clear</button>
+                <button onClick={() => { setSearchQuery(""); setFilterValue("all"); setDateFilter(""); }} style={actionBtn("var(--admin-hover)", "var(--admin-muted)")}>Clear</button>
               )}
             </div>
             <div style={{ ...tableWrap, overflowY: "auto", flex: 1 }}>
@@ -1582,17 +1585,17 @@ const adjustCredits = async (mode: "add" | "remove") => {
                 </thead>
                 <tbody>
                   {feedback.map(f => (
-                      <tr key={f.id} style={{ borderBottom: "1px solid #2a2a2a" }}>
+                      <tr key={f.id} style={{ borderBottom: "1px solid var(--admin-row-border)" }}>
                         <td style={td}>{formatPhTime(f.created_at)}</td>
                         <td style={td}>{f.context}</td>
                         <td style={{ ...td, color: "#f0a500", fontWeight: 700, display: "flex", gap: 2 }}>
                           {Array.from({ length: f.rating }, (_, i) => <StarIcon key={i} size={14} color="#f0a500" />)}
                         </td>
                         <td style={td}>{f.comment || "—"}</td>
-                        <td style={{ ...td, fontFamily: "monospace", fontSize: 11, color: "#666" }}>{f.rfid ?? "anon"}</td>
+                        <td style={{ ...td, fontFamily: "monospace", fontSize: 11, color: "var(--admin-muted-strong)" }}>{f.rfid ?? "anon"}</td>
                       </tr>
                     ))}
-                  {feedback.length === 0 && <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "#555" }}>{hasFilter ? "No matching feedback" : "No feedback yet"}</td></tr>}
+                  {feedback.length === 0 && <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "var(--admin-muted)" }}>{hasFilter ? "No matching feedback" : "No feedback yet"}</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -1609,11 +1612,11 @@ const adjustCredits = async (mode: "add" | "remove") => {
             
                         {/* Kiosk controls */}
             <div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#888", marginBottom: 8 }}>KIOSK CONTROLS</div>
-              <div style={{ background: "#242424", border: "1px solid #333", borderRadius: 10, padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "var(--admin-muted-strong)", marginBottom: 8 }}>KIOSK CONTROLS</div>
+              <div style={{ background: "var(--admin-surface)", border: "1px solid var(--admin-border-strong)", borderRadius: 10, padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>
                 {controls.map(c => (
                   <div key={c.feature} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                    <div style={{ width: 120, fontSize: 13, fontWeight: 700, color: "#fff" }}>{CONTROL_LABELS[c.feature] ?? c.feature}</div>
+                    <div style={{ width: 120, fontSize: 13, fontWeight: 700, color: "var(--admin-text)" }}>{CONTROL_LABELS[c.feature] ?? c.feature}</div>
                     <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 10px", borderRadius: 20, background: c.disabled ? "#3a1a1a" : "#1a3a2a", color: c.disabled ? "#e74c3c" : "#2ecc71" }}>
                       {c.disabled ? "OFF" : "ON"}
                     </span>
@@ -1628,19 +1631,19 @@ const adjustCredits = async (mode: "add" | "remove") => {
                       {c.disabled ? "Switch ON" : "Switch OFF"}
                     </button>
                     {c.disabled && c.changedBy && (
-                      <div style={{ width: "100%", fontSize: 10, color: "#888" }}>Off since {formatPhTime(c.changedAt)} by {c.changedBy}</div>
+                      <div style={{ width: "100%", fontSize: 10, color: "var(--admin-muted)" }}>Off since {formatPhTime(c.changedAt)} by {c.changedBy}</div>
                     )}
                   </div>
                 ))}
                </div>
-              <div style={{ fontSize: 11, color: "#666", marginTop: 6 }}>
+              <div style={{ fontSize: 11, color: "var(--admin-muted)", marginTop: 6 }}>
                 Switching a part off greys it out for new users and refuses new requests. A user already depositing finishes the current bottle.
               </div>
             </div>
 
             {/* Live connection status */}
             <div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#888", marginBottom: 8 }}>ARDUINO CONNECTION</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "var(--admin-muted-strong)", marginBottom: 8 }}>ARDUINO CONNECTION</div>
               {sensorStatus && (() => {
                 const cfg: Record<string, { label: string; color: string }> = {
                   online:       { label: "Online",       color: "#2ecc71" },
@@ -1651,7 +1654,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                 return (
                   <div style={{
                     display: "inline-flex", alignItems: "center", gap: 8, padding: "8px 14px",
-                    borderRadius: 8, background: "#242424", border: `1px solid ${c.color}`,
+                    borderRadius: 8, background: "var(--admin-surface)", border: `1px solid ${c.color}`,
                   }}>
                     {sensorStatus.overall === "online"
                       ? <CheckCircleIcon size={16} color={c.color} />
@@ -1672,10 +1675,10 @@ const adjustCredits = async (mode: "add" | "remove") => {
     ? box("#e74c3c", <><strong>Printer: </strong>{sensorStatus.sensors.printer.lastDetail} {SENSOR_HINTS.printer}</>)
     : null;
   if (sensorStatus.overall === "offline") {
-    return <>{box("#888", "Readings below are the last known values and may be outdated. Check the USB cable and that ARDUINO_PORT in the backend .env matches the port. The kiosk retries every 5 seconds.")}{printerBox}</>;
+    return <>{box("var(--admin-muted)", "Readings below are the last known values and may be outdated. Check the USB cable and that ARDUINO_PORT in the backend .env matches the port. The kiosk retries every 5 seconds.")}{printerBox}</>;
   }
   if (sensorStatus.overall === "unresponsive") {
-    return <>{box("#888", "The Arduino is connected but not answering the heartbeat. Press its reset button or re-plug the USB cable.")}{printerBox}</>;
+    return <>{box("var(--admin-muted)", "The Arduino is connected but not answering the heartbeat. Press its reset button or re-plug the USB cable.")}{printerBox}</>;
   }
                const now = Date.now();
                const faulted = SENSOR_ORDER.filter(id => sensorStatus.sensors[id]?.state === "fault");
@@ -1690,7 +1693,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                 return box(color, <>
                   <strong>{faulted.length ? "Check first: " : "Not reporting: "}{SENSOR_LABELS[first] ?? first}.</strong>{" "}
                   {SENSOR_HINTS[first]}
-                  {list.length > 1 && <div style={{ color: "#888" }}>Also affected: {list.slice(1).map(id => SENSOR_LABELS[id] ?? id).join(", ")}</div>}
+                  {list.length > 1 && <div style={{ color: "var(--admin-muted)" }}>Also affected: {list.slice(1).map(id => SENSOR_LABELS[id] ?? id).join(", ")}</div>}
                 </>);
               })()}
             </div>
@@ -1698,7 +1701,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
 
                        {/* Per-component last activity */}
             <div>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#888", marginBottom: 8 }}>COMPONENTS ACTIVITY</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "var(--admin-muted-strong)", marginBottom: 8 }}>COMPONENTS ACTIVITY</div>
               <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 10 }}>
                 {sensorStatus && SENSOR_ORDER.filter(id => sensorStatus.sensors[id]).map(id => {
                   const h = sensorStatus.sensors[id];
@@ -1710,7 +1713,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                   const active = !down && monitored && !faulted && secs !== null && secs <= 20;
                   const silent = !down && monitored && !faulted && secs !== null && secs > 60;
                   const pct = sensorStatus.bin?.fillPercent ?? null;
-                  const binColor = down || pct === null ? "#666" : pct >= 95 ? "#e74c3c" : pct >= 80 ? "#f0a500" : "#2ecc71";
+                  const binColor = down || pct === null ? "var(--admin-muted)" : pct >= 95 ? "#e74c3c" : pct >= 80 ? "#f0a500" : "#2ecc71";
                   return (
                     <div key={id} title={SENSOR_HINTS[id]} onClick={() => setOpenHint(openHint === id ? null : id)} style={{
                       ...adminStatCard, textAlign: "left", cursor: "pointer", width: "calc(25% - 7.5px)",
@@ -1719,7 +1722,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                       ...(down ? { opacity: openHint === id ? 0.9 : 0.5 } : {}),
                     }}>
                       <div style={adminStatLabel}>{SENSOR_LABELS[id] ?? id}</div>
-                      <div style={{ fontSize: 12, marginTop: 4, color: faulted ? "#e74c3c" : silent ? "#f0a500" : !down && (active || (!monitored && h.lastSeen)) ? "#2ecc71" : "#888" }}>
+                      <div style={{ fontSize: 13, marginTop: 4, color: faulted ? "#e74c3c" : silent ? "#f0a500" : !down && (active || (!monitored && h.lastSeen)) ? "#2ecc71" : "var(--admin-muted)" }}>
                         {down ? (h.lastSeen ? `Last seen ${ago}` : "No data")
                           : faulted ? `Problem · ${ago}`
                           : active ? `Active · ${ago}`
@@ -1727,29 +1730,29 @@ const adjustCredits = async (mode: "add" | "remove") => {
                           : ago}
                       </div>
                       {(faulted || silent) && openHint !== id && (
-                        <div style={{ fontSize: 10, color: faulted ? "#e74c3c" : "#f0a500", marginTop: 4 }}>Tap for what to check</div>
+                        <div style={{ fontSize: 11, fontWeight: 600, color: faulted ? "#e74c3c" : "var(--kiosk-accent-text)", marginTop: 4 }}>Tap for what to check</div>
                       )}
                       {openHint === id && (
-                        <div style={{ fontSize: 11, color: "#ccc", marginTop: 8, paddingTop: 8, borderTop: "1px solid #333", lineHeight: 1.5 }}>
+                        <div style={{ fontSize: 11, color: "var(--admin-secondary)", marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--admin-border)", lineHeight: 1.5 }}>
                           {down && (
-                            <div style={{ color: "#f0a500", marginBottom: 4 }}>
+                            <div style={{ color: "var(--kiosk-accent-text)", marginBottom: 4 }}>
                               Arduino is {sensorStatus.overall}, so this sensor can't be checked right now. Fix the USB connection first.
                             </div>
                           )}
                           {SENSOR_HINTS[id]}
                         </div>
                       )}
-                      {h.lastDetail && <div style={{ fontSize: 11, color: "#555", marginTop: 2 }}>{h.lastDetail}</div>}
+                      {h.lastDetail && <div style={{ fontSize: 11, color: "var(--admin-muted)", marginTop: 2 }}>{h.lastDetail}</div>}
                       {id === "servo" && (
-                        <div style={{ fontSize: 10, color: "#444", marginTop: 4 }}>Last action only. The gate has no feedback.</div>
+                        <div style={{ fontSize: 11, color: "var(--admin-muted)", marginTop: 4 }}>Last action only. The gate has no feedback.</div>
                       )}
                       {id === "ultrasonic" && pct !== null && (
                         <div style={{ marginTop: 8 }}>
                           <div style={{ fontSize: 12, fontWeight: 700, color: binColor }}>{down ? "Last known: " : ""}Bin {pct}% full</div>
-                          <div style={{ height: 6, background: "#333", borderRadius: 3, marginTop: 4, overflow: "hidden" }}>
+                          <div style={{ height: 6, background: "var(--admin-border)", borderRadius: 3, marginTop: 4, overflow: "hidden" }}>
                             <div style={{ width: `${pct}%`, height: "100%", background: binColor }} />
                           </div>
-                          {!down && <div style={{ fontSize: 10, color: "#444", marginTop: 4 }}>Checked every few seconds while idle</div>}
+                          {!down && <div style={{ fontSize: 11, color: "var(--admin-muted)", marginTop: 4 }}>Checked every few seconds while idle</div>}
                         </div>
                       )}
                     </div>
@@ -1761,8 +1764,8 @@ const adjustCredits = async (mode: "add" | "remove") => {
             {/* Calibration */}
             {calForm && (
               <div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: "#888", marginBottom: 8 }}>CALIBRATION</div>
-                               <div style={{ background: "#242424", border: "1px solid #333", borderRadius: 10, padding: 16, display: "flex", flexDirection: "column", gap: 14, ...(isSuperAdmin ? {} : { pointerEvents: "none" as const, opacity: 0.6 }) }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "var(--admin-muted-strong)", marginBottom: 8 }}>CALIBRATION</div>
+                                 <div style={{ background: "var(--admin-surface)", border: "1px solid var(--admin-border-strong)", borderRadius: 10, padding: 16, display: "flex", flexDirection: "column", gap: 14, ...(isSuperAdmin ? {} : { pointerEvents: "none" as const, opacity: 0.6 }) }}>
                   {!isSuperAdmin && <div style={{ fontSize: 12, color: "#f0a500" }}>View only. Only a super-admin can change calibration.</div>}
                   <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
                    <label style={calLabel}>ToF sanity min (cm)
@@ -1797,7 +1800,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                     </label>
                   </div>
                                     <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-                    <div style={{ fontSize: 13, color: "#ccc" }}>
+                    <div style={{ fontSize: 13, color: "var(--admin-secondary)" }}>
                      Empty chamber reading: <strong style={{ color: "#f0a500" }}>{mmToCm(calForm.tofMountMm)} cm</strong>
                     </div>
                     <button
@@ -1843,12 +1846,12 @@ const adjustCredits = async (mode: "add" | "remove") => {
   return (
     <div style={{ marginTop: -6 }}>
       <div style={{ fontSize: 11, lineHeight: 1.6, color }}>{text}</div>
-      <div style={{ fontSize: 11, lineHeight: 1.6, color: "#666" }}>Height ranges saved: {withH}/{total} bands</div>
+      <div style={{ fontSize: 11, lineHeight: 1.6, color: "var(--admin-muted)" }}>Height ranges saved: {withH}/{total} bands</div>
     </div>
   );
 })()}
                   {calForm.sizes.map((s, i) => (
-                    <div key={i} style={{ display: "flex", flexDirection: "column", gap: 8, padding: "10px 0", borderBottom: "1px solid #2a2a2a" }}>
+                    <div key={i} style={{ display: "flex", flexDirection: "column", gap: 8, padding: "10px 0", borderBottom: "1px solid var(--admin-row-border)" }}>
                       <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
                         <label style={calLabel}>Label
                           <input type="text" value={s.label} onChange={e => {
@@ -1891,7 +1894,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                         </button>
                       </div>
                       <div style={{ display: "flex", gap: 10, alignItems: "flex-end", paddingLeft: 4 }}>
-                        <span style={{ fontSize: 11, color: "#666", width: 140 }}>↳ Height range (cm)</span>
+                        <span style={{ fontSize: 11, color: "var(--admin-muted)", width: 140 }}>↳ Height range (cm)</span>
 <label style={calLabel}>Min height
   <input type="number" step="0.1"
     value={s.minHeight != null ? s.minHeight / 10 : ""}
@@ -2035,7 +2038,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                 </thead>
                 <tbody>
                   {admins.map(a => (
-                      <tr key={a.id} style={{ borderBottom: "1px solid #2a2a2a" }}>
+                      <tr key={a.id} style={{ borderBottom: "1px solid var(--admin-row-border)" }}>
                         <td style={td}>{a.username}</td>
                         <td style={{ ...td, color: a.email ? "#38bdf8" : "#666" }}>{a.email || "Not set"}</td>
                         <td style={td}>
@@ -2043,7 +2046,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                             {a.role}
                           </span>
                         </td>
-                        <td style={{ ...td, fontSize: 11, color: "#555" }}>{new Date(a.created_at).toLocaleDateString()}</td>
+                        <td style={{ ...td, fontSize: 11, color: "var(--admin-muted)" }}>{new Date(a.created_at).toLocaleDateString()}</td>
                         <td style={td}>
                           <div style={{ display: "flex", gap: 6 }}>
                             <button onClick={() => openEditAdmin(a)} style={actionBtn("#1a2a3a", "#3498db")}>Edit</button>
@@ -2052,7 +2055,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                         </td>
                       </tr>
                     ))}
-                  {admins.length === 0 && <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "#555" }}>{hasFilter ? "No matching admins" : "No admins yet"}</td></tr>}
+                  {admins.length === 0 && <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: "var(--admin-muted)" }}>{hasFilter ? "No matching admins" : "No admins yet"}</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -2071,12 +2074,12 @@ const adjustCredits = async (mode: "add" | "remove") => {
           <div style={{ ...modal, maxWidth: 400 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
               <AccountCircleIcon size={20} color="#f0a500" />
-              <span style={{ fontSize: 17, fontWeight: 700, color: "#fff" }}>Account Settings</span>
+              <span style={{ fontSize: 17, fontWeight: 700, color: "var(--admin-text)" }}>Account Settings</span>
             </div>
 
             <div style={{ display: "flex", flexDirection: "column", gap: 12, textAlign: "left" }}>
               <div>
-                <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Username</div>
+                <div style={{ fontSize: 12, color: "var(--admin-muted-strong)", marginBottom: 4 }}>Username</div>
                 <input
                   value={settingsForm.username}
                   onChange={e => setSettingsForm({ ...settingsForm, username: e.target.value })}
@@ -2085,7 +2088,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
               </div>
 
               <div>
-                <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Gmail Address (for Password Recovery & Alerts)</div>
+                <div style={{ fontSize: 12, color: "var(--admin-muted-strong)", marginBottom: 4 }}>Gmail Address (for Password Recovery & Alerts)</div>
                 <input
                   type="email"
                   value={settingsForm.email}
@@ -2096,7 +2099,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
               </div>
 
               <div>
-                <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>New Password (optional)</div>
+                <div style={{ fontSize: 12, color: "var(--admin-muted-strong)", marginBottom: 4 }}>New Password (optional)</div>
                 <div style={{ position: "relative" }}>
                   <input
                     type={showSettingsPass ? "text" : "password"}
@@ -2110,7 +2113,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                     onClick={() => setShowSettingsPass(!showSettingsPass)}
                     style={{
                       position: "absolute", right: 12, top: "50%", transform: "translateY(-50% )",
-                      background: "none", border: "none", color: "#888", cursor: "pointer", fontSize: 13
+                      background: "none", border: "none", color: "var(--admin-muted)", cursor: "pointer", fontSize: 13
                     }}
                   >
                     {showSettingsPass ? "Hide" : "Show"}
@@ -2120,7 +2123,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
 
               {settingsForm.newPassword && (
                 <div>
-                  <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Confirm New Password</div>
+                  <div style={{ fontSize: 12, color: "var(--admin-muted-strong)", marginBottom: 4 }}>Confirm New Password</div>
                   <input
                     type="password"
                     value={settingsForm.confirmPassword}
@@ -2147,11 +2150,11 @@ const adjustCredits = async (mode: "add" | "remove") => {
                     <div style={{ ...modal, maxWidth: 480, maxHeight: "90vh", overflowY: "auto" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
               <WrenchIcon size={20} color="#f0a500" />
-              <span style={{ fontSize: 17, fontWeight: 700, color: "#fff" }}>System Maintenance</span>
+              <span style={{ fontSize: 17, fontWeight: 700, color: "var(--admin-text)" }}>System Maintenance</span>
             </div>
 
             <div style={{ display: "flex", flexDirection: "column", gap: 12, textAlign: "left" }}>
-              <div style={{ fontSize: 12, color: "#888", lineHeight: 1.4 }}>
+              <div style={{ fontSize: 12, color: "var(--admin-muted-strong)", lineHeight: 1.4 }}>
                 Export encrypted database backups or restore system state from an existing backup file.
               </div>
 
@@ -2172,21 +2175,21 @@ const adjustCredits = async (mode: "add" | "remove") => {
                       alert("Failed to download database backup.");
                     }
                   }}
-                  style={{ ...confirmBtn, background: "#2a2a2a", color: "#f0a500", border: "1px solid #3a3a3a" }}
+                  style={{ ...confirmBtn, background: "var(--admin-hover)", color: "var(--kiosk-accent-text)", border: "1px solid var(--admin-border-strong)" }}
                 >
                   Download Backup
                 </button>
                 <button
                   onClick={() => document.getElementById("restoreFileInput")?.click()}
-                  style={{ ...confirmBtn, background: "#2a2a2a", color: "#fff", border: "1px solid #3a3a3a" }}
+                  style={{ ...confirmBtn, background: "var(--admin-hover)", color: "var(--admin-text)", border: "1px solid var(--admin-border-strong)" }}
                 >
                   Restore Backup
                 </button>
               </div>
 
-              <div style={{ height: 1, background: "#333", margin: "8px 0 4px" }} />
+              <div style={{ height: 1, background: "var(--admin-border)", margin: "8px 0 4px" }} />
 
-              <div style={{ fontSize: 12, color: "#888", lineHeight: 1.4 }}>
+              <div style={{ fontSize: 12, color: "var(--admin-muted-strong)", lineHeight: 1.4 }}>
                 Power control. Both are refused while a deposit is in progress. Shutting down leaves the
                 kiosk off until someone physically reconnects power.
               </div>
@@ -2194,7 +2197,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
               <div style={{ display: "flex", gap: 8 }}>
                 <button
                   onClick={() => handlePower("reboot")}
-                  style={{ ...confirmBtn, background: "#2a2a2a", color: "#f0a500", border: "1px solid #3a3a3a" }}
+                  style={{ ...confirmBtn, background: "var(--admin-hover)", color: "var(--kiosk-accent-text)", border: "1px solid var(--admin-border-strong)" }}
                 >
                   Reboot Pi
                 </button>
@@ -2207,7 +2210,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
               </div>
             </div>
 
-                                   <button onClick={backupToDrive} disabled={driveBusy} style={{ ...confirmBtn, background: "#2a2a2a", color: "#f0a500", border: "1px solid #3a3a3a", width: "100%", marginTop: 12, opacity: driveBusy ? 0.5 : 1 }}>
+                                   <button onClick={backupToDrive} disabled={driveBusy} style={{ ...confirmBtn, background: "var(--admin-hover)", color: "var(--kiosk-accent-text)", border: "1px solid var(--admin-border-strong)", width: "100%", marginTop: 12, opacity: driveBusy ? 0.5 : 1 }}>
                                    {driveBusy ? "Uploading..." : "Back up to Drive now"}
                                     </button>
             <div style={{ fontSize: 11, marginTop: 6, textAlign: "left", color: driveStatus?.action === "DRIVE_BACKUP" ? "#2ecc71" : driveStatus ? "#e74c3c" : "#666" }}>
@@ -2217,7 +2220,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
             </div>
 
                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-              <label style={{ fontSize: 12, color: "#888", display: "flex", alignItems: "center", gap: 6 }}>
+              <label style={{ fontSize: 12, color: "var(--admin-muted-strong)", display: "flex", alignItems: "center", gap: 6 }}>
                 <input type="checkbox" checked={backupEnabled} onChange={e => setBackupEnabled(e.target.checked)} style={{ accentColor: "#f0a500" }} />
                 Automatic daily backup at
               </label>
@@ -2225,9 +2228,9 @@ const adjustCredits = async (mode: "add" | "remove") => {
                 style={{ ...inputStyle, width: 120, padding: "6px 8px", fontSize: 13, colorScheme: "dark", opacity: backupEnabled ? 1 : 0.5 }} />
               <button onClick={saveBackupSchedule} style={{ ...actionBtn("#1e293b", "#38bdf8"), padding: "8px 14px", fontSize: 12 }}>Save</button>
             </div>
-            <div style={{ fontSize: 10, color: "#555", marginTop: 4, textAlign: "left" }}>Manila time. A backup already made today counts, so a new time applies from tomorrow.</div>
+            <div style={{ fontSize: 10, color: "var(--admin-muted)", marginTop: 4, textAlign: "left" }}>Manila time. A backup already made today counts, so a new time applies from tomorrow.</div>
                    
-                            <button onClick={emailBackupNow} disabled={emailBusy} style={{ ...confirmBtn, background: "#2a2a2a", color: "#f0a500", border: "1px solid #3a3a3a", width: "100%", marginTop: 12, opacity: emailBusy ? 0.5 : 1 }}>
+                            <button onClick={emailBackupNow} disabled={emailBusy} style={{ ...confirmBtn, background: "var(--admin-hover)", color: "var(--kiosk-accent-text)", border: "1px solid var(--admin-border-strong)", width: "100%", marginTop: 12, opacity: emailBusy ? 0.5 : 1 }}>
               {emailBusy ? "Sending..." : "Email backup now"}
             </button>
             <div style={{ fontSize: 11, marginTop: 6, textAlign: "left", color: emailStatus?.action === "EMAIL_BACKUP" ? "#2ecc71" : emailStatus ? "#e74c3c" : "#666" }}>
@@ -2236,7 +2239,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                 : "No emailed backup yet."}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
-              <label style={{ fontSize: 12, color: "#888", display: "flex", alignItems: "center", gap: 6 }}>
+              <label style={{ fontSize: 12, color: "var(--admin-muted-strong)", display: "flex", alignItems: "center", gap: 6 }}>
                 <input type="checkbox" checked={emailEnabled} onChange={e => setEmailEnabled(e.target.checked)} style={{ accentColor: "#f0a500" }} />
                 Automatic daily email backup at
               </label>
@@ -2244,11 +2247,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                 style={{ ...inputStyle, width: 120, padding: "6px 8px", fontSize: 13, colorScheme: "dark", opacity: emailEnabled ? 1 : 0.5 }} />
               <button onClick={saveEmailSchedule} style={{ ...actionBtn("#1e293b", "#38bdf8"), padding: "8px 14px", fontSize: 12 }}>Save</button>
             </div>
-            <div style={{ fontSize: 10, color: "#555", marginTop: 4, textAlign: "left" }}>Manila time. Sent to every admin with a Gmail saved, plus the kiosk Gmail. A backup already made today counts, so a new time applies from tomorrow.</div>
-
-                        <button onClick={sendTestEmail} style={{ ...confirmBtn, background: "#2a2a2a", color: "#38bdf8", border: "1px solid #3a3a3a", width: "100%", marginTop: 12 }}>
-              Send test email
-            </button>
+            <div style={{ fontSize: 10, color: "var(--admin-muted)", marginTop: 4, textAlign: "left" }}>Manila time. Sent to every admin with a Gmail saved, plus the kiosk Gmail. A backup already made today counts, so a new time applies from tomorrow.</div>
 
             <div style={{ display: "flex", marginTop: 24 }}>
               <button onClick={() => setShowMaintenanceModal(false)} style={{ ...ghostBtn, width: "100%" }}>Close</button>
@@ -2263,11 +2262,11 @@ const adjustCredits = async (mode: "add" | "remove") => {
           <div style={modal}>
             <div style={{ marginBottom: 12 }}><EditIcon size={36} color="#3498db" /></div>
             <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>Edit User Account</div>
-            <div style={{ fontSize: 13, color: "#666", marginBottom: 20 }}>RFID: {editUserModal.rfid}</div>
+            <div style={{ fontSize: 13, color: "var(--admin-muted)", marginBottom: 20 }}>RFID: {editUserModal.rfid}</div>
             
             <div style={{ display: "flex", flexDirection: "column", gap: 12, textAlign: "left" }}>
               <div>
-                <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Full Name</div>
+                <div style={{ fontSize: 12, color: "var(--admin-muted-strong)", marginBottom: 4 }}>Full Name</div>
                 <input
                   value={editName}
                   onChange={e => setEditName(e.target.value)}
@@ -2275,7 +2274,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                 />
               </div>
               <div>
-                <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>Student ID</div>
+                <div style={{ fontSize: 12, color: "var(--admin-muted-strong)", marginBottom: 4 }}>Student ID</div>
                 <input
                   value={editStudentId}
                   onChange={e => setEditStudentId(e.target.value)}
@@ -2283,13 +2282,13 @@ const adjustCredits = async (mode: "add" | "remove") => {
                 />
               </div>
             </div>
-                           <div style={{ borderTop: "1px solid #333", marginTop: 14, paddingTop: 12, textAlign: "left" }}>
-              <div style={{ fontSize: 12, color: "#888", marginBottom: 6 }}>
+                           <div style={{ borderTop: "1px solid var(--admin-border)", marginTop: 14, paddingTop: 12, textAlign: "left" }}>
+              <div style={{ fontSize: 12, color: "var(--admin-muted-strong)", marginBottom: 6 }}>
                 Credits · current balance: <strong style={{ color: "#f0a500" }}>{editUserModal.credits}</strong>
               </div>
               <div style={{ display: "flex", gap: 8 }}>
                 <input type="number" min={1} value={creditAmount} onChange={e => setCreditAmount(e.target.value)} placeholder="Amount" style={{ ...inputStyle, width: 100 }} />
-                <input value={creditReason} onChange={e => setCreditReason(e.target.value)} placeholder="Reason (optional)" style={inputStyle} />
+                <input value={creditReason} onChange={e => setCreditReason(e.target.value)} placeholder="Reason *" required style={inputStyle} />
               </div>
               <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
                 <button onClick={() => adjustCredits("add")} style={{ ...actionBtn("#1a3a2a", "#2ecc71"), flex: 1, padding: "8px" }}>+ Add</button>
@@ -2316,11 +2315,8 @@ const adjustCredits = async (mode: "add" | "remove") => {
                     });
                     const data = await res.json();
                     if (res.ok && data.success) {
-                      setEditMsg("Updated successfully!");
-                      setTimeout(() => {
-                        setEditUserModal(null);
-                        fetchData();
-                      }, 1000);
+                      setEditUserModal(null);
+                      fetchData();
                     } else {
                       setEditMsg(data.error ?? "Update failed.");
                     }
@@ -2464,19 +2460,39 @@ const adjustCredits = async (mode: "add" | "remove") => {
   );
 }
 
+function ThemeToggle({ theme, onToggleTheme }: Props) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={theme === "light"}
+      aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+      onClick={onToggleTheme}
+      style={{
+        padding: "6px 12px", borderRadius: 8,
+        border: "1px solid var(--admin-border-strong)",
+        background: "var(--admin-surface)", color: "var(--admin-text)",
+        fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap",
+      }}
+    >
+      {theme === "dark" ? "Dark mode" : "Light mode"}
+    </button>
+  );
+}
+
 const fullScreen: React.CSSProperties = {
-  width: "100%", height: "100%", flex: 1, background: "#1a1a1a",
+  width: "100%", height: "100%", flex: 1, background: "var(--admin-bg)",
   display: "flex", flexDirection: "column", position: "relative",
   fontFamily: "'Inter', 'Segoe UI', sans-serif", overflow: "hidden",
   boxSizing: "border-box",
 };
 const headerBar: React.CSSProperties = {
-  padding: "12px 24px", borderBottom: "1px solid #2a2a2a",
+  padding: "12px 24px", borderBottom: "1px solid var(--admin-border)",
   display: "flex", alignItems: "center", gap: 12, flexShrink: 0,
 };
-const headerTitle: React.CSSProperties = { fontWeight: 700, fontSize: 15, color: "#fff" };
-const headerSub: React.CSSProperties = { fontSize: 11, color: "#555" };
-const tabBar: React.CSSProperties = { display: "flex", borderBottom: "1px solid #2a2a2a", paddingLeft: 24, flexShrink: 0 };
+const headerTitle: React.CSSProperties = { fontWeight: 700, fontSize: 15, color: "var(--admin-text)" };
+const headerSub: React.CSSProperties = { fontSize: 11, color: "var(--admin-muted)" };
+const tabBar: React.CSSProperties = { display: "flex", borderBottom: "1px solid var(--admin-border)", paddingLeft: 24, flexShrink: 0 };
 const tabBtn: React.CSSProperties = {
   padding: "10px 20px", background: "none", border: "none",
   cursor: "pointer", fontSize: 13, fontWeight: 600,
@@ -2492,37 +2508,37 @@ const loginPanel: React.CSSProperties = {
   width: "100%", maxWidth: 380, display: "flex", flexDirection: "column", gap: 28,
 };
 const inputStyle: React.CSSProperties = {
-  width: "100%", padding: "12px 14px", background: "#1e1e1e",
-  border: "1px solid #3a3a3a", borderRadius: 8, color: "#fff",
+  width: "100%", padding: "12px 14px", background: "var(--admin-input)",
+  border: "1px solid var(--admin-border-strong)", borderRadius: 8, color: "var(--admin-text)",
   fontSize: 15, outline: "none", boxSizing: "border-box",
 };
 const tableWrap: React.CSSProperties = {
-  flex: 1, overflow: "auto", borderRadius: 10, border: "1px solid #2a2a2a", boxSizing: "border-box",
+  flex: 1, overflow: "auto", borderRadius: 10, border: "1px solid var(--admin-border-strong)", boxSizing: "border-box",
 };
 const table: React.CSSProperties = { width: "100%", borderCollapse: "collapse", fontSize: 13 };
 const th: React.CSSProperties = {
-  padding: "10px 14px", textAlign: "left", color: "#555",
-  fontSize: 11, fontWeight: 600, background: "#1e1e1e",
-  borderBottom: "1px solid #2a2a2a", position: "sticky", top: 0,
+  padding: "10px 14px", textAlign: "left", color: "var(--admin-muted-strong)",
+  fontSize: 12, fontWeight: 700, background: "var(--admin-input)",
+  borderBottom: "1px solid var(--admin-border-strong)", position: "sticky", top: 0,
 };
-const td: React.CSSProperties = { padding: "10px 14px", color: "#ccc", verticalAlign: "middle" };
+const td: React.CSSProperties = { padding: "10px 14px", color: "var(--admin-secondary)", verticalAlign: "middle" };
 const actionBtn = (bg: string, color: string): React.CSSProperties => ({
   padding: "4px 10px", borderRadius: "6px", border: "none",
   background: bg, color, fontSize: 11, cursor: "pointer", fontWeight: 600,
 });
 const refreshBtn: React.CSSProperties = {
-  padding: "6px 14px", borderRadius: 8, background: "#2a2a2a",
-  border: "1px solid #3a3a3a", color: "#aaa", fontSize: 12, cursor: "pointer",
+  padding: "6px 14px", borderRadius: 8, background: "var(--admin-hover)",
+  border: "1px solid var(--admin-border-strong)", color: "var(--admin-muted)", fontSize: 12, cursor: "pointer",
 };
 const dropdownMenu: React.CSSProperties = {
   position: "absolute", top: "calc(100% + 6px)", right: 0, width: 200,
-  background: "#242424", border: "1px solid #3a3a3a", borderRadius: 10,
+  background: "var(--admin-surface)", border: "1px solid var(--admin-border-strong)", borderRadius: 10,
   boxShadow: "0 8px 24px rgba(0,0,0,0.5)", zIndex: 1000,
   display: "flex", flexDirection: "column", padding: "6px",
 };
 const dropdownItem: React.CSSProperties = {
   padding: "10px 12px", background: "transparent", border: "none",
-  borderRadius: 6, color: "#ddd", fontSize: 13, textAlign: "left",
+  borderRadius: 6, color: "var(--admin-secondary)", fontSize: 13, textAlign: "left",
   cursor: "pointer", fontWeight: 600, display: "flex", alignItems: "center", gap: 8,
 };
 const overlay: React.CSSProperties = {
@@ -2530,23 +2546,23 @@ const overlay: React.CSSProperties = {
   display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100,
 };
 const modal: React.CSSProperties = {
-  background: "#242424", border: "1px solid #444", borderRadius: 16,
+  background: "var(--admin-surface)", border: "1px solid var(--admin-border-strong)", borderRadius: 16,
   padding: "32px 36px", textAlign: "center", maxWidth: 340, width: "100%", boxSizing: "border-box",
 };
 const ghostBtn: React.CSSProperties = {
-  flex: 1, padding: "11px", borderRadius: 8, fontWeight: 600, fontSize: 14, background: "transparent", color: "#aaa", border: "1px solid #3a3a3a", cursor: "pointer",
+  flex: 1, padding: "11px", borderRadius: 8, fontWeight: 600, fontSize: 14, background: "transparent", color: "var(--admin-muted)", border: "1px solid var(--admin-border-strong)", cursor: "pointer",
 };
 const confirmBtn: React.CSSProperties = {
   flex: 1, padding: "11px", borderRadius: 8, fontWeight: 700, fontSize: 14, background: "#f0a500", color: "#000", border: "none", cursor: "pointer",
 };
 const adminStatCard: React.CSSProperties = {
-  background: "#242424", border: "1px solid #333", borderRadius: 12,
+  background: "var(--admin-surface)", border: "1px solid var(--admin-border-strong)", borderRadius: 12,
   padding: "14px 18px", boxSizing: "border-box",
 };
-const adminStatLabel: React.CSSProperties = { fontSize: 11, color: "#666", marginBottom: 4, fontWeight: 600, textTransform: "uppercase" };
-const adminStatVal: React.CSSProperties = { fontSize: 24, fontWeight: 800, color: "#fff" };
+const adminStatLabel: React.CSSProperties = { fontSize: 12, color: "var(--admin-muted-strong)", marginBottom: 4, fontWeight: 700, textTransform: "uppercase" };
+const adminStatVal: React.CSSProperties = { fontSize: 24, fontWeight: 800, color: "var(--admin-text)" };
 const calLabel: React.CSSProperties = {
-  display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: "#888", fontWeight: 600,
+  display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: "var(--admin-muted-strong)", fontWeight: 600,
 };
 const badgeStyle: React.CSSProperties = {
   minWidth: 18, height: 18, padding: "0 5px", borderRadius: 9,

@@ -9,12 +9,6 @@ interface Props { onBack: () => void; }
 
 type Step = "tap" | "form" | "pin" | "confirm_pin" | "saving" | "success" | "error" | "already" | "reset" | "reset_done";
 
-const formatTitleCase = (str: string) => {
-  return str
-    .toLowerCase()
-    .replace(/(?:^|\s)\S/g, (match) => match.toUpperCase());
-};
-
 export default function RegisterScreen({ onBack }: Props) {
   const [step, setStep]         = useState<Step>("tap");
   const [rfid, setRfid]         = useState("");
@@ -144,9 +138,9 @@ export default function RegisterScreen({ onBack }: Props) {
     }
 
     setRfid(scannedRfid);
-    setSurname(userData?.surname ? formatTitleCase(userData.surname) : "");
-    setFirstname(userData?.firstname ? formatTitleCase(userData.firstname) : "");
-    setMiddlename(userData?.middlename ? formatTitleCase(userData.middlename) : "");
+    setSurname(userData?.surname ?? "");
+    setFirstname(userData?.firstname ?? "");
+    setMiddlename(userData?.middlename ?? "");
     setStudentId(userData?.studentId ? userData.studentId.toUpperCase() : "");
     setAttemptedSubmit(false);
     setStep("form");
@@ -215,7 +209,7 @@ export default function RegisterScreen({ onBack }: Props) {
         </div>
       </div>
 
-      <div style={body}>
+      <div className="kiosk-page-scroll" style={body}>
         {step === "tap" && (
           <div style={{ width: "100%", minHeight: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 30, textAlign: "center" }}>
             <div style={{
@@ -246,7 +240,7 @@ export default function RegisterScreen({ onBack }: Props) {
               <label style={fieldLabel}>Surname (Last Name) <span style={{ color: "var(--kiosk-danger-text)" }}>*</span></label>
               <input
                 value={surname}
-                onChange={e => setSurname(formatTitleCase(e.target.value))}
+                onChange={e => setSurname(e.target.value)}
                 onFocus={e => e.currentTarget.scrollIntoView({ block: "center", behavior: "smooth" })}
                 placeholder="e.g. Dela Cruz"
                 className="registration-field"
@@ -264,7 +258,7 @@ export default function RegisterScreen({ onBack }: Props) {
               <label style={fieldLabel}>Firstname <span style={{ color: "var(--kiosk-danger-text)" }}>*</span></label>
               <input
                 value={firstname}
-                onChange={e => setFirstname(formatTitleCase(e.target.value))}
+                onChange={e => setFirstname(e.target.value)}
                 onFocus={e => e.currentTarget.scrollIntoView({ block: "center", behavior: "smooth" })}
                 placeholder="e.g. Juan"
                 className="registration-field"
@@ -282,7 +276,7 @@ export default function RegisterScreen({ onBack }: Props) {
               <label style={fieldLabel}>Middlename (Full or Initial, Optional)</label>
               <input
                 value={middlename}
-                onChange={e => setMiddlename(formatTitleCase(e.target.value))}
+                onChange={e => setMiddlename(e.target.value)}
                 onFocus={e => e.currentTarget.scrollIntoView({ block: "center", behavior: "smooth" })}
                 placeholder="e.g. Santos or S."
                 className="registration-field"
@@ -391,9 +385,9 @@ export default function RegisterScreen({ onBack }: Props) {
         )}
 
         {step === "already" && (
-          <div style={{ textAlign: "center" }}>
+          <div style={{ width: "100%", minHeight: "100%", alignSelf: "stretch", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center" }}>
             <div style={{ fontSize: 20, color: "var(--kiosk-accent-text)", fontWeight: 700, marginBottom: 8 }}>Card already registered</div>
-            <div style={{ fontSize: 14, color: "var(--kiosk-muted)", marginBottom: 24 }}>
+            <div style={{ fontSize: 17, color: "var(--kiosk-muted)", marginBottom: 24, maxWidth: 480 }}>
               This RFID card is already linked to an account.
             </div>
             <button onClick={onBack} style={doneBtn}>Back to home</button>
@@ -401,9 +395,9 @@ export default function RegisterScreen({ onBack }: Props) {
         )}
 
         {step === "error" && (
-          <div style={{ textAlign: "center" }}>
+          <div style={{ width: "100%", minHeight: "100%", alignSelf: "stretch", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center" }}>
             <div style={{ fontSize: 20, color: "var(--kiosk-danger-text)", fontWeight: 700, marginBottom: 8 }}>Registration failed</div>
-            <div style={{ fontSize: 14, color: "var(--kiosk-muted)", marginBottom: 24 }}>{errorMsg}</div>
+            <div style={{ fontSize: 17, color: "var(--kiosk-muted)", marginBottom: 24, maxWidth: 480 }}>{errorMsg}</div>
             <button onClick={() => setStep("form")} style={doneBtn}>Try again</button>
           </div>
         )}

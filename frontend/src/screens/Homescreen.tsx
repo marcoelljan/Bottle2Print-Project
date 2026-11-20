@@ -13,8 +13,6 @@ import { API } from "../config";
 
 interface Props {
   onNavigate: (s: Screen) => void;
-  theme: "dark" | "light";
-  onToggleTheme: () => void;
 }
 
 interface Tile {
@@ -32,7 +30,7 @@ const TILES: Tile[] = [
   { screen: "register", icon: <AccountCircleIcon size={28} color="#f0a500" />, label: "Register RFID", sub: "Link a new card", color: "var(--kiosk-accent-text)" },
 ];
 
-export default function HomeScreen({ onNavigate, theme, onToggleTheme }: Props) {
+export default function HomeScreen({ onNavigate }: Props) {
   const [showFeedback, setShowFeedback] = useState(false);
     const [off, setOff] = useState<Record<string, string>>({});   // feature -> message while switched off
   useEffect(() => {
@@ -79,33 +77,11 @@ export default function HomeScreen({ onNavigate, theme, onToggleTheme }: Props) 
             <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--kiosk-success-text)", display: "inline-block" }} />
             Online
           </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={theme === "light"}
-            aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-            onClick={onToggleTheme}
-            style={{
-              display: "flex", alignItems: "center", gap: 10, padding: "8px 12px",
-              borderRadius: 999, border: "1px solid var(--kiosk-muted-dim)", background: "var(--kiosk-surface)",
-              color: "var(--kiosk-text)", fontSize: 14, fontWeight: 600, cursor: "pointer",
-            }}
-          >
-            <span>{theme === "dark" ? "Dark" : "Light"} mode</span>
-            <span style={{
-              width: 42, height: 24, padding: 3, borderRadius: 999,
-              background: theme === "light" ? "#f0a500" : "var(--kiosk-muted-dim)",
-              display: "flex", alignItems: "center", justifyContent: theme === "light" ? "flex-end" : "flex-start",
-              boxSizing: "border-box",
-            }}>
-              <span style={{ width: 18, height: 18, borderRadius: "50%", background: "var(--kiosk-text)" }} />
-            </span>
-          </button>
         </div>
       </div>
 
       {/* main */}
-      <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "24px 32px", overflowY: "auto", overscrollBehavior: "contain" }}>
+      <div className="kiosk-page-scroll" style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "24px 32px", overflowY: "auto", overscrollBehavior: "contain" }}>
         <p style={{ fontSize: 26, fontWeight: 700, marginBottom: 6 }}>Select a function to begin</p>
         <p style={{ fontSize: 17, color: "var(--kiosk-muted)", marginBottom: 28 }}>Tap any option below</p>
 
@@ -121,7 +97,7 @@ export default function HomeScreen({ onNavigate, theme, onToggleTheme }: Props) 
                 borderRadius: 12,
                 padding: "24px 26px",
                 display: "flex", alignItems: "center", gap: 20, minHeight: 116,
-                cursor: why(t.screen as string) ? "not-allowed" : "pointer", opacity: why(t.screen as string) ? (theme === "light" ? 0.7 : 0.45) : 1, textAlign: "left",
+                cursor: why(t.screen as string) ? "not-allowed" : "pointer", opacity: why(t.screen as string) ? 0.7 : 1, textAlign: "left",
                 transition: "border-color 0.2s, background 0.2s",
               }}
               onMouseEnter={e => {

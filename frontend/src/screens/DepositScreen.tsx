@@ -211,7 +211,7 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
         </div>
       </div>
 
-      <div style={body}>
+      <div className="kiosk-page-scroll" style={body}>
         {finishError && (
           <div style={{ position: "absolute", top: 72, left: 16, right: 16, zIndex: 5, textAlign: "center", color: "var(--kiosk-danger-text)", fontSize: 13 }}>
             {finishError}
@@ -269,9 +269,9 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
         )}
 
         {inValidation && (
-          <div style={{ width: "100%", maxWidth: 560 }}>
+          <div style={{ width: "100%", maxWidth: 680, alignSelf: "center", marginBlock: "auto" }}>
             <div style={{ textAlign: "center", marginBottom: 20 }}>
-              <div style={{ fontSize: 16, color: "var(--kiosk-accent-text)", fontWeight: 700 }}>
+              <div style={{ fontSize: 20, color: "var(--kiosk-accent-text)", fontWeight: 700 }}>
                 {step === "storing"
                   ? "Moving bottle to storage..."
                   : step === "ir" && session?.steps[0]?.status === "pending"
@@ -279,21 +279,21 @@ export default function DepositScreen({ onBack, onNavigate }: Props) {
                     : "Validating bottle..."}
               </div>
               {step === "ir" && session?.steps[0]?.status === "pending" && (
-                <div style={{ fontSize: 13, color: "var(--kiosk-muted)", marginTop: 6 }}>Insert your bottle now.</div>
+                <div style={{ fontSize: 15, color: "var(--kiosk-muted)", marginTop: 8 }}>Insert your bottle now.</div>
               )}
             </div>
             {session?.steps.map(s => (
               <div key={s.id} style={{
                 display: "flex", alignItems: "center", gap: 14,
-                padding: "14px 18px", marginBottom: 10,
+                padding: "18px 22px", marginBottom: 12,
                 background: "var(--kiosk-surface)", borderRadius: 10,
                 border: `1.5px solid ${STATUS_COLOR[s.status]}`,
                 transition: "border-color 0.3s",
               }}>
                 <span style={{ display: "flex", width: 28, justifyContent: "center", color: "var(--kiosk-accent-text)" }}>{STEP_ICONS[s.id]}</span>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600 }}>{s.label}</div>
-                  {s.detail && <div style={{ fontSize: 11, color: "var(--kiosk-muted)", marginTop: 2 }}>{s.detail}</div>}
+                  <div style={{ fontSize: 16, fontWeight: 600 }}>{s.label}</div>
+                  {s.detail && <div style={{ fontSize: 13, color: "var(--kiosk-muted)", marginTop: 3 }}>{s.detail}</div>}
                 </div>
                 <div style={{ display: "flex", width: 24, justifyContent: "center" }}>
                   {s.status === "pending" && <ClockIcon size={20} color="var(--kiosk-muted-faint)" />}
