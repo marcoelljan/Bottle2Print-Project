@@ -11,6 +11,7 @@ import {
   ChatIcon,
 } from "../components/KioskIcons";
 import { API } from "../config";
+import IdleTutorial from "../components/IdleTutorial";
 
 interface Props {
   onNavigate: (s: Screen) => void;
@@ -35,6 +36,21 @@ const TILES: Tile[] = [
 
 export default function HomeScreen({ onNavigate, theme, onToggleTheme }: Props) {
   const [showFeedback, setShowFeedback] = useState(false);
+  const IDLE_MS = 30000; // 30 seconds of no touch on the home screen
+  const [showTutorial, setShowTutorial] = useState(false);
+  const [tutorialDismissed, setTutorialDismissed] = useState(false);
+
+  useEffect(() => {
+    if (showTutorial || showFeedback || tutorialDismissed) return;
+    let t = setTimeout(() => setShowTutorial(true), IDLE_MS);
+    const reset = () => { clearTimeout(t); t = setTimeout(() => setShowTutorial(true), IDLE_MS); };
+    const events = ["pointerdown", "pointermove", "keydown", "wheel"];
+    events.forEach(e => window.addEventListener(e, reset));
+    return () => {
+      clearTimeout(t);
+      events.forEach(e => window.removeEventListener(e, reset));
+    };
+  }, [showTutorial, showFeedback, tutorialDismissed]);
     const [off, setOff] = useState<Record<string, string>>({});   // feature -> message while switched off
   useEffect(() => {
     const load = async () => {
@@ -57,7 +73,8 @@ export default function HomeScreen({ onNavigate, theme, onToggleTheme }: Props) 
       width: "100%", height: "100%", flex: 1, background: "var(--kiosk-bg)",
       display: "flex", flexDirection: "column",
       fontFamily: "'Inter', 'Segoe UI', sans-serif",
-      boxSizing: "border-box", overflow: "hidden",
+      boxSizing: "border-box", overflow: "hidden", position: "relative",
+      
     }}>
 
       {/* header */}
@@ -149,6 +166,12 @@ export default function HomeScreen({ onNavigate, theme, onToggleTheme }: Props) 
           <FeedbackModal context="general" onClose={() => setShowFeedback(false)} />
         )}
       </div>
+      {showTutorial && (
+        <IdleTutorial onDismiss={() => {
+          setShowTutorial(false);
+          setTutorialDismissed(true);
+        }} />
+      )}
     </div>
   );
 }
