@@ -40,6 +40,7 @@ interface Session {
   depositBottleCount: number;
   depositCreditsEarned: number;
   depositCo2Grams: number;
+  lastBottleCredits: number;
 }
 
 const STEP_ICONS: Record<string, React.ReactNode> = {
@@ -314,11 +315,11 @@ export default function DepositScreen({ onBack, onNavigate, theme, onToggleTheme
         )}
 
         {step === "session_summary" && (
-          <div style={{ textAlign: "center" }}>
+          <div style={{ flex: 1, alignSelf: "stretch", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center" }}>
             <div style={{ marginBottom: 12 }}><CheckCircleIcon size={64} color="#2ecc71" /></div>
             <div style={{ fontSize: 28, color: "var(--kiosk-success-text)", fontWeight: 700, marginBottom: 10 }}>Deposit complete</div>
             <div style={{ fontSize: 18, color: "var(--kiosk-text-secondary)", marginBottom: 24 }}>
-              {session?.depositBottleCount ?? 0} bottle(s) · +{session?.depositCreditsEarned ?? 0} credits
+              {session?.depositBottleCount ?? 0} bottle(s) · {session?.depositCreditsEarned ?? 0} credits earned
             </div>
             <button onClick={onBack} style={{ ...backBtn, maxWidth: 260 }}>Done</button>
           </div>
@@ -338,16 +339,22 @@ export default function DepositScreen({ onBack, onNavigate, theme, onToggleTheme
         )}
 
         {step === "result" && session?.result === "accepted" && (
-          <div style={{ textAlign: "center" }}>
+          <div style={{ flex: 1, alignSelf: "stretch", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center" }}>
             <div style={{ marginBottom: 12 }}><CheckCircleIcon size={64} color="#2ecc71" /></div>
             <div style={{ fontSize: 30, color: "var(--kiosk-success-text)", fontWeight: 700, marginBottom: 8 }}>Bottle accepted!</div>
             <div style={{ fontSize: 18, color: "var(--kiosk-text-secondary)", marginBottom: 24 }}>
               Size: <strong style={{ color: "var(--kiosk-accent-text)" }}>{session.size}</strong>
               {" · "}{session.heightMm != null ? (session.heightMm / 10).toFixed(1) : "—"} cm · {session.weightG}g
             </div>
-            <div style={creditBox}>
-              <div style={{ fontSize: 16, color: "var(--kiosk-text-secondary)" }}>Total credits</div>
-              <div style={{ fontSize: 54, fontWeight: 800, color: "var(--kiosk-accent-text)" }}>{session.credits}</div>
+            <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
+              <div style={creditBox}>
+                <div style={{ fontSize: 15, color: "var(--kiosk-text-secondary)" }}>Bottle credits</div>
+                <div style={{ fontSize: 48, fontWeight: 800, color: "#2ecc71" }}>{session.lastBottleCredits}</div>
+              </div>
+              <div style={creditBox}>
+                <div style={{ fontSize: 15, color: "var(--kiosk-text-secondary)" }}>Total account credits</div>
+                <div style={{ fontSize: 48, fontWeight: 800, color: "var(--kiosk-accent-text)" }}>{session.credits}</div>
+              </div>
             </div>
             <div style={{ fontSize: 16, color: "var(--kiosk-accent-text)", marginTop: 18 }}>
               Please wait until the gate finishes moving before inserting another bottle.

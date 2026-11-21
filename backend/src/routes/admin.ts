@@ -15,6 +15,7 @@ import { getCalibration, updateCalibration, invalidateCalibrationCache } from ".
 import { requestTofCal } from "../tofCal";
 import { clearVerified } from "../pinAuth";
 import { getPrintPricing, isValidPrintRate, savePrintPricing } from "../printPricing";
+import { anonymizeRfidHistory } from "../accountHistory";
 
 const router = Router();
 
@@ -701,15 +702,15 @@ router.post("/api/admin/user/:rfid/credits", requireSuperAdmin, (req: any, res) 
 
 router.delete("/api/admin/user/:rfid", requireSuperAdmin, (req: any, res) => {
   const { rfid } = req.params;
-  const user = db.prepare("SELECT * FROM users WHERE rfid = ?").get(rfid);
+  const user = db.prepare("SELECT rfid FROM users WHERE rfid = ?").get(rfid) as { rfid: string } | undefined;
   if (!user) return res.status(404).json({ error: "User not found." });
 
   db.transaction(() => {
-    db.prepare("DELETE FROM transactions WHERE rfid = ?").run(rfid);
-    db.prepare("DELETE FROM feedback WHERE rfid = ?").run(rfid);
+    anonymizeRfidHistory(db, user);
     db.prepare("DELETE FROM users WHERE rfid = ?").run(rfid);
+    db.prepare("INSERT INTO activity_logs (admin_user, action, details) VALUES (?, ?, ?)")
+      .run(req.admin.username, "DELETE_USER", "Deleted user account; historical records were anonymized and preserved");
   })();
-  logActivity(req.admin.username, "DELETE_USER", `Deleted user RFID ${rfid}`);
   res.json({ success: true });
 });
 
@@ -718,7 +719,10 @@ router.get("/api/admin/transactions", (req, res) => {
     res.json(db.prepare(`
       SELECT * FROM (
         SELECT t.*,
-        TRIM(COALESCE(u.firstname, '') || ' ' || CASE WHEN u.middlename = '' THEN '' ELSE u.middlename || ' ' END || COALESCE(u.surname, '')) AS user_name
+        CASE
+          WHEN substr(t.rfid, 1, 8) = 'deleted_' THEN 'Deleted user'
+          ELSE TRIM(COALESCE(u.firstname, '') || ' ' || CASE WHEN u.middlename = '' THEN '' ELSE u.middlename || ' ' END || COALESCE(u.surname, ''))
+        END AS user_name
         FROM transactions t
         LEFT JOIN users u ON t.rfid = u.rfid
         WHERE t.type != 'register'
@@ -773,7 +777,10 @@ router.get("/api/admin/activity-logs", requireAuth, (req, res) => {
 router.get("/api/admin/feedback", (req, res) => {
   try {
     res.json(db.prepare(`
-      SELECT * FROM feedback
+      SELECT id,
+             CASE WHEN substr(rfid, 1, 8) = 'deleted_' THEN 'Deleted user' ELSE rfid END AS rfid,
+             context, rating, comment, created_at
+      FROM feedback
       WHERE (@q = '' OR context LIKE @like ESCAPE '\\' OR comment LIKE @like ESCAPE '\\' OR rfid LIKE @like ESCAPE '\\')
         AND (@filter = 'all' OR (@filter = '1' AND rating <= 2) OR CAST(rating AS TEXT) = @filter)
         AND (@date = '' OR date(created_at, '+8 hours') = @date)

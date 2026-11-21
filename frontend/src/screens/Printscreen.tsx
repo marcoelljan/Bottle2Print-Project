@@ -808,17 +808,17 @@ export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
         )}
 
         {step === "success" && (
-          <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 22, color: "var(--kiosk-success-text)", fontWeight: 700, marginBottom: 8 }}>Print complete!</div>
-                        <div style={{ fontSize: 15, color: "var(--kiosk-text-secondary)", marginBottom: 16 }}>
+          <div style={{ width: "100%", maxWidth: 760, alignSelf: "center", marginBlock: "auto", textAlign: "center" }}>
+            <div style={{ fontSize: 32, color: "var(--kiosk-success-text)", fontWeight: 700, marginBottom: 14 }}>Print complete!</div>
+            <div style={{ fontSize: 19, lineHeight: 1.5, color: "var(--kiosk-text-secondary)", marginBottom: 22 }}>
               Collect your pages from the printer. If nothing printed, the selected paper size may not match the paper in the printer. Please ask staff.
             </div>
             {invoice && (
-              <div style={{ fontSize: 14, color: "var(--kiosk-muted)", marginBottom: 24, textAlign: "left", maxWidth: 480, margin: "0 auto 24px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+              <div style={{ fontSize: 18, color: "var(--kiosk-muted)", background: "var(--kiosk-surface)", border: "1px solid var(--kiosk-border)", borderRadius: 12, padding: "16px 22px", margin: "0 auto 24px", textAlign: "left", maxWidth: 480 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
                   <div>Pages printed</div><div style={{ fontWeight: 700 }}>{invoice.pagesPrinted}</div>
                 </div>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <div>Credits charged</div><div style={{ fontWeight: 700, color: "var(--kiosk-danger-text)" }}>-{invoice.creditsCharged}</div>
                 </div>
               </div>
@@ -829,7 +829,7 @@ export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
                 Unused credits will be cleared when you press Finish or after a few minutes of inactivity.
               </div>
             )}
-            <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 12, justifyContent: "center" }}>
               {showLeftover && (
                 <button
                   onClick={() => {
@@ -852,7 +852,7 @@ export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
                   }
                   onBack();
                 }}
-                style={showLeftover ? ghostBtn : primaryBtn(true)}
+                style={showLeftover ? ghostBtn : { ...primaryBtn(true), flex: "none", width: 320, maxWidth: "100%", fontSize: 18, minHeight: 58 }}
               >
                 {showLeftover ? "Finish" : "Back to home"}
               </button>
@@ -861,10 +861,10 @@ export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
         )}
 
         {step === "error" && (
-          <div style={{ width: "100%", minHeight: "100%", alignSelf: "stretch", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center" }}>
-            <div style={{ fontSize: 24, color: "var(--kiosk-danger-text)", fontWeight: 700, marginBottom: 10 }}>Print failed</div>
-            <div style={{ fontSize: 17, color: "var(--kiosk-muted)", marginBottom: 24, maxWidth: 560 }}>{errorMsg}</div>
-            <button onClick={() => (printCancelled ? onBack() : setStep("confirm"))} style={primaryBtn(true)}>
+          <div style={{ flex: 1, width: "100%", alignSelf: "stretch", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", padding: 16, boxSizing: "border-box" }}>
+            <div style={{ fontSize: 32, color: "var(--kiosk-danger-text)", fontWeight: 700, marginBottom: 14 }}>Print failed</div>
+            <div style={{ fontSize: 19, lineHeight: 1.5, color: "var(--kiosk-muted)", marginBottom: 24, maxWidth: 640 }}>{errorMsg}</div>
+            <button onClick={() => (printCancelled ? onBack() : setStep("confirm"))} style={{ ...primaryBtn(true), flex: "none", width: 320, maxWidth: "100%", fontSize: 18, minHeight: 58 }}>
               {printCancelled ? "Back to home" : "Back to job summary"}
             </button>
           </div>

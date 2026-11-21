@@ -74,6 +74,7 @@ interface SessionState {
   depositBottleCount:   number;
   depositCreditsEarned: number;
   depositCo2Grams:      number;
+  lastBottleCredits:    number;
 }
 
 function freshSteps(): ValidationStep[] {
@@ -86,7 +87,7 @@ function freshSteps(): ValidationStep[] {
 }
 
 function freshDepositTotals() {
-  return { depositBottleCount: 0, depositCreditsEarned: 0, depositCo2Grams: 0 };
+  return { depositBottleCount: 0, depositCreditsEarned: 0, depositCo2Grams: 0, lastBottleCredits: 0 };
 }
 
 let session: SessionState = {
@@ -144,6 +145,7 @@ function commitPendingDeposit() {
   session.depositBottleCount   += 1;
   session.depositCreditsEarned += d.credits;
   session.depositCo2Grams      += d.co2Grams;
+  session.lastBottleCredits = d.credits;
   broadcastState();
 }
 

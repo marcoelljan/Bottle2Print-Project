@@ -746,7 +746,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
   };
 
   const handleDeleteUser = async (rfid: string) => {
-    if (!window.confirm("Are you sure you want to delete this user?")) return;
+    if (!window.confirm("Delete this user account? Their deposit, print, and feedback history will be preserved.")) return;
     setUserDeleteMsg("");
     try {
       const res = await authFetch(`/api/admin/user/${rfid}`, { method: "DELETE" });
@@ -755,7 +755,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
         setUserDeleteMsg(data.error ?? "Could not delete the user.");
         return;
       }
-      setUserDeleteMsg(`User ${rfid} and their associated records were deleted.`);
+      setUserDeleteMsg(`User ${rfid} was deleted. Past activity was anonymized and remains in kiosk totals.`);
       await fetchData();
     } catch {
       setUserDeleteMsg("Could not reach the server. The user was not deleted.");
@@ -1441,8 +1441,8 @@ const adjustCredits = async (mode: "add" | "remove") => {
             </div>
             <div style={{ fontSize: 12, color: isSuperAdmin ? "var(--admin-muted)" : "var(--kiosk-accent-text)" }}>
               {isSuperAdmin
-                ? "Deleting a user permanently removes their account and associated records."
-                : "Only a super-admin can delete users because deletion permanently removes the account and its associated records."}
+                ? "Deleting a user removes the account and anonymizes their past activity. Kiosk-wide totals are preserved."
+                : "Only a super-admin can delete accounts. Historical activity is anonymized, not removed from kiosk totals."}
             </div>
             {userDeleteMsg && (
               <div role="status" style={{ fontSize: 12, color: userDeleteMsg.startsWith("User ") ? "var(--kiosk-success-text)" : "var(--kiosk-danger-text)" }}>
@@ -1468,7 +1468,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                             <button
                               onClick={() => handleDeleteUser(u.rfid)}
                               disabled={!isSuperAdmin}
-                              title={isSuperAdmin ? "Permanently delete this user and associated records" : "Only a super-admin can delete users"}
+                              title={isSuperAdmin ? "Delete this account and anonymize its history" : "Only a super-admin can delete users"}
                               style={{
                                 ...actionBtn("#3a1a1a", "#e74c3c"),
                                 opacity: isSuperAdmin ? 1 : 0.65,

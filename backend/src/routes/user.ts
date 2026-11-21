@@ -3,6 +3,7 @@ import bcrypt from "bcrypt";
 import { db } from "../db";
 import { markVerified } from "../pinAuth";
 import { firstDisabled } from "../kioskControls";
+import { anonymizeExistingRfidHistory } from "../accountHistory";
 
 const router = Router();
 
@@ -42,6 +43,8 @@ router.get("/api/user/:rfid", (req, res) => {
 });
 
 router.get("/api/user/:rfid/transactions", (req, res) => {
+  const activeUser = db.prepare("SELECT 1 FROM users WHERE rfid = ?").get(req.params.rfid);
+  if (!activeUser) return res.status(404).json({ error: "Not found" });
   const rows = db.prepare(
    "SELECT * FROM transactions WHERE rfid = ? AND type != 'reject' ORDER BY created_at DESC"
   ).all(req.params.rfid);
@@ -87,6 +90,7 @@ router.post("/api/user/register", async (req, res) => {
         WHERE rfid = ?
       `).run(cleanSurname, cleanFirstname, cleanMiddlename, cleanStudentId, hash, rfid);
     } else {
+      anonymizeExistingRfidHistory(db, { rfid });
       db.prepare(
         "INSERT INTO users (rfid, surname, firstname, middlename, studentId, pin_hash) VALUES (?, ?, ?, ?, ?, ?)"
       ).run(rfid, cleanSurname, cleanFirstname, cleanMiddlename, cleanStudentId, hash);

@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "ts-node-dev src/server.ts",
     "build": "tsc",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "test": "tsc --ignoreDeprecations 5.0 && node --test tests/*.test.cjs",
+    "migrate:anonymize-orphaned": "tsc --ignoreDeprecations 5.0 && node dist/scripts/anonymizeOrphanedRecords.js"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",
