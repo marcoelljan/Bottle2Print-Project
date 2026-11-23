@@ -26,7 +26,7 @@ import { startEmailBackupSchedule } from "./emailBackup";
 import { getControls, isDisabled, disabledMessage } from "./kioskControls";
 import { registerTofCalSender, handleTofCalLine } from "./tofCal";
 import { EventEmitter } from "events";
-
+import { localOnly, isKioskRequest, directOnly } from "./localOnly";
 
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 4000;
@@ -252,7 +252,10 @@ const app = express();
 app.set("trust proxy", "loopback");   // so req.ip is the real device behind Tailscale Serve
 app.use(cors());
 app.use(express.json({ limit: "50mb" }));
-
+// Kiosk-only routes: refused for anyone who is not the kiosk's own browser
+app.use(["/api/user", "/api/session", "/api/deposit"], localOnly);
+app.use(["/api/print", "/api/count-pages", "/upload", "/api/feedback", "/api/kiosk"], directOnly);
+app.post("/api/mode", localOnly);   // POST only: the admin reboot screen still polls GET /api/mode
 type KioskMode = "deposit" | "register" | "balance" | "print" | "admin" | "idle";
 let kioskMode: KioskMode = "idle";
 
@@ -492,7 +495,8 @@ function broadcastState() {
   wss.clients.forEach(c => { if (c.readyState === WebSocket.OPEN) c.send(data); });
 }
 
-wss.on("connection", ws => {
+wss.on("connection", (ws, req) => {
+  if (!isKioskRequest(req)) { ws.close(1008, "Kiosk only"); return; }
   ws.send(JSON.stringify({ type: "state", session: { ...session, timestamp: 0 } }));
 });
 

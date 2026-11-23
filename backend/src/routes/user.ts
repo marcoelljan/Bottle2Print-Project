@@ -38,7 +38,7 @@ router.get("/api/user/:rfid", (req, res) => {
   `).get(req.params.rfid) as any;
 
   if (!user) return res.status(404).json({ error: "Not found" });
-      const { pin_hash, ...safe } = user;
+  const { pin_hash, ...safe } = user;
   res.json({ ...safe, hasPin: !!pin_hash && user.pin_needs_reset !== 1 });
 });
 
@@ -46,14 +46,14 @@ router.get("/api/user/:rfid/transactions", (req, res) => {
   const activeUser = db.prepare("SELECT 1 FROM users WHERE rfid = ?").get(req.params.rfid);
   if (!activeUser) return res.status(404).json({ error: "Not found" });
   const rows = db.prepare(
-   "SELECT * FROM transactions WHERE rfid = ? AND type != 'reject' ORDER BY created_at DESC"
+    "SELECT * FROM transactions WHERE rfid = ? AND type != 'reject' ORDER BY created_at DESC"
   ).all(req.params.rfid);
   res.json(rows);
 });
 
 // ── Registration — supports separated name columns & 6-digit PIN hashing ──
 router.post("/api/user/register", async (req, res) => {
-      const regBlocked = firstDisabled("register", "rfid");
+  const regBlocked = firstDisabled("register", "rfid");
   if (regBlocked) return res.status(503).json({ error: regBlocked });
   const { rfid, surname, firstname, middlename, studentId, pin } = req.body;
   if (!rfid || !surname || !firstname || !studentId) {
@@ -64,7 +64,7 @@ router.post("/api/user/register", async (req, res) => {
   }
 
   const existing = db.prepare("SELECT * FROM users WHERE rfid = ?").get(rfid) as any;
-    if (existing && existing.pin_hash && existing.pin_needs_reset !== 1) {
+  if (existing && existing.pin_hash && existing.pin_needs_reset !== 1) {
     return res.status(409).json({ error: "This card is already registered." });
   }
   const dupe = db.prepare("SELECT rfid FROM users WHERE studentId = ? AND rfid != ?").get(String(studentId).trim(), rfid);
@@ -140,7 +140,7 @@ router.post("/api/user/verify-pin", async (req, res) => {
 
   if (match) {
     db.prepare("UPDATE users SET pin_fail_count = 0, pin_locked_until = NULL WHERE rfid = ?").run(rfid);
-        markVerified(rfid);
+    markVerified(rfid);
     return res.json({ success: true });
   }
 
@@ -163,61 +163,8 @@ router.post("/api/user/verify-pin", async (req, res) => {
   });
 });
 
-// ── Deposit route with Fraud Prevention & Environmental Impact Tracking ──
-router.post("/api/user/deposit", (req, res) => {
-  const { rfid, size, height_mm, weight_g, credits } = req.body;
-  if (!rfid || weight_g === undefined || height_mm === undefined) {
-    return res.status(400).json({ error: "Missing deposit parameters." });
-  }
-
-  const recentDuplicate = db.prepare(`
-    SELECT id FROM transactions 
-    WHERE rfid = ? AND type = 'deposit' 
-      AND ABS(weight_g - ?) < 2 
-      AND ABS(height_mm - ?) < 5 
-      AND datetime(created_at) >= datetime('now', '-10 seconds')
-  `).get(rfid, weight_g, height_mm);
-
-  if (recentDuplicate) {
-    return res.status(400).json({ 
-      error: "Fraud Prevention: Duplicate bottle detected. Please insert a different bottle." 
-    });
-  }
-
-  const plasticKg = weight_g / 1000;
-  const co2SavedG = plasticKg * 3000;
-
-  const creditAmount = credits ?? 1;
-
-  const insertTxn = db.prepare(`
-    INSERT INTO transactions (rfid, type, size, height_mm, weight_g, co2_saved_g, credits)
-    VALUES (?, 'deposit', ?, ?, ?, ?, ?)
-  `);
-  
-  const updateUser = db.prepare(`
-    UPDATE users SET credits = credits + ? WHERE rfid = ?
-  `);
-
-  const transaction = db.transaction(() => {
-    insertTxn.run(rfid, size ?? "Standard", height_mm, weight_g, co2SavedG, creditAmount);
-    updateUser.run(creditAmount, rfid);
-  });
-
-  try {
-    transaction();
-    const updatedUser = db.prepare("SELECT credits FROM users WHERE rfid = ?").get(rfid) as any;
-    res.json({ 
-      success: true, 
-      credits: updatedUser.credits,
-      environmentalImpact: {
-        plasticKg: plasticKg.toFixed(3),
-        co2SavedG: co2SavedG.toFixed(1)
-      }
-    });
-  } catch (err: any) {
-    res.status(500).json({ error: "Failed to process deposit: " + err.message });
-  }
-});
+// (The old POST /api/user/deposit route was removed: real deposits are written in server.ts
+//  only after the Arduino confirms the bottle reached storage.)
 
 // ── Credit Transfer Route ──────────────────────────────────────────────────
 // Checks a user's PIN with the same lockout rules as /api/user/verify-pin
@@ -254,7 +201,7 @@ async function verifyUserPin(rfid: string, pin: unknown): Promise<{ ok: true } |
 
 // ── Credit Transfer Route (PIN checked here, not by the browser) ───────────
 router.post("/api/user/transfer", async (req, res) => {
-      const balBlocked = firstDisabled("balance", "rfid");
+  const balBlocked = firstDisabled("balance", "rfid");
   if (balBlocked) return res.status(503).json({ error: balBlocked });
   const { senderRfid, recipientRfid, amount, pin } = req.body;
   const transferAmount = parseInt(amount);
@@ -295,4 +242,5 @@ router.post("/api/user/transfer", async (req, res) => {
     res.status(500).json({ error: "Transfer failed: " + err.message });
   }
 });
+
 export default router;
