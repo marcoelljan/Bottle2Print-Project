@@ -20,7 +20,7 @@ import {
 import useKioskControls from "../components/useKioskControls";
 import KioskThemeToggle from "../components/KioskThemeToggle";
 
-interface Props { onBack: () => void; onNavigate: (s: Screen, params?: any) => void; theme: "dark" | "light"; onToggleTheme: () => void; }
+interface Props { onBack: () => void; onNavigate: (s: Screen, params?: any) => void; onIdleTimeout: () => void; theme: "dark" | "light"; onToggleTheme: () => void; }
 interface User { rfid: string; name: string; studentId: string; credits: number; }
 
 type StepStatus = "pending" | "running" | "pass" | "fail";
@@ -50,7 +50,7 @@ const STATUS_COLOR: Record<StepStatus, string> = {
   pending: "var(--kiosk-border-strong)", running: "var(--kiosk-accent-text)", pass: "var(--kiosk-success-text)", fail: "var(--kiosk-danger-text)",
 };
 
-export default function DepositScreen({ onBack, onNavigate, theme, onToggleTheme }: Props) {
+export default function DepositScreen({ onBack, onNavigate, onIdleTimeout, theme, onToggleTheme }: Props) {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [connected, setConnected] = useState(false);
@@ -60,6 +60,9 @@ export default function DepositScreen({ onBack, onNavigate, theme, onToggleTheme
   const [finishDestination, setFinishDestination] = useState<"print" | "home" | null>(null);
   const [finishError, setFinishError] = useState("");
   const feedbackShownRef = useRef(false);
+  const idleStartedAtRef = useRef(Date.now());
+  const idleReturnStartedRef = useRef(false);
+  const [idleSeconds, setIdleSeconds] = useState(60);
 
   const step = session?.step ?? "idle";
   const off = useKioskControls();
@@ -185,6 +188,48 @@ export default function DepositScreen({ onBack, onNavigate, theme, onToggleTheme
   };
 
   const inValidation = ["ir", "capacitive", "tof", "loadcell", "storing"].includes(step);
+  const bottleProcessing = ["capacitive", "tof", "loadcell", "storing"].includes(step) ||
+    (step === "ir" && session?.steps[0]?.status !== "pending");
+
+  useEffect(() => {
+    if (idleReturnStartedRef.current) return;
+    idleStartedAtRef.current = Date.now();
+    setIdleSeconds(60);
+  }, [step, user, guestMode]);
+
+  useEffect(() => {
+    const resetIdleClock = () => {
+      if (idleReturnStartedRef.current) return;
+      idleStartedAtRef.current = Date.now();
+      setIdleSeconds(60);
+    };
+    window.addEventListener("pointerdown", resetIdleClock);
+    window.addEventListener("keydown", resetIdleClock);
+    window.addEventListener("wheel", resetIdleClock);
+    return () => {
+      window.removeEventListener("pointerdown", resetIdleClock);
+      window.removeEventListener("keydown", resetIdleClock);
+      window.removeEventListener("wheel", resetIdleClock);
+    };
+  }, []);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (bottleProcessing || idleReturnStartedRef.current) return;
+      const remaining = Math.max(0, Math.ceil((60000 - (Date.now() - idleStartedAtRef.current)) / 1000));
+      setIdleSeconds(remaining);
+      if (remaining > 0) return;
+
+      idleReturnStartedRef.current = true;
+      void (async () => {
+        try {
+          await fetch(`${API}${guestMode ? "/api/deposit/guest-stop" : "/api/deposit/finish"}`, { method: "POST" });
+        } catch {}
+        onIdleTimeout();
+      })();
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [bottleProcessing, guestMode, onIdleTimeout]);
 
     const wasActiveRef = useRef(false);
   useEffect(() => {
@@ -215,6 +260,11 @@ export default function DepositScreen({ onBack, onNavigate, theme, onToggleTheme
       </div>
 
       <div className="kiosk-page-scroll" style={body}>
+        <div role="status" style={{ position: "absolute", top: 8, left: 16, right: 16, textAlign: "center", fontSize: 13, color: "var(--kiosk-muted)", zIndex: 1 }}>
+          {bottleProcessing
+            ? "Bottle processing in progress. The idle timer is paused."
+            : `Returning to Home if idle in ${Math.floor(idleSeconds / 60)}:${String(idleSeconds % 60).padStart(2, "0")}`}
+        </div>
         {finishError && (
           <div style={{ position: "absolute", top: 72, left: 16, right: 16, zIndex: 5, textAlign: "center", color: "var(--kiosk-danger-text)", fontSize: 13 }}>
             {finishError}
@@ -420,7 +470,7 @@ const headerBar: React.CSSProperties = {
 const headerTitle: React.CSSProperties = { fontWeight: 700, fontSize: 19, color: "var(--kiosk-text)" };
 const headerSub: React.CSSProperties = { fontSize: 14, color: "var(--kiosk-muted)" };
 const body: React.CSSProperties = {
-  flex: 1, minHeight: 0, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: 16,
+  flex: 1, minHeight: 0, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: 16, position: "relative",
   overflowY: "auto",
 };
 const creditBox: React.CSSProperties = {

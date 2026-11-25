@@ -59,10 +59,23 @@ let lastHeartbeatAt: number | null = null;
 // Bin level (ultrasonic): distance from the sensor to whatever is in the bin
 let binDistanceCm: number | null = null;
 let binUpdatedAt: number | null = null;
+let lastSavedBinPercent: number | null = null;
+let lastSavedBinAt = 0;
+const BIN_HISTORY_MIN_INTERVAL_MS = 15 * 60 * 1000;
 
 export function recordBinLevel(distanceCm: number) {
   binDistanceCm = distanceCm;
   binUpdatedAt = Date.now();
+  const fillPct = binFillPercent();
+  if (fillPct === null) return;
+  const now = Date.now();
+  if (lastSavedBinPercent !== fillPct || now - lastSavedBinAt >= BIN_HISTORY_MIN_INTERVAL_MS) {
+    lastSavedBinPercent = fillPct;
+    lastSavedBinAt = now;
+    try {
+      db.prepare("INSERT INTO bin_history (distance_cm, fill_percent) VALUES (?, ?)").run(distanceCm, fillPct);
+    } catch {}
+  }
 }
 
 function binFillPercent(): number | null {

@@ -17,6 +17,8 @@ interface Props {
   onNavigate: (s: Screen) => void;
   theme: "dark" | "light";
   onToggleTheme: () => void;
+  showTutorialOnEntry: boolean;
+  onTutorialDismissed: () => void;
 }
 
 interface Tile {
@@ -34,23 +36,26 @@ const TILES: Tile[] = [
   { screen: "register", icon: <AccountCircleIcon size={28} color="#f0a500" />, label: "Register RFID", sub: "Link a new card", color: "var(--kiosk-accent-text)" },
 ];
 
-export default function HomeScreen({ onNavigate, theme, onToggleTheme }: Props) {
+export default function HomeScreen({ onNavigate, theme, onToggleTheme, showTutorialOnEntry, onTutorialDismissed }: Props) {
   const [showFeedback, setShowFeedback] = useState(false);
   const IDLE_MS = 30000; // 30 seconds of no touch on the home screen
   const [showTutorial, setShowTutorial] = useState(false);
-  const [tutorialDismissed, setTutorialDismissed] = useState(false);
+  const [tutorialDismissedTheme, setTutorialDismissedTheme] = useState<"dark" | "light" | null>(null);
 
   useEffect(() => {
-    if (showTutorial || showFeedback || tutorialDismissed) return;
+    if (showTutorial || showFeedback || tutorialDismissedTheme === theme) return;
     let t = setTimeout(() => setShowTutorial(true), IDLE_MS);
     const reset = () => { clearTimeout(t); t = setTimeout(() => setShowTutorial(true), IDLE_MS); };
-    const events = ["pointerdown", "pointermove", "keydown", "wheel"];
+    const events = ["pointerdown", "keydown", "wheel"];
     events.forEach(e => window.addEventListener(e, reset));
     return () => {
       clearTimeout(t);
       events.forEach(e => window.removeEventListener(e, reset));
     };
-  }, [showTutorial, showFeedback, tutorialDismissed]);
+  }, [showTutorial, showFeedback, theme, tutorialDismissedTheme]);
+  useEffect(() => {
+    if (showTutorialOnEntry) setShowTutorial(true);
+  }, [showTutorialOnEntry]);
     const [off, setOff] = useState<Record<string, string>>({});   // feature -> message while switched off
   useEffect(() => {
     const load = async () => {
@@ -169,7 +174,8 @@ export default function HomeScreen({ onNavigate, theme, onToggleTheme }: Props) 
       {showTutorial && (
         <IdleTutorial onDismiss={() => {
           setShowTutorial(false);
-          setTutorialDismissed(true);
+          setTutorialDismissedTheme(theme);
+          onTutorialDismissed();
         }} />
       )}
     </div>

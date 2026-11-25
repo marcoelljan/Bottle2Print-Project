@@ -45,6 +45,12 @@ db.exec(`
     role          TEXT NOT NULL DEFAULT 'admin',
     created_at    TEXT NOT NULL DEFAULT (datetime('now'))
   );
+  CREATE TABLE IF NOT EXISTS bin_history (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    distance_cm  REAL NOT NULL,
+    fill_percent INTEGER NOT NULL,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `);
 
 // Safe migrations for pre-existing databases to support 3 name columns

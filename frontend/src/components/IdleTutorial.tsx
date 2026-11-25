@@ -68,14 +68,31 @@ const SLIDES: Slide[] = [
   },
   {
     title: "Deposit bottles",
-    text: "Tap Deposit Bottles, then use your RFID card or continue as a guest. Insert one empty plastic bottle at a time and wait for the on-screen confirmation before inserting another.",
+    text: "Use your RFID card or continue as a guest. Feed one empty plastic bottle, then wait for its on-screen result before inserting the next. Inserting bottles continuously can jam the chute.",
     visual: (
       <Stage>
-        <div style={{ position: "relative", width: 140, height: 150 }}>
-          <div className="tut-drop" style={{ position: "absolute", left: 47, top: 0 }}><Bottle color="var(--kiosk-success-text)" /></div>
-          <div style={{ position: "absolute", left: 0, right: 0, bottom: 8, height: 16, borderRadius: 8, background: "var(--kiosk-surface-hover)", border: "2px solid var(--kiosk-accent-text)" }} />
-          <div className="tut-check" style={{ position: "absolute", right: -30, bottom: 0 }}>
-            <CheckCircleIcon size={42} color="var(--kiosk-success-text)" />
+        <div style={{ display: "flex", alignItems: "center", gap: 48, flexWrap: "wrap", justifyContent: "center" }}>
+          <div style={{ width: 180, textAlign: "center" }}>
+            <div style={{ position: "relative", width: 140, height: 145, margin: "0 auto" }}>
+              <div className="tut-drop" style={{ position: "absolute", left: 47, top: 0 }}><Bottle color="var(--kiosk-success-text)" /></div>
+              <div style={{ position: "absolute", left: 0, right: 0, bottom: 8, height: 16, borderRadius: 8, background: "var(--kiosk-surface-hover)", border: "2px solid var(--kiosk-accent-text)" }} />
+              <div className="tut-check" style={{ position: "absolute", right: -18, bottom: 0 }}>
+                <CheckCircleIcon size={38} color="var(--kiosk-success-text)" />
+              </div>
+            </div>
+            <div style={{ color: "var(--kiosk-success-text)", fontSize: 16, fontWeight: 700 }}>One bottle, then wait</div>
+          </div>
+
+          <div style={{ width: 220, textAlign: "center" }}>
+            <div style={{ position: "relative", width: 164, height: 145, margin: "0 auto" }}>
+              <div className="tut-rush" style={{ position: "absolute", left: 35, top: 0 }}><Bottle color="var(--kiosk-danger-text)" /></div>
+              <div className="tut-rush tut-rush-second" style={{ position: "absolute", left: 78, top: 0 }}><Bottle color="var(--kiosk-danger-text)" /></div>
+              <div style={{ position: "absolute", left: 20, right: 20, bottom: 8, height: 16, borderRadius: 8, background: "var(--kiosk-danger-bg)", border: "2px solid var(--kiosk-danger-text)" }} />
+              <div className="tut-x" style={{ position: "absolute", right: 0, top: 14 }}>
+                <XCircleIcon size={38} color="var(--kiosk-danger-text)" />
+              </div>
+            </div>
+            <div style={{ color: "var(--kiosk-danger-text)", fontSize: 16, fontWeight: 700 }}>Not at the same time</div>
           </div>
         </div>
       </Stage>
@@ -235,6 +252,7 @@ const CSS = `
 @keyframes tut-in   { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
 @keyframes tut-pop  { 0% { opacity: 0; transform: scale(0.4); } 60% { transform: scale(1.12); } 100% { opacity: 1; transform: scale(1); } }
 @keyframes tut-drop { 0% { opacity: 0; transform: translateY(-40px); } 15% { opacity: 1; } 55% { transform: translateY(95px); opacity: 1; } 70%,100% { transform: translateY(115px); opacity: 0; } }
+@keyframes tut-rush { 0% { opacity: 0; transform: translateY(-34px); } 12% { opacity: 1; } 55% { opacity: 1; transform: translateY(78px); } 72%,100% { opacity: 0; transform: translateY(100px); } }
 @keyframes tut-check{ 0%,60% { opacity: 0; transform: scale(0.3); } 80% { opacity: 1; transform: scale(1.2); } 100% { opacity: 1; transform: scale(1); } }
 @keyframes tut-x    { 0% { opacity: 0; transform: scale(0.2) rotate(-90deg); } 70% { transform: scale(1.2); } 100% { opacity: 1; transform: scale(1); } }
 @keyframes tut-arrow{ 0%,100% { transform: translateX(0); opacity: 0.5; } 50% { transform: translateX(10px); opacity: 1; } }
@@ -242,6 +260,8 @@ const CSS = `
 .tut-slide { animation: tut-in 0.5s ease both; }
 .tut-pop   { animation: tut-pop 0.6s ease both; }
 .tut-drop  { animation: tut-drop 2.4s ease-in 0.3s infinite; }
+.tut-rush  { animation: tut-rush 1.6s ease-in 0.2s infinite; }
+.tut-rush-second { animation-delay: 0.34s; }
 .tut-check { animation: tut-check 2.4s ease 0.3s infinite; }
 .tut-x     { animation: tut-x 0.5s ease both; }
 .tut-arrow { font-size: 44px; color: var(--kiosk-accent-text); animation: tut-arrow 1.2s ease-in-out infinite; }

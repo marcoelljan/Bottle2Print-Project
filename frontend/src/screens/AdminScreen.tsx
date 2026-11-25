@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import {
   AccountCircleIcon,
   ChatIcon,
@@ -21,8 +21,309 @@ interface Props {
   theme: "dark" | "light";
   onToggleTheme: () => void;
 }
-type Tab = "logs" | "users" | "transactions" | "feedback" | "admins" | "sensors";
+type Tab = "analytics" | "logs" | "users" | "transactions" | "feedback" | "admins" | "sensors";
 type Role = "admin" | "super_admin";
+type AnalyticsRange = 7 | 30 | 90;
+type AnalyticsView = "range" | "daily" | "yearly";
+type ForecastMetric = "bottles" | "co2SavedG" | "confirmedPrints";
+
+interface DailyAnalyticsPoint {
+  date: string;
+  bottlesAccepted: number;
+  plasticWeightKg: number;
+  co2SavedG: number;
+  rejectedBottles: number;
+  creditsIssued: number;
+  submittedPrints: number;
+  refundedPrints: number;
+  confirmedPrints: number;
+  printCreditsSpent: number;
+}
+interface AnalyticsTotals {
+  bottlesAccepted: number;
+  plasticWeightKg: number;
+  co2SavedG: number;
+  rejectedBottles: number;
+  creditsIssued: number;
+  submittedPrints: number;
+  refundedPrints: number;
+  confirmedPrints: number;
+  printCreditsSpent: number;
+}
+interface PeriodComparison {
+  bottlesAccepted: number | null;
+  plasticWeightKg: number | null;
+  co2SavedG: number | null;
+  rejectedBottles: number | null;
+  creditsIssued: number | null;
+  submittedPrints: number | null;
+  confirmedPrints: number | null;
+  printCreditsSpent: number | null;
+}
+interface HourlyAnalyticsPoint {
+  hour: string;
+  bottlesAccepted: number;
+  co2SavedG: number;
+  confirmedPrints: number;
+  submittedPrints: number;
+}
+interface MonthlyAnalyticsPoint {
+  month: string;
+  bottlesAccepted: number;
+  co2SavedG: number;
+  confirmedPrints: number;
+  submittedPrints: number;
+}
+interface BinHistoryPoint {
+  date: string;
+  avgFillPercent: number;
+  maxFillPercent: number;
+  latestFillPercent: number;
+}
+interface ForecastPoint {
+  date: string;
+  bottles: number;
+  co2SavedG: number;
+  confirmedPrints: number;
+}
+type AnalyticsForecast =
+  | {
+      ready: false;
+      reason: string;
+      activeDays: number;
+    }
+  | {
+      ready: true;
+      activeDays: number;
+      method: string;
+      avgBottlesPerDay: number;
+      avgGramsPerBottle: number;
+      next7Days: { bottles: number; plasticWeightKg: number; co2SavedG: number; confirmedPrints: number };
+      next30Days: { bottles: number; plasticWeightKg: number; co2SavedG: number; confirmedPrints: number };
+      estimatedBinFullDate?: string;
+      daysUntilBinFull?: number;
+      projectedSeries: ForecastPoint[];
+    };
+interface AnalyticsData {
+  range: AnalyticsRange;
+  timezone: string;
+  startDate: string;
+  endDate: string;
+  totals: AnalyticsTotals;
+  previousTotals: AnalyticsTotals;
+  percentChange: PeriodComparison;
+  cardVsGuest: { card: AnalyticsTotals; guest: AnalyticsTotals };
+  busiestHour: { hour: number; label: string; count: number } | null;
+  dailySeries: DailyAnalyticsPoint[];
+  todayHourly: HourlyAnalyticsPoint[];
+  yearlyMonthly: MonthlyAnalyticsPoint[];
+  binFillPercent: number | null;
+  binHistory: BinHistoryPoint[];
+  forecast: AnalyticsForecast;
+}
+
+const ANALYTICS_RANGES: { value: AnalyticsRange; label: string }[] = [
+  { value: 7, label: "7 days" },
+  { value: 30, label: "30 days" },
+  { value: 90, label: "90 days" },
+];
+
+const ANALYTICS_VIEWS: { value: AnalyticsView; label: string }[] = [
+  { value: "range", label: "Daily series" },
+  { value: "daily", label: "Today (hourly)" },
+  { value: "yearly", label: "Yearly (monthly)" },
+];
+
+const formatResalePhp = (value: number) =>
+  `₱${value.toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+const clampResalePrice = (value: number) => Math.min(10, Math.max(4, value));
+
+function formatDeltaBadge(delta: number | null): { text: string; color: string } {
+  if (delta === null) return { text: "No prior data", color: "var(--admin-muted)" };
+  if (delta > 0) return { text: `+${delta.toFixed(1)}% vs prior`, color: "var(--kiosk-success-text)" };
+  if (delta < 0) return { text: `${delta.toFixed(1)}% vs prior`, color: "var(--kiosk-danger-text)" };
+  return { text: "0.0% vs prior", color: "var(--admin-muted)" };
+}
+
+function AnalyticsSeriesChart({
+  title,
+  subtitle,
+  points,
+  color,
+  unitSuffix = "",
+  secondaryColor,
+  secondaryLabel,
+  primaryLabel,
+  fixedMax,
+}: {
+  title: string;
+  subtitle?: string;
+  points: { label: string; value: number; secondaryValue?: number }[];
+  color: string;
+  unitSuffix?: string;
+  secondaryColor?: string;
+  secondaryLabel?: string;
+  primaryLabel?: string;
+  fixedMax?: number;
+}) {
+  const maxPrimary = Math.max(0, ...points.map(p => p.value));
+  const maxSecondary = Math.max(0, ...points.map(p => p.secondaryValue ?? 0));
+  const rawMax = fixedMax ?? Math.max(maxPrimary, maxSecondary);
+  const scaleMax = rawMax || 1;
+  const coords = points.map((p, idx) => ({
+    ...p,
+    x: points.length <= 1 ? 225 : 44 + idx * (362 / (points.length - 1)),
+    y: 108 - (p.value / scaleMax) * 80,
+    y2: p.secondaryValue !== undefined ? 108 - (p.secondaryValue / scaleMax) * 80 : undefined,
+  }));
+  const line1 = coords.map(c => `${c.x},${c.y}`).join(" ");
+  const line2 = secondaryColor && coords.every(c => c.y2 !== undefined)
+    ? coords.map(c => `${c.x},${c.y2}`).join(" ")
+    : "";
+  const labelIndices = new Set([0, Math.floor((points.length - 1) / 2), Math.max(0, points.length - 1)]);
+
+  return (
+    <div style={{ ...adminStatCard, minWidth: 0, padding: "10px 12px 6px" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap", marginBottom: 2 }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "var(--admin-text)" }}>{title}</div>
+          {subtitle && <div style={{ fontSize: 10, color: "var(--admin-muted)" }}>{subtitle}</div>}
+        </div>
+        {secondaryColor && primaryLabel && secondaryLabel && (
+          <div style={{ display: "flex", gap: 8, fontSize: 10 }}>
+            <span style={{ color }}>{primaryLabel}</span>
+            <span style={{ color: secondaryColor }}>{secondaryLabel}</span>
+          </div>
+        )}
+      </div>
+      <svg viewBox="0 0 420 146" role="img" aria-label={title} style={{ display: "block", width: "100%", height: 132 }}>
+        {[0, 0.5, 1].map(fraction => {
+          const y = 108 - fraction * 80;
+          const tickVal = rawMax * fraction;
+          return (
+            <g key={fraction}>
+              <line x1="44" x2="406" y1={y} y2={y} stroke="var(--admin-border)" strokeDasharray="3 4" />
+              <text x="36" y={y + 3} textAnchor="end" fill="var(--admin-muted)" fontSize="9">
+                {rawMax < 2 && rawMax > 0 ? tickVal.toFixed(1) : Math.round(tickVal).toLocaleString()}
+              </text>
+            </g>
+          );
+        })}
+        {line2 && (
+          <polyline points={line2} fill="none" stroke={secondaryColor} strokeWidth="2" strokeDasharray="4 4" strokeLinejoin="round" strokeLinecap="round" />
+        )}
+        {line1 && (
+          <polyline points={line1} fill="none" stroke={color} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" />
+        )}
+        {coords.map((c, idx) => (
+          <circle key={`${c.label}-${idx}`} cx={c.x} cy={c.y} r={points.length > 35 ? "1.8" : "2.8"} fill={color}>
+            <title>
+              {secondaryLabel && c.secondaryValue !== undefined
+                ? `${c.label}: ${c.value.toLocaleString()}${unitSuffix} (${secondaryLabel}: ${c.secondaryValue.toLocaleString()}${unitSuffix})`
+                : `${c.label}: ${c.value.toLocaleString()}${unitSuffix}`}
+            </title>
+          </circle>
+        ))}
+        {coords.map((c, idx) => labelIndices.has(idx) && (
+          <text
+            key={`x-${idx}`}
+            x={c.x}
+            y="136"
+            textAnchor={idx === 0 ? "start" : idx === coords.length - 1 ? "end" : "middle"}
+            fill="var(--admin-muted)"
+            fontSize="9"
+          >
+            {c.label}
+          </text>
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+function AnalyticsActualVsForecastChart({
+  actual,
+  projected,
+  metric,
+  label,
+  unitSuffix = "",
+}: {
+  actual: DailyAnalyticsPoint[];
+  projected: ForecastPoint[];
+  metric: ForecastMetric;
+  label: string;
+  unitSuffix?: string;
+}) {
+  const actualValues = actual.map(d => ({
+    date: d.date,
+    value: metric === "bottles" ? d.bottlesAccepted : metric === "co2SavedG" ? d.co2SavedG : d.confirmedPrints,
+  }));
+  const projValues = projected.map(p => ({
+    date: p.date,
+    value: p[metric],
+  }));
+  const allVals = [...actualValues, ...projValues].map(v => v.value);
+  const maxVal = Math.max(1, ...allVals);
+  const totalPts = Math.max(2, actualValues.length + projValues.length);
+  const x = (i: number) => 48 + i * (740 / (totalPts - 1));
+  const y = (v: number) => 138 - (v / maxVal) * 102;
+
+  const actualLine = actualValues.map((d, i) => `${x(i)},${y(d.value)}`).join(" ");
+  const forecastLine = [
+    ...(actualValues.length ? [`${x(actualValues.length - 1)},${y(actualValues[actualValues.length - 1].value)}`] : []),
+    ...projValues.map((d, i) => `${x(actualValues.length + i)},${y(d.value)}`),
+  ].join(" ");
+  const splitX = actualValues.length > 0 ? x(actualValues.length - 1) : 48;
+
+  return (
+    <div style={{ ...adminStatCard, minWidth: 0, padding: "12px 16px 8px" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", marginBottom: 4 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: "var(--admin-text)" }}>
+          {label}: Actual vs. 30-day forecast (estimate)
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 14, fontSize: 11 }}>
+          <span style={{ color: "var(--kiosk-info-text)", fontWeight: 600 }}>━━ Actual</span>
+          <span style={{ color: "var(--kiosk-accent-text)", fontWeight: 600 }}>┄┄ Forecast (estimate)</span>
+        </div>
+      </div>
+      <svg viewBox="0 0 820 172" role="img" aria-label={`${label} actual versus projected forecast`} style={{ display: "block", width: "100%", height: 165 }}>
+        {[0, 0.5, 1].map(fraction => {
+          const lineY = 138 - fraction * 102;
+          const val = maxVal * fraction;
+          return (
+            <g key={fraction}>
+              <line x1="48" x2="788" y1={lineY} y2={lineY} stroke="var(--admin-border)" strokeDasharray="4 5" />
+              <text x="40" y={lineY + 4} textAnchor="end" fill="var(--admin-muted)" fontSize="10">
+                {maxVal < 2 ? val.toFixed(1) : Math.round(val).toLocaleString()}
+              </text>
+            </g>
+          );
+        })}
+        <line x1={splitX} x2={splitX} y1="28" y2="142" stroke="var(--admin-border-strong)" strokeDasharray="3 3" />
+        {actualLine && (
+          <polyline points={actualLine} fill="none" stroke="var(--kiosk-info-text)" strokeWidth="2.8" strokeLinejoin="round" strokeLinecap="round" />
+        )}
+        {forecastLine && (
+          <polyline points={forecastLine} fill="none" stroke="var(--kiosk-accent-text)" strokeWidth="2.8" strokeDasharray="7 5" strokeLinejoin="round" strokeLinecap="round" />
+        )}
+        {actualValues.map((p, i) => (
+          <circle key={`a-${p.date}`} cx={x(i)} cy={y(p.value)} r="2.2" fill="var(--kiosk-info-text)">
+            <title>{`${p.date} (Actual): ${p.value.toLocaleString()}${unitSuffix}`}</title>
+          </circle>
+        ))}
+        {projValues.map((p, i) => (
+          <circle key={`f-${p.date}`} cx={x(actualValues.length + i)} cy={y(p.value)} r="2.2" fill="var(--kiosk-accent-text)">
+            <title>{`${p.date} (Estimate): ${p.value.toLocaleString()}${unitSuffix}`}</title>
+          </circle>
+        ))}
+        {actualValues.length > 0 && <text x="48" y="162" fill="var(--admin-muted)" fontSize="10">{actualValues[0].date.slice(5)}</text>}
+        {actualValues.length > 0 && <text x={splitX} y="162" textAnchor="middle" fill="var(--admin-muted)" fontSize="10">Today</text>}
+        {projValues.length > 0 && <text x="788" y="162" textAnchor="end" fill="var(--admin-muted)" fontSize="10">{projValues[projValues.length - 1].date.slice(5)}</text>}
+      </svg>
+    </div>
+  );
+}
 
 interface User {
   rfid: string; name: string; studentId: string;
@@ -139,7 +440,7 @@ const formatPhTime = (dateString: string) => {
     return dateString;
   }
 };
-const ZERO_BADGES: Record<Tab, number> = { logs: 0, users: 0, transactions: 0, feedback: 0, admins: 0, sensors: 0 };
+const ZERO_BADGES: Record<Tab, number> = { analytics: 0, logs: 0, users: 0, transactions: 0, feedback: 0, admins: 0, sensors: 0 };
 
 const PAGE = 100;
 type ListKey = "logs" | "txns" | "feedback" | "users" | "admins";
@@ -187,6 +488,82 @@ export default function AdminScreen({ theme, onToggleTheme }: Props) {
     totalPrints: 0,
     totalUsers: 0,
   });
+  const [analyticsRange, setAnalyticsRange] = useState<AnalyticsRange>(30);
+  const [analyticsView, setAnalyticsView] = useState<AnalyticsView>("range");
+  const [forecastMetric, setForecastMetric] = useState<ForecastMetric>("bottles");
+  const [showResale, setShowResale] = useState(false);
+  const [resalePriceInput, setResalePriceInput] = useState<string>(() => {
+    try {
+      const saved = window.localStorage.getItem("b2p-resale-price");
+      if (saved !== null) {
+        const parsed = Number(saved);
+        if (Number.isFinite(parsed)) return String(clampResalePrice(parsed));
+      }
+    } catch {}
+    return "7";
+  });
+  const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [analyticsError, setAnalyticsError] = useState("");
+  const analyticsRangeRef = useRef<AnalyticsRange>(30);
+  useEffect(() => { analyticsRangeRef.current = analyticsRange; }, [analyticsRange]);
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  const resaleEstimate = useMemo(() => {
+    const trimmed = resalePriceInput.trim();
+    const parsed = trimmed === "" ? NaN : Number(trimmed);
+    const isValid = Number.isFinite(parsed) && parsed >= 4 && parsed <= 10;
+    const error =
+      trimmed === ""
+        ? "Enter a resale price between ₱4 and ₱10 per kg."
+        : !Number.isFinite(parsed) || parsed < 4 || parsed > 10
+          ? "Price must be between ₱4 and ₱10 per kg (clamped on blur)."
+          : "";
+    const activePrice = Number.isFinite(parsed) ? clampResalePrice(parsed) : null;
+
+    if (!analytics) {
+      return { isValid, error, activePrice, actualPhp: null, cardPhp: null, guestPhp: null, forecast7Php: null, forecast30Php: null, comparisonRows: [] as Array<{ price: number; tag: string; actualPhp: number; forecast7Php: number | null; forecast30Php: number | null }> };
+    }
+
+    const actualKg = analytics.totals.plasticWeightKg;
+    const forecast7Kg = analytics.forecast.ready ? analytics.forecast.next7Days.plasticWeightKg : null;
+    const forecast30Kg = analytics.forecast.ready ? analytics.forecast.next30Days.plasticWeightKg : null;
+
+    const baseRates: Array<{ price: number; label: string }> = [
+      { price: 4, label: "₱4/kg" },
+      { price: 7, label: "₱7/kg (mid)" },
+      { price: 10, label: "₱10/kg" },
+    ];
+    const hasCustomInBase = activePrice !== null && baseRates.some(r => r.price === activePrice);
+    const rows = baseRates.map(r => ({
+      price: r.price,
+      tag: activePrice === r.price ? `${r.label} · current` : r.label,
+      actualPhp: actualKg * r.price,
+      forecast7Php: forecast7Kg !== null ? forecast7Kg * r.price : null,
+      forecast30Php: forecast30Kg !== null ? forecast30Kg * r.price : null,
+    }));
+    if (activePrice !== null && !hasCustomInBase) {
+      rows.push({
+        price: activePrice,
+        tag: `₱${activePrice}/kg (custom)`,
+        actualPhp: actualKg * activePrice,
+        forecast7Php: forecast7Kg !== null ? forecast7Kg * activePrice : null,
+        forecast30Php: forecast30Kg !== null ? forecast30Kg * activePrice : null,
+      });
+    }
+
+    return {
+      isValid,
+      error,
+      activePrice,
+      actualPhp: activePrice !== null ? actualKg * activePrice : null,
+      cardPhp: activePrice !== null ? analytics.cardVsGuest.card.plasticWeightKg * activePrice : null,
+      guestPhp: activePrice !== null ? analytics.cardVsGuest.guest.plasticWeightKg * activePrice : null,
+      forecast7Php: activePrice !== null && forecast7Kg !== null ? forecast7Kg * activePrice : null,
+      forecast30Php: activePrice !== null && forecast30Kg !== null ? forecast30Kg * activePrice : null,
+      comparisonRows: rows,
+    };
+  }, [analytics, resalePriceInput]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -346,6 +723,29 @@ useEffect(() => {
     },
   });
 };
+
+useEffect(() => {
+  if (!verified || !passwordChanged || !token) {
+    setAnalytics(null);
+    return;
+  }
+  let active = true;
+  if (!analytics) setAnalyticsLoading(true);
+  setAnalyticsError("");
+  fetch(`${API}/api/admin/analytics?range=${analyticsRange}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  }).then(async response => {
+    if (!response.ok) throw new Error(`Analytics request failed (${response.status}).`);
+    return response.json() as Promise<AnalyticsData>;
+  }).then(data => {
+    if (active) setAnalytics(data);
+  }).catch(error => {
+    if (active) setAnalyticsError(error instanceof Error ? error.message : "Could not load analytics.");
+  }).finally(() => {
+    if (active) setAnalyticsLoading(false);
+  });
+  return () => { active = false; };
+}, [analyticsRange, passwordChanged, refreshTick, token, verified]);
 
   useEffect(() => {
     fetch(`${API}/api/mode`, {
@@ -599,7 +999,7 @@ const syncBadges = async (tk: string | null = token) => {
     const data = await r.json();
     const open = tabRef.current;
     setBadges(b => ({ ...b, ...data, [open]: 0 })); // the open tab never shows a badge
-    if (open !== "sensors") markSeen(open, tk);
+    if (open !== "sensors" && open !== "analytics") markSeen(open, tk);
   } catch {}
 };
 
@@ -643,7 +1043,7 @@ const loadLists = async (tk: string | null, superAdmin: boolean) => {
 };
 
 useEffect(() => {
-  if (tab === "sensors") return;
+  if (tab === "sensors" || tab === "analytics") return;
   filtersRef.current = { q: debouncedQ, filter: filterValue, date: dateFilter };
   limitsRef.current = { ...FRESH_LIMITS };   // new filter: start again from 100
   setLimits({ ...limitsRef.current });
@@ -658,6 +1058,10 @@ const loadAll = async (tk: string | null, superAdmin: boolean) => {
   };
   const jobs: Promise<any>[] = [
     get(`/api/admin/stats`).then(setStats),
+    get(`/api/admin/analytics?range=${analyticsRangeRef.current}`).then((data: AnalyticsData) => {
+      setAnalytics(data);
+      setAnalyticsError("");
+    }),
     get(`/api/admin/print-pricing`).then((pricing: PrintPricing) => {
       setPrintPricingForm(prev => prev ?? pricing);
     }),
@@ -703,6 +1107,7 @@ const savePrintPricing = async () => {
 // Same name as before, so Refresh and your edit/delete handlers keep working
 const fetchData = async (tkOverride?: string) => {
   setLoading(true);
+  setRefreshTick(tick => tick + 1);
   await loadAll(tkOverride ?? token, isSuperAdmin);
   await syncBadges(tkOverride ?? token);
   setLoading(false);
@@ -1310,6 +1715,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
 
            <div style={tabBar}>
         {([
+          ["analytics", <><RecyclingIcon size={15} /> Analytics</>],
           ["logs", <><PrintIcon size={15} /> Activity Logs</>],
           ["users", <><AccountCircleIcon size={15} /> Manage Users</>],
           ["transactions", <><RecyclingIcon size={15} /> Transactions</>],
@@ -1322,7 +1728,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
             setTab(t);
             setSearchQuery(""); setFilterValue("all"); setDateFilter(""); setDebouncedQ("");
             setBadges(b => (b[t] === 0 ? b : { ...b, [t]: 0 })); // clears instantly
-            if (t !== "sensors") markSeen(t);                     // tells the server you've seen it
+            if (t !== "sensors" && t !== "analytics") markSeen(t); // tells the server you've seen it
             }} style={{
             ...tabBtn,
             color: tab === t ? "var(--kiosk-accent-text)" : "var(--admin-muted)",
@@ -1338,7 +1744,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
 
       <div style={body}>
         {/* Overall System Impact Dashboard */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 16, flexShrink: 0 }}>
+        {tab !== "analytics" && <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 16, flexShrink: 0 }}>
           <div style={adminStatCard}>
             <div style={adminStatLabel}>Total Bottles Deposited</div>
             <div style={adminStatVal}>{stats.totalBottles}</div>
@@ -1348,16 +1754,464 @@ const adjustCredits = async (mode: "add" | "remove") => {
             <div style={{ ...adminStatVal, color: "#2ecc71", fontSize: 22 }}>{stats.totalPlasticKg} kg</div>
           </div>
           <div style={adminStatCard}>
-            <div style={adminStatLabel}>CO2 Saved</div>
+            <div style={adminStatLabel}>CO₂e Avoided</div>
             <div style={{ ...adminStatVal, color: "#3498db", fontSize: 22 }}>{stats.totalCo2G} g</div>
           </div>
           <div style={adminStatCard}>
-            <div style={adminStatLabel}>Print Jobs Done</div>
+            <div style={adminStatLabel}>Print Jobs Submitted</div>
             <div style={adminStatVal}>{stats.totalPrints}</div>
           </div>
-        </div>
+        </div>}
 
-        {loading && <div style={{ color: "var(--admin-muted)", fontSize: 14 }}>Loading...</div>}
+        {loading && tab !== "analytics" && <div style={{ color: "var(--admin-muted)", fontSize: 14 }}>Loading...</div>}
+
+        {tab === "analytics" && (
+          <div style={{ width: "100%", minHeight: 0, flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 16, paddingBottom: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", flexShrink: 0 }}>
+              <div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: "var(--admin-text)" }}>Actual</div>
+                <div style={{ fontSize: 12, color: "var(--admin-muted)" }}>
+                  {analytics
+                    ? `${analytics.startDate} to ${analytics.endDate} · Asia/Manila`
+                    : `Last ${analyticsRange} days · Asia/Manila`}
+                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <div role="group" aria-label="Analytics range" style={{ display: "flex", border: "1px solid var(--admin-border-strong)", borderRadius: 8, overflow: "hidden" }}>
+                  {ANALYTICS_RANGES.map((option, idx) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      aria-pressed={analyticsRange === option.value}
+                      onClick={() => setAnalyticsRange(option.value)}
+                      style={{
+                        minHeight: 36, padding: "6px 12px", border: 0,
+                        borderRight: idx === ANALYTICS_RANGES.length - 1 ? 0 : "1px solid var(--admin-border-strong)",
+                        background: analyticsRange === option.value ? "var(--admin-hover)" : "var(--admin-surface)",
+                        color: analyticsRange === option.value ? "var(--kiosk-accent-text)" : "var(--admin-muted)",
+                        fontSize: 12, fontWeight: 700, cursor: "pointer",
+                      }}
+                    >{option.label}</button>
+                  ))}
+                </div>
+                <div role="group" aria-label="Chart granularity" style={{ display: "flex", border: "1px solid var(--admin-border-strong)", borderRadius: 8, overflow: "hidden" }}>
+                  {ANALYTICS_VIEWS.map((option, idx) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      aria-pressed={analyticsView === option.value}
+                      onClick={() => setAnalyticsView(option.value)}
+                      style={{
+                        minHeight: 36, padding: "6px 12px", border: 0,
+                        borderRight: idx === ANALYTICS_VIEWS.length - 1 ? 0 : "1px solid var(--admin-border-strong)",
+                        background: analyticsView === option.value ? "var(--admin-hover)" : "var(--admin-surface)",
+                        color: analyticsView === option.value ? "var(--kiosk-info-text)" : "var(--admin-muted)",
+                        fontSize: 12, fontWeight: 700, cursor: "pointer",
+                      }}
+                    >{option.label}</button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  aria-pressed={showResale}
+                  onClick={() => setShowResale(v => !v)}
+                  style={{
+                    minHeight: 36, padding: "6px 12px", borderRadius: 8,
+                    border: "1px solid var(--admin-border-strong)",
+                    background: showResale ? "var(--admin-hover)" : "var(--admin-surface)",
+                    color: showResale ? "var(--kiosk-accent-text)" : "var(--admin-muted)",
+                    fontSize: 12, fontWeight: 700, cursor: "pointer",
+                  }}
+                >Resale estimate</button>
+              </div>
+            </div>
+
+            {analyticsError && <div role="alert" style={{ color: "var(--kiosk-danger-text)", fontSize: 13 }}>{analyticsError}</div>}
+            {analyticsLoading && !analytics && <div style={{ color: "var(--admin-muted)", fontSize: 13 }}>Loading analytics...</div>}
+            {analytics && (() => {
+              const chartSource =
+                analyticsView === "daily"
+                  ? analytics.todayHourly.map(h => ({
+                      label: h.hour,
+                      bottles: h.bottlesAccepted,
+                      co2: h.co2SavedG,
+                      confirmedPrints: h.confirmedPrints,
+                      submittedPrints: h.submittedPrints,
+                    }))
+                  : analyticsView === "yearly"
+                    ? analytics.yearlyMonthly.map(m => ({
+                        label: m.month,
+                        bottles: m.bottlesAccepted,
+                        co2: m.co2SavedG,
+                        confirmedPrints: m.confirmedPrints,
+                        submittedPrints: m.submittedPrints,
+                      }))
+                    : analytics.dailySeries.map(d => ({
+                        label: d.date.slice(5),
+                        bottles: d.bottlesAccepted,
+                        co2: d.co2SavedG,
+                        confirmedPrints: d.confirmedPrints,
+                        submittedPrints: d.submittedPrints,
+                      }));
+              const viewSubtitle =
+                analyticsView === "daily"
+                  ? `Today (${analytics.endDate}) by hour`
+                  : analyticsView === "yearly"
+                    ? `${analytics.endDate.slice(0, 4)} by month`
+                    : `Last ${analytics.range} days (daily)`;
+
+              return (
+                <>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(165px, 1fr))", gap: 10, flexShrink: 0 }}>
+                    {[
+                      {
+                        label: "Bottles accepted",
+                        value: analytics.totals.bottlesAccepted.toLocaleString(),
+                        sub: `${analytics.totals.rejectedBottles.toLocaleString()} rejected`,
+                        delta: analytics.percentChange.bottlesAccepted,
+                        color: "var(--kiosk-accent-text)",
+                      },
+                      {
+                        label: "Plastic recycled",
+                        value: `${analytics.totals.plasticWeightKg.toFixed(2)} kg`,
+                        sub: `${analytics.totals.creditsIssued.toLocaleString()} credits issued`,
+                        delta: analytics.percentChange.plasticWeightKg,
+                        color: "var(--kiosk-success-text)",
+                      },
+                      {
+                        label: "CO₂ saved",
+                        value: `${analytics.totals.co2SavedG.toLocaleString()} g`,
+                        sub: "From accepted deposits",
+                        delta: analytics.percentChange.co2SavedG,
+                        color: "var(--kiosk-info-text)",
+                      },
+                      {
+                        label: "Confirmed prints",
+                        value: analytics.totals.confirmedPrints.toLocaleString(),
+                        sub: `${analytics.totals.submittedPrints.toLocaleString()} submitted · ${analytics.totals.refundedPrints.toLocaleString()} refunded`,
+                        delta: analytics.percentChange.confirmedPrints,
+                        color: "var(--admin-text)",
+                      },
+                      {
+                        label: "Print credits spent",
+                        value: analytics.totals.printCreditsSpent.toLocaleString(),
+                        sub: "Net of refunded jobs",
+                        delta: analytics.percentChange.printCreditsSpent,
+                        color: "var(--admin-text)",
+                      },
+                      {
+                        label: "Busiest hour",
+                        value: analytics.busiestHour ? analytics.busiestHour.label : "No activity",
+                        sub: analytics.busiestHour ? `${analytics.busiestHour.count.toLocaleString()} actions (Manila)` : "Selected range",
+                        delta: undefined as number | null | undefined,
+                        color: "var(--kiosk-accent-text)",
+                      },
+                    ].map(card => {
+                      const deltaBadge = card.delta !== undefined ? formatDeltaBadge(card.delta) : null;
+                      return (
+                        <div key={card.label} style={{ ...adminStatCard, padding: "12px 14px" }}>
+                          <div style={adminStatLabel}>{card.label}</div>
+                          <div style={{ ...adminStatVal, color: card.color, fontSize: 20 }}>{card.value}</div>
+                          <div style={{ fontSize: 11, color: "var(--admin-muted)", marginTop: 3 }}>{card.sub}</div>
+                          {deltaBadge && (
+                            <div style={{ fontSize: 11, fontWeight: 600, color: deltaBadge.color, marginTop: 2 }}>
+                              {deltaBadge.text}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Card vs Guest Split */}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10, flexShrink: 0 }}>
+                    {([
+                      ["Card users (RFID)", analytics.cardVsGuest.card, "var(--kiosk-info-text)"],
+                      ["Guest sessions", analytics.cardVsGuest.guest, "var(--kiosk-accent-text)"],
+                    ] as const).map(([title, split, accent]) => (
+                      <div key={title} style={{ ...adminStatCard, padding: "10px 14px", borderLeft: `3px solid ${accent}` }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: "var(--admin-text)", marginBottom: 4 }}>{title}</div>
+                        <div style={{ fontSize: 12, color: "var(--admin-secondary)", display: "flex", gap: 14, flexWrap: "wrap" }}>
+                          <span><strong>{split.bottlesAccepted.toLocaleString()}</strong> bottles ({split.plasticWeightKg.toFixed(2)} kg)</span>
+                          <span><strong>{split.creditsIssued.toLocaleString()}</strong> credits issued</span>
+                          <span><strong>{split.confirmedPrints.toLocaleString()}</strong> confirmed prints</span>
+                          <span><strong>{split.printCreditsSpent.toLocaleString()}</strong> credits spent</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Toggleable Resale Estimate Panel */}
+                  {showResale && (
+                    <div style={{ ...adminStatCard, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 12, flexShrink: 0 }}>
+                      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                        <div>
+                          <div style={{ fontSize: 15, fontWeight: 700, color: "var(--admin-text)" }}>Resale estimate</div>
+                          <div style={{ fontSize: 12, color: "var(--admin-muted)" }}>
+                            What-if gross resale calculation using accepted PET deposits only
+                          </div>
+                        </div>
+                        <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12, fontWeight: 600, color: "var(--admin-muted-strong)" }}>
+                          Resale price (₱ per kg)
+                          <input
+                            type="number"
+                            min={4}
+                            max={10}
+                            step={0.5}
+                            value={resalePriceInput}
+                            onChange={event => {
+                              const raw = event.target.value;
+                              setResalePriceInput(raw);
+                              const num = raw.trim() === "" ? NaN : Number(raw);
+                              if (Number.isFinite(num) && num >= 4 && num <= 10) {
+                                try {
+                                  window.localStorage.setItem("b2p-resale-price", String(num));
+                                } catch {}
+                              }
+                            }}
+                            onBlur={() => {
+                              const parsed = resalePriceInput.trim() === "" ? NaN : Number(resalePriceInput);
+                              const clamped = Number.isFinite(parsed) ? clampResalePrice(parsed) : 7;
+                              const nextStr = String(clamped);
+                              setResalePriceInput(nextStr);
+                              try {
+                                window.localStorage.setItem("b2p-resale-price", nextStr);
+                              } catch {}
+                            }}
+                            style={{ ...inputStyle, width: 150, padding: "7px 10px", fontSize: 14 }}
+                          />
+                          {resaleEstimate.error && (
+                            <span role="alert" style={{ fontSize: 11, fontWeight: 500, color: "var(--kiosk-danger-text)" }}>
+                              {resaleEstimate.error}
+                            </span>
+                          )}
+                        </label>
+                      </div>
+
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+                        <div style={{ padding: "10px 12px", borderRadius: 8, background: "var(--admin-input)", border: "1px solid var(--admin-border)" }}>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--admin-text)", marginBottom: 4 }}>
+                            Actual (selected range)
+                          </div>
+                          <div style={{ fontSize: 11, color: "var(--admin-muted)", marginBottom: 6 }}>
+                            {analytics.startDate} to {analytics.endDate}
+                          </div>
+                          <div style={{ fontSize: 13, color: "var(--admin-secondary)" }}>
+                            {analytics.totals.plasticWeightKg.toFixed(2)} kg ×{" "}
+                            {resaleEstimate.activePrice !== null ? `₱${resaleEstimate.activePrice}/kg` : "—"} ={" "}
+                            <strong style={{ color: "var(--kiosk-success-text)", fontSize: 16 }}>
+                              {resaleEstimate.actualPhp !== null ? formatResalePhp(resaleEstimate.actualPhp) : "—"}
+                            </strong>
+                          </div>
+                          <div style={{ fontSize: 11, color: "var(--admin-muted)", marginTop: 6, display: "flex", gap: 12, flexWrap: "wrap" }}>
+                            <span>
+                              Card ({analytics.cardVsGuest.card.plasticWeightKg.toFixed(2)} kg):{" "}
+                              <strong style={{ color: "var(--admin-text)" }}>
+                                {resaleEstimate.cardPhp !== null ? formatResalePhp(resaleEstimate.cardPhp) : "—"}
+                              </strong>
+                            </span>
+                            <span>
+                              Guest ({analytics.cardVsGuest.guest.plasticWeightKg.toFixed(2)} kg):{" "}
+                              <strong style={{ color: "var(--admin-text)" }}>
+                                {resaleEstimate.guestPhp !== null ? formatResalePhp(resaleEstimate.guestPhp) : "—"}
+                              </strong>
+                            </span>
+                          </div>
+                        </div>
+
+                        <div style={{ padding: "10px 12px", borderRadius: 8, background: "var(--admin-input)", border: "1px solid var(--admin-border)" }}>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: "var(--admin-text)", marginBottom: 4 }}>
+                            Forecast
+                          </div>
+                          {!analytics.forecast.ready ? (
+                            <div style={{ fontSize: 12, color: "var(--kiosk-accent-text)", fontWeight: 600 }}>
+                              {analytics.forecast.reason}
+                            </div>
+                          ) : (
+                            <div style={{ display: "flex", flexDirection: "column", gap: 5, fontSize: 13, color: "var(--admin-secondary)" }}>
+                              <div>
+                                Next 7 days: {analytics.forecast.next7Days.plasticWeightKg.toFixed(2)} kg ×{" "}
+                                {resaleEstimate.activePrice !== null ? `₱${resaleEstimate.activePrice}/kg` : "—"} ={" "}
+                                <strong style={{ color: "var(--kiosk-accent-text)" }}>
+                                  {resaleEstimate.forecast7Php !== null ? formatResalePhp(resaleEstimate.forecast7Php) : "—"}
+                                </strong>
+                              </div>
+                              <div>
+                                Next 30 days: {analytics.forecast.next30Days.plasticWeightKg.toFixed(2)} kg ×{" "}
+                                {resaleEstimate.activePrice !== null ? `₱${resaleEstimate.activePrice}/kg` : "—"} ={" "}
+                                <strong style={{ color: "var(--kiosk-info-text)" }}>
+                                  {resaleEstimate.forecast30Php !== null ? formatResalePhp(resaleEstimate.forecast30Php) : "—"}
+                                </strong>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div style={{ ...tableWrap, flex: "none", overflowX: "auto" }}>
+                        <table style={table}>
+                          <thead>
+                            <tr>
+                              {["Price", "Actual", "Forecast 7 days", "Forecast 30 days"].map(heading => (
+                                <th key={heading} style={th}>{heading}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {resaleEstimate.comparisonRows.map(row => {
+                              const isCurrent = resaleEstimate.activePrice === row.price;
+                              return (
+                                <tr key={row.price} style={{ borderBottom: "1px solid var(--admin-row-border)", background: isCurrent ? "var(--admin-hover)" : "transparent" }}>
+                                  <td style={{ ...td, fontWeight: isCurrent ? 700 : 500, color: isCurrent ? "var(--kiosk-accent-text)" : "var(--admin-text)" }}>
+                                    {row.tag}
+                                  </td>
+                                  <td style={td}>{formatResalePhp(row.actualPhp)}</td>
+                                  <td style={td}>{row.forecast7Php !== null ? formatResalePhp(row.forecast7Php) : "Needs at least 14 days of data"}</td>
+                                  <td style={td}>{row.forecast30Php !== null ? formatResalePhp(row.forecast30Php) : "Needs at least 14 days of data"}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      <div style={{ fontSize: 11, color: "var(--admin-muted)" }}>
+                        Gross estimate only. It does not include collection, transport or electricity costs, and the forecast is a projection, not a guarantee.
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Actual SVG Charts */}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10, flexShrink: 0 }}>
+                    <AnalyticsSeriesChart
+                      title="Bottles accepted"
+                      subtitle={viewSubtitle}
+                      points={chartSource.map(p => ({ label: p.label, value: p.bottles }))}
+                      color="var(--kiosk-accent-text)"
+                    />
+                    <AnalyticsSeriesChart
+                      title="CO₂ saved"
+                      subtitle={viewSubtitle}
+                      points={chartSource.map(p => ({ label: p.label, value: p.co2 }))}
+                      color="var(--kiosk-success-text)"
+                      unitSuffix=" g"
+                    />
+                    <AnalyticsSeriesChart
+                      title="Print jobs (confirmed vs submitted)"
+                      subtitle={viewSubtitle}
+                      points={chartSource.map(p => ({ label: p.label, value: p.confirmedPrints, secondaryValue: p.submittedPrints }))}
+                      color="var(--kiosk-info-text)"
+                      primaryLabel="Confirmed"
+                      secondaryColor="var(--admin-muted)"
+                      secondaryLabel="Submitted"
+                    />
+                    {analytics.binHistory.length > 0 && (
+                      <AnalyticsSeriesChart
+                        title="Bin fill % history"
+                        subtitle={analytics.binFillPercent !== null ? `Latest: ${analytics.binFillPercent}%` : "Recorded readings"}
+                        points={analytics.binHistory.map(b => ({ label: b.date.slice(5), value: b.latestFillPercent }))}
+                        color="var(--kiosk-danger-text)"
+                        unitSuffix="%"
+                        fixedMax={100}
+                      />
+                    )}
+                  </div>
+
+                  {/* Forecast Section */}
+                  <div style={{ borderTop: "1px solid var(--admin-border-strong)", paddingTop: 14, display: "flex", flexDirection: "column", gap: 10, flexShrink: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                      <div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 18, fontWeight: 700, color: "var(--admin-text)" }}>Forecast</span>
+                          <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: "var(--kiosk-warning-bg)", border: "1px solid var(--kiosk-warning-border)", color: "var(--kiosk-accent-text)" }}>
+                            ESTIMATE ONLY
+                          </span>
+                        </div>
+                        <div style={{ fontSize: 12, color: "var(--admin-muted)" }}>
+                          Projected from recorded daily history (7-day moving average blended with linear trend) — estimates only, not guaranteed actuals.
+                        </div>
+                      </div>
+                      {analytics.forecast.ready && (
+                        <div role="group" aria-label="Forecast chart metric" style={{ display: "flex", border: "1px solid var(--admin-border-strong)", borderRadius: 8, overflow: "hidden" }}>
+                          {([
+                            ["bottles", "Bottles"],
+                            ["co2SavedG", "CO₂"],
+                            ["confirmedPrints", "Prints"],
+                          ] as [ForecastMetric, string][]).map(([metricKey, label], idx) => (
+                            <button
+                              key={metricKey}
+                              type="button"
+                              aria-pressed={forecastMetric === metricKey}
+                              onClick={() => setForecastMetric(metricKey)}
+                              style={{
+                                minHeight: 34, padding: "6px 12px", border: 0,
+                                borderRight: idx === 2 ? 0 : "1px solid var(--admin-border-strong)",
+                                background: forecastMetric === metricKey ? "var(--admin-hover)" : "var(--admin-surface)",
+                                color: forecastMetric === metricKey ? "var(--kiosk-accent-text)" : "var(--admin-muted)",
+                                fontSize: 12, fontWeight: 700, cursor: "pointer",
+                              }}
+                            >{label}</button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {!analytics.forecast.ready ? (
+                      <div style={{ ...adminStatCard, padding: "14px 16px", background: "var(--kiosk-warning-bg)", border: "1px solid var(--kiosk-warning-border)" }}>
+                        <div style={{ fontSize: 14, fontWeight: 700, color: "var(--kiosk-accent-text)" }}>{analytics.forecast.reason}</div>
+                        <div style={{ fontSize: 12, color: "var(--admin-secondary)", marginTop: 4 }}>
+                          Recorded activity on {analytics.forecast.activeDays} day(s) so far. Forecast numbers and trend projections appear once at least 14 days of data are available.
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(175px, 1fr))", gap: 10 }}>
+                          <div style={{ ...adminStatCard, padding: "12px 14px" }}>
+                            <div style={adminStatLabel}>Next 7 days (estimate)</div>
+                            <div style={{ fontSize: 16, fontWeight: 800, color: "var(--kiosk-accent-text)" }}>
+                              {analytics.forecast.next7Days.bottles.toLocaleString()} bottles
+                            </div>
+                            <div style={{ fontSize: 11, color: "var(--admin-muted)", marginTop: 3 }}>
+                              {analytics.forecast.next7Days.co2SavedG.toLocaleString()} g CO₂ · {analytics.forecast.next7Days.confirmedPrints.toLocaleString()} prints
+                            </div>
+                          </div>
+                          <div style={{ ...adminStatCard, padding: "12px 14px" }}>
+                            <div style={adminStatLabel}>Next 30 days (estimate)</div>
+                            <div style={{ fontSize: 16, fontWeight: 800, color: "var(--kiosk-info-text)" }}>
+                              {analytics.forecast.next30Days.bottles.toLocaleString()} bottles
+                            </div>
+                            <div style={{ fontSize: 11, color: "var(--admin-muted)", marginTop: 3 }}>
+                              {analytics.forecast.next30Days.co2SavedG.toLocaleString()} g CO₂ · {analytics.forecast.next30Days.confirmedPrints.toLocaleString()} prints
+                            </div>
+                          </div>
+                          {analytics.forecast.estimatedBinFullDate && (
+                            <div style={{ ...adminStatCard, padding: "12px 14px" }}>
+                              <div style={adminStatLabel}>Estimated bin-full date</div>
+                              <div style={{ fontSize: 16, fontWeight: 800, color: "var(--kiosk-danger-text)" }}>
+                                {analytics.forecast.estimatedBinFullDate}
+                              </div>
+                              <div style={{ fontSize: 11, color: "var(--admin-muted)", marginTop: 3 }}>
+                                ~{analytics.forecast.daysUntilBinFull} day(s) · avg {analytics.forecast.avgBottlesPerDay} bottles/day
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        <AnalyticsActualVsForecastChart
+                          actual={analytics.dailySeries}
+                          projected={analytics.forecast.projectedSeries}
+                          metric={forecastMetric}
+                          label={forecastMetric === "bottles" ? "Bottles accepted" : forecastMetric === "co2SavedG" ? "CO₂ saved" : "Confirmed prints"}
+                          unitSuffix={forecastMetric === "co2SavedG" ? " g" : ""}
+                        />
+                      </>
+                    )}
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        )}
 
          {/* 1. ACTIVITY LOGS */}
         {!loading && tab === "logs" && (

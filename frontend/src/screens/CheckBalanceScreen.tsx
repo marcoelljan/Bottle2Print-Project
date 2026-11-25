@@ -10,6 +10,7 @@ interface Props { onBack: () => void; theme: "dark" | "light"; onToggleTheme: ()
 interface User { rfid: string; name: string; studentId: string; credits: number; }
 
 type TransferStep = "search" | "confirm" | "pin";
+const CO2E_KG_PER_KG_PET = 1.146;
 
 export default function CheckBalanceScreen({ onBack, theme, onToggleTheme }: Props) {
   const [user, setUser] = useState<User | null>(null);
@@ -273,9 +274,9 @@ export default function CheckBalanceScreen({ onBack, theme, onToggleTheme }: Pro
                   </div>
                 </div>
                 <div style={statCard}>
-                  <div style={statLabel}>CO2 Saved</div>
+                  <div style={statLabel}>CO2e Avoided</div>
                   <div style={{ ...statVal, fontSize: 18, color: "var(--kiosk-info-text)" }}>
-                    {(allTxns.filter(h => h.type === "deposit").reduce((a, h) => a + (h.co2_saved_g ?? 0), 0)).toFixed(0)} g
+                    {(allTxns.filter(h => h.type === "deposit").reduce((total, transaction) => total + (transaction.weight_g ?? 0) * CO2E_KG_PER_KG_PET, 0)).toFixed(0)} g
                   </div>
                 </div>
                 <div style={statCard}>

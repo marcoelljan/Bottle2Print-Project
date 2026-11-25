@@ -16,6 +16,18 @@ import { requestTofCal } from "../tofCal";
 import { clearVerified } from "../pinAuth";
 import { getPrintPricing, isValidPrintRate, savePrintPricing } from "../printPricing";
 import { anonymizeRfidHistory } from "../accountHistory";
+import { computeAdminAnalytics } from "../analytics";
+import {
+  BASE_CASE_OPERATING_COSTS_PHP,
+  BASE_CASE_PET_KG_PER_SEMESTER,
+  CO2E_KG_PER_KG_PET,
+  OPTIONAL_ORG_PAPER_MARGIN_PHP,
+  REFERENCE_PET_PRICE_PHP_PER_KG,
+  SEMESTER_WEEKS,
+  createFinancialScenarios,
+  forecastWeeklyDemand,
+  type ForecastModel,
+} from "../forecast";
 
 const router = Router();
 
@@ -297,7 +309,7 @@ router.get("/api/admin/stats", requireAuth, (_req, res) => {
       SELECT 
         SUM(CASE WHEN type = 'deposit' THEN 1 ELSE 0 END) as total_bottles,
         SUM(CASE WHEN type = 'deposit' THEN COALESCE(weight_g, 0) ELSE 0 END) as total_weight_g,
-        SUM(CASE WHEN type = 'deposit' THEN COALESCE(co2_saved_g, 0) ELSE 0 END) as total_co2_g,
+        SUM(CASE WHEN type = 'deposit' THEN COALESCE(weight_g, 0) * ${CO2E_KG_PER_KG_PET} ELSE 0 END) as total_co2_g,
         SUM(CASE WHEN type = 'print' THEN 1 ELSE 0 END) as total_prints,
         COUNT(DISTINCT CASE WHEN type != 'reject' AND rfid != 'GUEST' THEN rfid END) as total_users
       FROM transactions
@@ -312,6 +324,166 @@ router.get("/api/admin/stats", requireAuth, (_req, res) => {
     });
   } catch (err: any) {
     res.status(500).json({ error: "Failed to fetch system stats: " + err.message });
+  }
+});
+
+router.get("/api/admin/analytics", requireAuth, (req, res) => {
+  try {
+    const currentBinFillPercent = getSensorStatus().bin?.fillPercent ?? null;
+    res.json(computeAdminAnalytics(db, {
+      range: req.query.range,
+      currentBinFillPercent,
+    }));
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch analytics: " + err.message });
+  }
+});
+
+router.get("/api/admin/forecast", requireAuth, (req, res) => {
+  const requestedModel = String(req.query.model ?? "holt");
+  const model: ForecastModel = requestedModel === "regression" ? "regression" : "holt";
+  const offsetMs = 8 * 60 * 60 * 1000;
+  const weekMs = 7 * 24 * 60 * 60 * 1000;
+  const historyWeeks = 12;
+  const manilaNow = new Date(Date.now() + offsetMs);
+  const dayStart = Date.UTC(manilaNow.getUTCFullYear(), manilaNow.getUTCMonth(), manilaNow.getUTCDate());
+  const daysSinceMonday = (new Date(dayStart).getUTCDay() + 6) % 7;
+  const currentWeekStart = new Date(dayStart - daysSinceMonday * 24 * 60 * 60 * 1000);
+  const historyStart = new Date(currentWeekStart.getTime() - historyWeeks * weekMs);
+  const forecastStart = new Date(currentWeekStart.getTime() + weekMs);
+  const toUtcSql = (manilaDate: Date) => new Date(manilaDate.getTime() - offsetMs)
+    .toISOString().slice(0, 19).replace("T", " ");
+
+  try {
+    const rows = db.prepare(`
+      SELECT
+        date(created_at, '+8 hours', '-' || ((CAST(strftime('%w', created_at, '+8 hours') AS INTEGER) + 6) % 7) || ' days') AS week_start,
+        SUM(CASE WHEN type = 'deposit' THEN COALESCE(weight_g, 0) ELSE 0 END) AS weight_g,
+        SUM(CASE WHEN type = 'deposit' THEN 1 ELSE 0 END) AS bottles,
+        SUM(CASE WHEN type = 'print' THEN 1 ELSE 0 END) AS print_jobs
+      FROM transactions
+      WHERE created_at >= ? AND created_at < ? AND type IN ('deposit', 'print')
+      GROUP BY week_start
+      ORDER BY week_start
+    `).all(toUtcSql(historyStart), toUtcSql(currentWeekStart)) as Array<{
+      week_start: string;
+      weight_g: number;
+      bottles: number;
+      print_jobs: number;
+    }>;
+
+    const weekToDateRow = db.prepare(`
+      SELECT
+        SUM(CASE WHEN type = 'deposit' THEN COALESCE(weight_g, 0) ELSE 0 END) AS weight_g,
+        SUM(CASE WHEN type = 'deposit' THEN 1 ELSE 0 END) AS bottles,
+        SUM(CASE WHEN type = 'print' THEN 1 ELSE 0 END) AS print_jobs
+      FROM transactions
+      WHERE created_at >= ? AND created_at < ? AND type IN ('deposit', 'print')
+    `).get(toUtcSql(currentWeekStart), toUtcSql(new Date(Date.now() + offsetMs))) as {
+      weight_g: number | null;
+      bottles: number | null;
+      print_jobs: number | null;
+    };
+
+    const lifetime = db.prepare(`
+      SELECT
+        SUM(CASE WHEN type = 'deposit' THEN 1 ELSE 0 END) AS bottles,
+        SUM(CASE WHEN type = 'deposit' THEN COALESCE(weight_g, 0) ELSE 0 END) AS weight_g,
+        SUM(CASE WHEN type = 'print' THEN 1 ELSE 0 END) AS print_jobs
+      FROM transactions
+      WHERE type IN ('deposit', 'print')
+    `).get() as { bottles: number | null; weight_g: number | null; print_jobs: number | null };
+    const actualPetKg = Math.round(((lifetime.weight_g ?? 0) / 1000) * 100) / 100;
+    const actual = {
+      bottles: lifetime.bottles ?? 0,
+      petKg: actualPetKg,
+      co2eKg: Math.round(actualPetKg * CO2E_KG_PER_KG_PET * 100) / 100,
+      printJobsSubmitted: lifetime.print_jobs ?? 0,
+    };
+
+    const byWeek = new Map(rows.map(row => [row.week_start, row]));
+    const history = Array.from({ length: historyWeeks }, (_, index) => {
+      const week = new Date(historyStart.getTime() + index * weekMs);
+      const weekStart = week.toISOString().slice(0, 10);
+      const row = byWeek.get(weekStart);
+      const petKg = (row?.weight_g ?? 0) / 1000;
+      return {
+        weekStart,
+        bottles: row?.bottles ?? 0,
+        petKg: Math.round(petKg * 100) / 100,
+        co2eKg: Math.round(petKg * CO2E_KG_PER_KG_PET * 100) / 100,
+        printJobsSubmitted: row?.print_jobs ?? 0,
+      };
+    });
+
+    const activeWeeks = history.filter(week => week.petKg > 0).length;
+    const usesObservedHistory = activeWeeks >= 6;
+    const reportBaseline = Array(SEMESTER_WEEKS).fill(BASE_CASE_PET_KG_PER_SEMESTER / SEMESTER_WEEKS);
+    const holtPetForecast = usesObservedHistory
+      ? forecastWeeklyDemand(history.map(week => week.petKg), SEMESTER_WEEKS, "holt")
+      : reportBaseline;
+    const regressionPetForecast = usesObservedHistory
+      ? forecastWeeklyDemand(history.map(week => week.petKg), SEMESTER_WEEKS, "regression")
+      : reportBaseline;
+    const petForecast = model === "holt" ? holtPetForecast : regressionPetForecast;
+    const totalPetKg = (values: number[]) => Math.round(values.reduce((sum, value) => sum + value, 0) * 100) / 100;
+    const modelComparison = {
+      holt: totalPetKg(holtPetForecast),
+      regression: totalPetKg(regressionPetForecast),
+    };
+    const jobsForecast = usesObservedHistory
+      ? forecastWeeklyDemand(history.map(week => week.printJobsSubmitted), SEMESTER_WEEKS, model)
+      : null;
+    const projectedPetKg = Math.round(petForecast.reduce((sum, value) => sum + value, 0) * 100) / 100;
+    const projectedPrintJobs = jobsForecast
+      ? Math.round(jobsForecast.reduce((sum, value) => sum + value, 0))
+      : null;
+
+    const weeklyForecast = petForecast.map((petKg, index) => {
+      const weekStart = new Date(forecastStart.getTime() + index * weekMs).toISOString().slice(0, 10);
+      return {
+        weekStart,
+        petKg: Math.round(petKg * 100) / 100,
+        co2eKg: Math.round(petKg * CO2E_KG_PER_KG_PET * 100) / 100,
+        printJobsSubmitted: jobsForecast ? Math.round(jobsForecast[index]) : null,
+      };
+    });
+
+    res.json({
+      model: usesObservedHistory ? model : "report_baseline",
+      requestedModel: model,
+      basis: usesObservedHistory ? "observed_history" : "report_base_case",
+      confidence: usesObservedHistory ? "provisional" : "baseline_only",
+      historyWeeks,
+      activeWeeks,
+      semesterWeeks: SEMESTER_WEEKS,
+      referencePricePerKg: REFERENCE_PET_PRICE_PHP_PER_KG,
+      modelComparison,
+      actual,
+      weekToDate: {
+        bottles: weekToDateRow.bottles ?? 0,
+        petKg: Math.round(((weekToDateRow.weight_g ?? 0) / 1000) * 100) / 100,
+        printJobsSubmitted: weekToDateRow.print_jobs ?? 0,
+      },
+      co2eKgPerKgPet: CO2E_KG_PER_KG_PET,
+      assumptions: {
+        baseCasePetKg: BASE_CASE_PET_KG_PER_SEMESTER,
+        operatingCostsPhp: BASE_CASE_OPERATING_COSTS_PHP,
+        optionalOrganizationPaperMarginPhp: OPTIONAL_ORG_PAPER_MARGIN_PHP,
+      },
+      projected: {
+        petKg: model === "holt" ? modelComparison.holt : modelComparison.regression,
+        co2eKg: Math.round(projectedPetKg * CO2E_KG_PER_KG_PET * 100) / 100,
+        printJobsSubmitted: projectedPrintJobs,
+        bottleRevenueAtSixPhpKg: Math.round(projectedPetKg * 6 * 100) / 100,
+        kioskNetAtSixPhpKg: Math.round((projectedPetKg * 6 - BASE_CASE_OPERATING_COSTS_PHP) * 100) / 100,
+      },
+      scenarios: createFinancialScenarios(projectedPetKg, actualPetKg),
+      history,
+      weeklyForecast,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to calculate forecast: " + err.message });
   }
 });
 

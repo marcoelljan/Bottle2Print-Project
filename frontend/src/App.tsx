@@ -10,6 +10,7 @@ export type Screen = "home" | "print" | "balance" | "deposit" | "register" | "ad
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>("home");
+  const [tutorialOnHome, setTutorialOnHome] = useState(false);
   const [theme, setTheme] = useState<"dark" | "light">(() => {
     const savedTheme = window.localStorage.getItem("kiosk-theme");
     return savedTheme === "light" ? "light" : "dark";
@@ -29,7 +30,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    document.documentElement.dataset.kioskTheme = theme;
+    document.getElementById("kiosk-app")?.setAttribute("data-kiosk-theme", theme);
     window.localStorage.setItem("kiosk-theme", theme);
   }, [theme]);
 
@@ -277,10 +278,18 @@ export default function App() {
         onNavigate={go}
         theme={theme}
         onToggleTheme={toggleTheme}
+        showTutorialOnEntry={tutorialOnHome}
+        onTutorialDismissed={() => setTutorialOnHome(false)}
       />}
       {screen === "print"    && <PrintScreen onBack={home} theme={theme} onToggleTheme={toggleTheme} />}
       {screen === "balance"  && <CheckBalanceScreen onBack={home} theme={theme} onToggleTheme={toggleTheme} />}
-      {screen === "deposit"  && <DepositScreen onBack={home} onNavigate={go} theme={theme} onToggleTheme={toggleTheme} />}
+      {screen === "deposit"  && <DepositScreen
+        onBack={home}
+        onNavigate={go}
+        onIdleTimeout={() => { setTutorialOnHome(true); setScreen("home"); }}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+      />}
       {screen === "register" && <RegisterScreen onBack={home} theme={theme} onToggleTheme={toggleTheme} />}
       {screen === "admin"    && <AdminScreen theme={theme} onToggleTheme={toggleTheme} />}
     </div>

@@ -25,6 +25,7 @@ import { startBackupSchedule } from "./driveBackup";
 import { startEmailBackupSchedule } from "./emailBackup";
 import { getControls, isDisabled, disabledMessage } from "./kioskControls";
 import { registerTofCalSender, handleTofCalLine } from "./tofCal";
+import { CO2E_KG_PER_KG_PET } from "./forecast";
 import { EventEmitter } from "events";
 import { localOnly, isKioskRequest, directOnly } from "./localOnly";
 
@@ -51,7 +52,7 @@ function logReject(stage: string, reason: string, heightMm: number | null, weigh
 }
 
 function co2SavedGrams(weightG: number): number {
-  return (weightG / 1000) * 3000;
+  return weightG * CO2E_KG_PER_KG_PET;
 }
 
 type StepStatus = "pending" | "running" | "pass" | "fail";
