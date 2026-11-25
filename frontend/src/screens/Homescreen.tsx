@@ -72,7 +72,10 @@ export default function HomeScreen({ onNavigate, theme, onToggleTheme, showTutor
     return () => clearInterval(id);
   }, []);
     // Check Balance and Register need a card, so the card-reader switch greys them out too
-  const why = (s: string) => off[s] ?? (s === "balance" || s === "register" ? off["rfid"] : undefined);
+  const why = (s: string) => {
+    if (s === "deposit" && off.jam) return "Out of service: bottle stuck";
+    return off[s] ?? (s === "balance" || s === "register" ? off["rfid"] : undefined);
+  };
   return (
     <div style={{
       width: "100%", height: "100%", flex: 1, background: "var(--kiosk-bg)",
@@ -145,7 +148,7 @@ export default function HomeScreen({ onNavigate, theme, onToggleTheme, showTutor
               </div>
               <div>
                 <div style={{ fontSize: 21, fontWeight: 700, color: "var(--kiosk-text)", marginBottom: 5 }}>{t.label}</div>
-                <div style={{ fontSize: 15, lineHeight: 1.4, color: why(t.screen as string) ? "var(--kiosk-accent-text)" : "var(--kiosk-muted)" }}>{why(t.screen as string) ?? t.sub}</div>
+                <div style={{ fontSize: 15, lineHeight: 1.4, color: t.screen === "deposit" && off.jam ? "var(--kiosk-danger-text)" : why(t.screen as string) ? "var(--kiosk-accent-text)" : "var(--kiosk-muted)" }}>{why(t.screen as string) ?? t.sub}</div>
               </div>
             </button>
           ))}

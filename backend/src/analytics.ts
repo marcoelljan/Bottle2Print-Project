@@ -567,7 +567,7 @@ export function computeAdminAnalytics(
       FROM transactions
       WHERE date(created_at, '+8 hours') >= ?
         AND date(created_at, '+8 hours') <= ?
-        AND type IN ('deposit', 'print')
+        AND type = 'deposit'
       `
     )
     .get(forecastStartDate, endDate) as { n: number };

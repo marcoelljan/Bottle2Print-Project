@@ -83,6 +83,7 @@ test("nets print refunds against submitted prints without subtracting admin adju
       ('CARD1', 'print', '1 page(s), color', 8, '2026-11-25 02:00:00'),
       ('GUEST', 'print', '1 page(s), bw', 3, '2026-11-25 03:00:00'),
       ('CARD1', 'adjust', 'Print refunded: the job did not finish', 8, '2026-11-25 02:05:00'),
+      ('GUEST', 'adjust', 'Print refunded: cancelled by user', 3, '2026-11-25 02:08:00'),
       ('CARD1', 'adjust', 'Admin added credits: manual correction', 10, '2026-11-25 02:10:00')
   `).run();
 
@@ -92,11 +93,11 @@ test("nets print refunds against submitted prints without subtracting admin adju
   });
 
   assert.equal(result.totals.submittedPrints, 3);
-  assert.equal(result.totals.refundedPrints, 1);
-  assert.equal(result.totals.confirmedPrints, 2);
-  assert.equal(result.totals.printCreditsSpent, 9); // 6 + 8 + 3 - 8
+  assert.equal(result.totals.refundedPrints, 2);
+  assert.equal(result.totals.confirmedPrints, 1);
+  assert.equal(result.totals.printCreditsSpent, 6); // 6 + 8 + 3 - 8 - 3
   assert.equal(result.cardVsGuest.card.confirmedPrints, 1);
-  assert.equal(result.cardVsGuest.guest.confirmedPrints, 1);
+  assert.equal(result.cardVsGuest.guest.confirmedPrints, 0);
 });
 
 test("zero-fills daily series across 7, 30, and 90 day ranges", () => {

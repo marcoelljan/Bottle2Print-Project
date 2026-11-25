@@ -7,7 +7,7 @@ import QRCode from "qrcode";
 import { db } from "../db";
 import { upload } from "../upload";
 import { createSession, getSession, updateSession, deleteSession } from "../qrSessions";
-import { getGuestCredits, deductGuestCredits, endGuestSession, addGuestCredit } from "../guestSession";
+import { getGuestCredits, deductGuestCredits, endGuestSession, addGuestCredit, isGuestActive, startGuestSession } from "../guestSession";
 import { broadcast } from "../wsHub";
 import { isVerified } from "../pinAuth";
 import { isDisabled, disabledMessage } from "../kioskControls";
@@ -121,7 +121,52 @@ function logSystem(action: string, details: string) {
 
 let lastPrinterMail = 0;
 const cancelledJobs = new Set<string>();   // jobs cancelled because they never finished
+const printJobs = new Map<string, { rfid: string; totalCost: number; isGuest: boolean; refunded: boolean }>();
 
+function refundPrintJob(jobId: string, reason: string): number | null {
+  const job = printJobs.get(jobId);
+  if (!job || job.refunded) return null;
+  job.refunded = true;
+
+  if (job.isGuest) {
+    if (!isGuestActive()) startGuestSession();
+    addGuestCredit(job.totalCost);
+  } else {
+    db.prepare("UPDATE users SET credits = credits + ? WHERE rfid = ?").run(job.totalCost, job.rfid);
+  }
+  db.prepare("INSERT INTO transactions (rfid, type, size, credits) VALUES (?, 'adjust', ?, ?)")
+    .run(job.rfid, reason, job.totalCost);
+  return job.totalCost;
+}
+
+router.post("/api/print/cancel/:jobId", (req, res) => {
+  const jobId = req.params.jobId;
+  if (!/^[A-Za-z0-9_.-]+$/.test(jobId)) return res.status(400).json({ error: "Invalid job." });
+
+  const job = printJobs.get(jobId);
+  if (!job || job.refunded) return res.status(409).json({ error: "Job already finished" });
+
+  exec("lpstat -o", { timeout: 5000 }, (statError, out) => {
+    const queued = String(out || "").split("\n").some(line => line.startsWith(jobId + " "));
+    if (statError || !queued) {
+      return res.status(409).json({ error: "Job already finished" });
+    }
+
+    exec("cancel " + jobId, (cancelError) => {
+      if (cancelError) return res.status(500).json({ error: "Could not cancel the print." });
+
+      cancelledJobs.add(jobId);
+      const refunded = refundPrintJob(jobId, "Print refunded: cancelled by user");
+      if (refunded === null) {
+        return res.status(409).json({ error: "Job already finished" });
+      }
+
+      db.prepare("INSERT INTO activity_logs (admin_user, action, details) VALUES (?, ?, ?)")
+        .run("System Kiosk", "PRINT_CANCELLED", (job.isGuest ? "Guest" : "RFID " + job.rfid) + ": job " + jobId + ", " + refunded + " credits refunded");
+      res.json({ success: true, refunded });
+    });
+  });
+});
 
 router.get("/api/print/pricing", (_req, res) => {
   res.json(getPrintPricing());
@@ -136,8 +181,10 @@ function watchJob(jobId: string, limitMs: number, onStuck: () => void) {
       if (!queued) { clearInterval(timer); return; }          // finished or removed
       if (Date.now() - started > limitMs) {
         clearInterval(timer);
-        exec("cancel " + jobId, () => {});
-        onStuck();
+        exec("cancel " + jobId, () => {
+          const job = printJobs.get(jobId);
+          if (job && !job.refunded) onStuck();
+        });
       }
     });
   }, 5000);
@@ -469,12 +516,11 @@ router.post("/api/print/qr-confirm/:sessionId", async (req, res) => {
 
     const jobId = (stdout.match(/request id is (\S+)/) ?? [])[1];
     if (jobId && /^[A-Za-z0-9_.-]+$/.test(jobId)) {
+      printJobs.set(jobId, { rfid, totalCost, isGuest, refunded: false });
       watchJob(jobId, 120000 + selectedPages.length * 20000, () => {
-                cancelledJobs.add(jobId);
-        if (!isGuest) {
-          db.prepare("UPDATE users SET credits = credits + ? WHERE rfid = ?").run(totalCost, rfid);
-          db.prepare("INSERT INTO transactions (rfid, type, size, credits) VALUES (?, 'adjust', 'Print refunded: the job did not finish', ?)").run(rfid, totalCost);
-        }
+        cancelledJobs.add(jobId);
+        const refunded = refundPrintJob(jobId, "Print refunded: the job did not finish");
+        if (refunded === null) return;
         try {
           db.prepare("INSERT INTO activity_logs (admin_user, action, details) VALUES (?, ?, ?)")
             .run("System Kiosk", "PRINT_REFUND", (isGuest ? "Guest" : "RFID " + rfid) + ": job " + jobId + " stuck and cancelled" + (isGuest ? "" : ", " + totalCost + " credits refunded"));

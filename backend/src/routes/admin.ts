@@ -4,7 +4,7 @@ import crypto from "crypto";
 import nodemailer from "nodemailer";
 import { db } from "../db";
 import { exec } from "child_process";
-import { sendMail } from "../alerts";
+import { clear as clearAlert, sendMail } from "../alerts";
 import { runDriveBackup, getBackupStatus, getBackupSettings, saveBackupSettings } from "../driveBackup";
 import { runEmailBackup, getEmailBackupStatus, getEmailBackupSettings, saveEmailBackupSettings } from "../emailBackup";
 import { getControls, setControl, FEATURES } from "../kioskControls";
@@ -16,6 +16,7 @@ import { requestTofCal } from "../tofCal";
 import { clearVerified } from "../pinAuth";
 import { getPrintPricing, isValidPrintRate, savePrintPricing } from "../printPricing";
 import { anonymizeRfidHistory } from "../accountHistory";
+import { clearJam, getJam, notifyJamTofEmpty, requestJamClear } from "../jam";
 import { computeAdminAnalytics } from "../analytics";
 import {
   BASE_CASE_OPERATING_COSTS_PHP,
@@ -516,6 +517,7 @@ router.patch("/api/admin/print-pricing", requireSuperAdmin, (req: any, res) => {
 router.patch("/api/admin/sensors/config", requireSuperAdmin, (req: any, res) => {
   try {
     const updated = updateCalibration(req.body);
+    if (process.env.JAM_DETECTION_ENABLED === "true") notifyJamTofEmpty(updated.tofMountMm);
     logActivity(req.admin.username, "UPDATE_SENSOR_CONFIG", "Updated sensor calibration thresholds");
     res.json({ success: true, config: updated });
   } catch (err: any) {
@@ -529,6 +531,7 @@ router.post("/api/admin/sensors/tof-calibrate", requireSuperAdmin, async (req: a
   if (r.spread > 60) return res.status(422).json({ error: `Readings are unstable (spread ${(r.spread / 10).toFixed(1)} cm). Check the mount and try again.` });
   try {
     const config = updateCalibration({ tofMountMm: r.mean });
+    if (process.env.JAM_DETECTION_ENABLED === "true") notifyJamTofEmpty(r.mean);
     logActivity(req.admin.username, "UPDATE_SENSOR_CONFIG", `Recalibrated ToF empty reading to ${(r.mean / 10).toFixed(1)} cm (spread ${(r.spread / 10).toFixed(1)} cm)`);
     res.json({ success: true, mean: r.mean, spread: r.spread, config });
   } catch (err: any) {
@@ -596,6 +599,42 @@ router.patch("/api/admin/backup/email-settings", requireSuperAdmin, (req: any, r
 
 router.get("/api/admin/kiosk-controls", (_req, res) => {
   res.json(getControls());
+});
+
+router.get("/api/admin/jam", (_req, res) => {
+  const jam = getJam();
+  res.json({ ...jam, message: jam.active ? "Bottle jam detected" : "" });
+});
+
+router.post("/api/admin/jam/clear", async (req: any, res) => {
+  const jam = getJam();
+  if (!jam.active) return res.json({ success: true, cleared: true });
+
+  const tofFaulted = getSensorStatus().sensors.tof?.state === "fault";
+  if (req.body?.force === true) {
+    if (!tofFaulted) return res.status(409).json({ error: "Force clearing is only allowed while ToF is faulted." });
+    clearJam();
+    setControl("deposit", false, "", req.admin.username);
+    logActivity(req.admin.username, "JAM_CLEARED_FORCED", `Forced jam clear; source=${jam.source ?? "unknown"}; ToF unavailable`);
+    void clearAlert("jam", "Bottle jam cleared", "The bottle jam was forcibly cleared by staff. Deposits are available again.");
+    return res.json({ success: true, forced: true });
+  }
+
+  const result = await requestJamClear();
+  if (!result.ok) {
+    if ("busy" in result) {
+      const cm = (result.mm / 10).toFixed(1);
+      return res.status(409).json({ error: `Something is still detected in the chamber (${cm} cm). Remove it and try again.` });
+    }
+    if (tofFaulted) return res.status(409).json({ error: "ToF is unavailable. Use force only after checking that the chute is clear.", tofFaulted: true });
+    return res.status(504).json({ error: "Could not confirm the chamber with ToF. Try again." });
+  }
+
+  clearJam();
+  setControl("deposit", false, "", req.admin.username);
+  logActivity(req.admin.username, "JAM_CLEARED", `Jam cleared after ToF chamber check; source=${jam.source ?? "unknown"}`);
+  void clearAlert("jam", "Bottle jam cleared", "The bottle jam was cleared by staff. The chamber is empty and deposits are available again.");
+  res.json({ success: true, cleared: true });
 });
 
 router.patch("/api/admin/kiosk-controls/:feature", requireSuperAdmin, (req: any, res) => {

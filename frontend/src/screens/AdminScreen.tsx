@@ -418,7 +418,7 @@ const LOG_GROUPS: Record<string, { label: string; actions: string[] }> = {
   security: { label: "Password & Security", actions: ["REQUEST_PASSWORD_RESET", "RESET_PASSWORD"] },
   backup:   { label: "Backup & Restore",    actions: ["EXPORT_BACKUP", "RESTORE_BACKUP","EMAIL_BACKUP", "EMAIL_BACKUP_FAILED"] },
   system:   { label: "System Control",      actions: ["SHUTDOWN_PI", "REBOOT_PI", "UPDATE_SENSOR_CONFIG", "UPDATE_PRINT_PRICING"] },
-  hardware: { label: "Hardware Alerts",     actions: ["SENSOR_FAULT", "SENSOR_RECOVERED", "ARDUINO_OFFLINE", "ARDUINO_UNRESPONSIVE", "ARDUINO_ONLINE", "PRINTER_NOT_READY", "PRINT_FAILED", "PRINT_REFUND"] },
+  hardware: { label: "Hardware Alerts",     actions: ["SENSOR_FAULT", "SENSOR_RECOVERED", "ARDUINO_OFFLINE", "ARDUINO_UNRESPONSIVE", "ARDUINO_ONLINE", "PRINTER_NOT_READY", "PRINT_FAILED", "PRINT_REFUND", "PRINT_CANCELLED", "BOTTLE_JAM", "JAM_CLEARED", "JAM_CLEARED_FORCED"] },
   kiosk:    { label: "Kiosk Controls",      actions: ["KIOSK_PART_DISABLED", "KIOSK_PART_ENABLED"] },
 };
 
@@ -622,6 +622,8 @@ export default function AdminScreen({ theme, onToggleTheme }: Props) {
   const [printPricingMsg, setPrintPricingMsg] = useState("");
   const [printPricingSaving, setPrintPricingSaving] = useState(false);
   const [tofCalBusy, setTofCalBusy] = useState(false);
+  const [jamState, setJamState] = useState<{ active: boolean; since: string | null; source: "chamber" | "intake" | null; mm: number | null } | null>(null);
+  const [jamMsg, setJamMsg] = useState("");
   const [driveBusy, setDriveBusy] = useState(false);
   const [backupTime, setBackupTime] = useState("17:00");
   const [backupEnabled, setBackupEnabled] = useState(true);
@@ -967,6 +969,39 @@ useEffect(() => {
   }, 10000);
   return () => clearInterval(id);
 }, [verified, passwordChanged, token, isSuperAdmin]);
+
+useEffect(() => {
+  if (!verified || !passwordChanged) return;
+  const loadJam = async () => {
+    try {
+      const r = await authFetch(`/api/admin/jam`);
+      if (r.ok) setJamState(await r.json());
+    } catch {}
+  };
+  loadJam();
+  const id = setInterval(loadJam, 10000);
+  return () => clearInterval(id);
+}, [verified, passwordChanged, token]);
+
+const clearJam = async (force = false) => {
+  if (!force && !window.confirm("Have you removed the stuck bottle?")) return;
+  setJamMsg("Checking the chamber...");
+  try {
+    const r = await authFetch(`/api/admin/jam/clear`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ force }) });
+    const data = await r.json();
+    if (r.ok && data.success) {
+      setJamMsg(force ? "Jam cleared with forced ToF override." : "Jam cleared; deposits are available again.");
+      setJamState({ active: false, since: null, source: null, mm: null });
+    } else if (r.status === 409 && data.tofFaulted) {
+      if (window.confirm("ToF is unavailable. Force clearing will restore deposits without confirming the chamber is empty. Continue?")) await clearJam(true);
+      else setJamMsg("Jam was not cleared.");
+    } else {
+      setJamMsg(data.error ?? "Could not clear the jam.");
+    }
+  } catch {
+    setJamMsg("Could not reach backend.");
+  }
+};
 
 const measureEmpty = async () => {
   if (!window.confirm("Make sure the chamber is EMPTY, then press OK.")) return;
@@ -1713,7 +1748,17 @@ const adjustCredits = async (mode: "add" | "remove") => {
         </div>
       </div>
 
-           <div style={tabBar}>
+           {jamState?.active && (
+        <div style={{ background: "#4a1717", borderBottom: "1px solid #7a2626", color: "#ffd4d4", padding: "10px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexShrink: 0, minHeight: 54, boxSizing: "border-box" }}>
+          <div style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: 700, lineHeight: 1.45, overflowWrap: "anywhere" }}>
+            Bottle jam detected since {jamState.since ? formatPhTime(jamState.since) : "unknown"} ({jamState.source ?? "unknown"}{jamState.mm != null ? `, ${(jamState.mm / 10).toFixed(1)} cm` : ""}). Deposits are disabled.
+          </div>
+          <button onClick={() => void clearJam()} style={{ ...actionBtn("#7a2626", "#fff"), flexShrink: 0, minWidth: 108, minHeight: 36 }}>Clear jam</button>
+        </div>
+      )}
+      {jamMsg && <div style={{ padding: "6px 24px", color: jamMsg.startsWith("Jam cleared") || jamMsg.startsWith("Checking") ? "var(--kiosk-success-text)" : "var(--kiosk-danger-text)", fontSize: 12, flexShrink: 0 }}>{jamMsg}</div>}
+
+      <div style={tabBar}>
         {([
           ["analytics", <><RecyclingIcon size={15} /> Analytics</>],
           ["logs", <><PrintIcon size={15} /> Activity Logs</>],
@@ -1873,20 +1918,20 @@ const adjustCredits = async (mode: "add" | "remove") => {
                       },
                       {
                         label: "Plastic recycled",
+                        sub: `${analytics.totals.creditsIssued.toLocaleString()} credits issued · load-cell weight estimate`,
                         value: `${analytics.totals.plasticWeightKg.toFixed(2)} kg`,
-                        sub: `${analytics.totals.creditsIssued.toLocaleString()} credits issued`,
                         delta: analytics.percentChange.plasticWeightKg,
                         color: "var(--kiosk-success-text)",
                       },
                       {
-                        label: "CO₂ saved",
+                        label: "Est. CO₂e saved",
                         value: `${analytics.totals.co2SavedG.toLocaleString()} g`,
-                        sub: "From accepted deposits",
+                        sub: "Estimated from accepted deposit weight",
                         delta: analytics.percentChange.co2SavedG,
                         color: "var(--kiosk-info-text)",
                       },
                       {
-                        label: "Confirmed prints",
+                        label: "Prints not refunded",
                         value: analytics.totals.confirmedPrints.toLocaleString(),
                         sub: `${analytics.totals.submittedPrints.toLocaleString()} submitted · ${analytics.totals.refundedPrints.toLocaleString()} refunded`,
                         delta: analytics.percentChange.confirmedPrints,
@@ -1934,7 +1979,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                         <div style={{ fontSize: 12, color: "var(--admin-secondary)", display: "flex", gap: 14, flexWrap: "wrap" }}>
                           <span><strong>{split.bottlesAccepted.toLocaleString()}</strong> bottles ({split.plasticWeightKg.toFixed(2)} kg)</span>
                           <span><strong>{split.creditsIssued.toLocaleString()}</strong> credits issued</span>
-                          <span><strong>{split.confirmedPrints.toLocaleString()}</strong> confirmed prints</span>
+                          <span><strong>{split.confirmedPrints.toLocaleString()}</strong> prints not refunded</span>
                           <span><strong>{split.printCreditsSpent.toLocaleString()}</strong> credits spent</span>
                         </div>
                       </div>
@@ -2090,7 +2135,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                       color="var(--kiosk-accent-text)"
                     />
                     <AnalyticsSeriesChart
-                      title="CO₂ saved"
+                      title="Estimated CO₂e saved"
                       subtitle={viewSubtitle}
                       points={chartSource.map(p => ({ label: p.label, value: p.co2 }))}
                       color="var(--kiosk-success-text)"
@@ -2201,7 +2246,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                           actual={analytics.dailySeries}
                           projected={analytics.forecast.projectedSeries}
                           metric={forecastMetric}
-                          label={forecastMetric === "bottles" ? "Bottles accepted" : forecastMetric === "co2SavedG" ? "CO₂ saved" : "Confirmed prints"}
+                          label={forecastMetric === "bottles" ? "Bottles accepted" : forecastMetric === "co2SavedG" ? "Estimated CO₂e saved" : "Prints not refunded"}
                           unitSuffix={forecastMetric === "co2SavedG" ? " g" : ""}
                         />
                       </>
@@ -2503,7 +2548,20 @@ const adjustCredits = async (mode: "add" | "remove") => {
         {!loading && tab === "sensors" && (
           <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 16, height: "100%", overflowY: "auto" }}>
             
-                        {/* Kiosk controls */}
+                        <div style={{ background: "var(--admin-surface)", border: `1px solid ${jamState?.active ? "#7a2626" : "var(--admin-border-strong)"}`, borderRadius: 10, padding: 14 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>Jam detection</div>
+              <div style={{ fontSize: 13, color: "var(--admin-muted-strong)" }}>
+                State: <strong style={{ color: jamState?.active ? "#e74c3c" : "var(--admin-text)" }}>{jamState?.active ? "JAMMED" : "Armed"}</strong>
+              </div>
+              <div style={{ fontSize: 12, color: "var(--admin-muted-strong)", marginTop: 6 }}>
+                Last ToF: {sensorStatus?.sensors?.tof?.lastDetail ?? "unknown"} · Empty-chamber: {calForm ? `${mmToCm(calForm.tofMountMm)} cm` : "not calibrated"}
+              </div>
+              <div style={{ fontSize: 12, color: "var(--admin-muted-strong)", marginTop: 6 }}>
+                Run <strong>JAMTEST</strong> in the Serial Monitor for 30 seconds to view live ToF, IR, and load-cell values.
+              </div>
+            </div>
+
+            {/* Kiosk controls */}
             <div>
               <div style={{ fontSize: 14, fontWeight: 700, color: "var(--admin-muted-strong)", marginBottom: 8 }}>KIOSK CONTROLS</div>
               <div style={{ background: "var(--admin-surface)", border: "1px solid var(--admin-border-strong)", borderRadius: 10, padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>

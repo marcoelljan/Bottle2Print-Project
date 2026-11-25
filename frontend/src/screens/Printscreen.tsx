@@ -112,11 +112,19 @@ export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
   useEffect(() => () => { aliveRef.current = false; }, []);
   const [printHint, setPrintHint] = useState("");
   const [printCancelled, setPrintCancelled] = useState(false);
+  const [printJobId, setPrintJobId] = useState<string | null>(null);
+  const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
+  const [cancellingPrint, setCancellingPrint] = useState(false);
+  const [cancelRefund, setCancelRefund] = useState(0);
+  const [cancelAlreadyFinished, setCancelAlreadyFinished] = useState(false);
+  const [jamModalOpen, setJamModalOpen] = useState(false);
+  const cancelRequestedRef = useRef(false);
 
   // Kiosk controls: { feature: message } for every part the admin switched off
   const off = useKioskControls();
   const printOff = "print" in off;
   const depositOff = "deposit" in off;
+  const jamActive = "jam" in off;
   const rfidBlocked = printOff || "rfid" in off;
   const rfidReason = off.print || off.rfid || "Temporarily unavailable.";
   const [guestCredits, setGuestCredits] = useState(0);
@@ -301,7 +309,8 @@ export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
         const guestUser: User = { rfid: "GUEST", name: "Guest", studentId: "", credits: status.credits ?? 0 };
         setUser(guestUser);
         if (guestUser.credits < creditCost) {
-          startGuestDeposit();
+          if (jamActive) setJamModalOpen(true);
+          else startGuestDeposit();
         } else {
           handlePrint();
         }
@@ -332,7 +341,7 @@ export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
 
   // Non-RFID is blocked if Print is off, or if Deposit is off and the guest's banked credits can't cover the job
   const guestCanCover = guestCredits >= creditCost && creditCost > 0;
-  const guestBlocked = printOff || (depositOff && !guestCanCover);
+  const guestBlocked = printOff || (depositOff && !jamActive && !guestCanCover);
   const guestReason = printOff
     ? (off.print || "Temporarily unavailable.")
     : (off.deposit || "Temporarily unavailable.") +
@@ -364,6 +373,7 @@ export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
     const started = Date.now();
     for (;;) {
       await sleep(2000);
+      if (cancelRequestedRef.current) return;
       if (!aliveRef.current) return;
       try {
         const r = await fetch(`${API}/api/print/job/${jobId}`);
@@ -407,6 +417,8 @@ export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
         return;
       }
       if (data.success) {
+        cancelRequestedRef.current = false;
+        setPrintJobId(data.jobId ?? null);
         refreshGuestCredits();
         setInvoice({
           creditsCharged: data.creditsCharged ?? creditCost,
@@ -425,6 +437,51 @@ export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
       setErrorMsg("Could not reach backend.");
       setStep("error");
     } finally { printingRef.current = false; }
+  };
+
+  const confirmCancelPrint = async () => {
+    if (!printJobId || cancellingPrint) {
+      if (!printJobId && !cancellingPrint) {
+        cancelRequestedRef.current = true;
+        setCancelAlreadyFinished(true);
+        setCancelRefund(0);
+        setCancelConfirmOpen(false);
+        setPrintCancelled(true);
+        setStep("success");
+      }
+      return;
+    }
+
+    setCancellingPrint(true);
+    try {
+      cancelRequestedRef.current = true;
+      const res = await fetch(`${API}/api/print/cancel/${encodeURIComponent(printJobId)}`, { method: "POST" });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setCancelAlreadyFinished(false);
+        setCancelRefund(data.refunded ?? 0);
+      } else if (res.status === 409) {
+        setCancelAlreadyFinished(true);
+        setCancelRefund(0);
+      } else {
+        cancelRequestedRef.current = false;
+        setErrorMsg(data.error ?? "Could not cancel the print.");
+        setCancelConfirmOpen(false);
+        setStep("error");
+        return;
+      }
+      setCancelConfirmOpen(false);
+      setPrintCancelled(true);
+      await refreshGuestCredits();
+      setStep("success");
+    } catch {
+      cancelRequestedRef.current = false;
+      setErrorMsg("Could not reach backend.");
+      setCancelConfirmOpen(false);
+      setStep("error");
+    } finally {
+      setCancellingPrint(false);
+    }
   };
 
   useEffect(() => {
@@ -707,13 +764,13 @@ export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
                   {rfidBlocked ? "RFID & PIN (unavailable)" : "RFID & PIN"}
                 </button>
                 <button
-                  onClick={() => { if (!guestBlocked) handleGuestChoice(); }}
+                  onClick={() => { if (jamActive) setJamModalOpen(true); else if (!guestBlocked) handleGuestChoice(); }}
                   style={{
                     ...primaryBtn(rangeIsValid && !guestBlocked),
                     background: rangeIsValid && !guestBlocked ? "#2ecc71" : "var(--kiosk-border)",
                     color: rangeIsValid && !guestBlocked ? "#000" : "var(--kiosk-muted-dim)",
                   }}
-                  disabled={!rangeIsValid || guestBlocked || !printPricing || pricingLoading || !!pricingError}
+                  disabled={!rangeIsValid || (guestBlocked && !jamActive) || !printPricing || pricingLoading || !!pricingError}
                   title={guestBlocked ? guestReason : undefined}
                 >
                   {guestBlocked ? "Non-RFID (unavailable)" : "Non-RFID (Bottles)"}
@@ -798,22 +855,38 @@ export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
           <div style={{ textAlign: "center", maxWidth: 420 }}>
             <div style={{ fontSize: 56, marginBottom: 16 }}><PrintIcon size={56} color="#f0a500" /></div>
             <div style={{ fontSize: 20, color: "var(--kiosk-accent-text)", fontWeight: 600 }}>Printing your document...</div>
-            <div style={{ fontSize: 14, color: "var(--kiosk-muted)", marginTop: 8 }}>Please wait. Do not leave the kiosk.</div>
+            <div style={{ fontSize: 14, lineHeight: 1.45, color: "var(--kiosk-muted)", marginTop: 8 }}>
+              Please wait. If printing is delayed or nothing comes out, use Cancel print below and reprint.
+            </div>
             {printHint && (
               <div style={{ fontSize: 15, color: "var(--kiosk-accent-text)", background: "var(--kiosk-warning-bg)", border: "1px solid var(--kiosk-warning-border)", borderRadius: 8, padding: "10px 14px", marginTop: 18 }}>
                 {printHint}
               </div>
             )}
+            <button
+              onClick={() => setCancelConfirmOpen(true)}
+              style={{ ...dangerPrimaryBtn, width: "100%", maxWidth: 360, marginTop: 24, minHeight: 56, fontSize: 18 }}
+            >
+              Cancel print
+            </button>
           </div>
         )}
 
         {step === "success" && (
           <div style={{ width: "100%", maxWidth: 760, alignSelf: "center", marginBlock: "auto", textAlign: "center" }}>
-            <div style={{ fontSize: 32, color: "var(--kiosk-success-text)", fontWeight: 700, marginBottom: 14 }}>Print complete!</div>
-            <div style={{ fontSize: 19, lineHeight: 1.5, color: "var(--kiosk-text-secondary)", marginBottom: 22 }}>
-              Collect your pages from the printer. If nothing printed, the selected paper size may not match the paper in the printer. Please ask staff.
+            <div style={{ fontSize: 32, color: "var(--kiosk-success-text)", fontWeight: 700, marginBottom: 14 }}>
+              {printCancelled ? "Print cancelled" : "Print complete!"}
             </div>
-            {invoice && (
+            <div style={{ fontSize: 19, lineHeight: 1.5, color: "var(--kiosk-text-secondary)", marginBottom: 22 }}>
+              {printCancelled
+                ? cancelAlreadyFinished
+                  ? "This print already finished, so no refund is needed."
+                  : isGuestPath
+                    ? `${cancelRefund} credits have been added back to your guest credits`
+                    : `${cancelRefund} credits have been refunded to your account`
+                : "Collect your pages from the printer. If nothing printed, the selected paper size may not match the paper in the printer. Please ask staff."}
+            </div>
+            {invoice && !printCancelled && (
               <div style={{ fontSize: 18, color: "var(--kiosk-muted)", background: "var(--kiosk-surface)", border: "1px solid var(--kiosk-border)", borderRadius: 12, padding: "16px 22px", margin: "0 auto 24px", textAlign: "left", maxWidth: 480 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
                   <div>Pages printed</div><div style={{ fontWeight: 700 }}>{invoice.pagesPrinted}</div>
@@ -823,7 +896,7 @@ export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
                 </div>
               </div>
             )}
-            {showLeftover && (
+            {showLeftover && !printCancelled && (
               <div style={{ fontSize: 15, color: "var(--kiosk-accent-text)", marginBottom: 16 }}>
                 You have <strong>{guestCredits}</strong> credits left. Print another file to use them.
                 Unused credits will be cleared when you press Finish or after a few minutes of inactivity.
@@ -833,6 +906,9 @@ export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
               {showLeftover && (
                 <button
                   onClick={() => {
+                    setPrintCancelled(false);
+                    setCancelAlreadyFinished(false);
+                    setCancelRefund(0);
                     setInvoice(null);
                     setFileName(null);
                     setPageCount(null);
@@ -847,14 +923,14 @@ export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
               )}
               <button
                 onClick={async () => {
-                  if (showLeftover) {
+                  if (showLeftover && !printCancelled) {
                     try { await fetch(`${API}/api/deposit/guest-end`, { method: "POST" }); } catch {}
                   }
                   onBack();
                 }}
-                style={showLeftover ? ghostBtn : { ...primaryBtn(true), flex: "none", width: 320, maxWidth: "100%", fontSize: 18, minHeight: 58 }}
+                style={showLeftover && !printCancelled ? ghostBtn : { ...primaryBtn(true), flex: "none", width: 320, maxWidth: "100%", fontSize: 18, minHeight: 58 }}
               >
-                {showLeftover ? "Finish" : "Back to home"}
+                {printCancelled ? "Back to home" : showLeftover ? "Finish" : "Back to home"}
               </button>
             </div>
           </div>
@@ -870,6 +946,38 @@ export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
           </div>
         )}
       </div>
+
+      {cancelConfirmOpen && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.72)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div role="dialog" aria-modal="true" style={{ width: "min(520px, 100%)", minHeight: 220, background: "var(--kiosk-surface)", border: "1px solid var(--kiosk-border-strong)", borderRadius: 12, padding: 28, display: "flex", flexDirection: "column", justifyContent: "center", textAlign: "center", boxSizing: "border-box" }}>
+            <div style={{ fontSize: 22, fontWeight: 700, color: "var(--kiosk-text)", marginBottom: 14 }}>
+              Are you sure you want to cancel this print?
+            </div>
+            <div style={{ fontSize: 18, lineHeight: 1.45, color: "var(--kiosk-text-secondary)", marginBottom: 24 }}>
+              Your {creditCost} credits will be refunded.
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12, alignItems: "stretch", width: "100%" }}>
+              <button disabled={cancellingPrint} onClick={() => setCancelConfirmOpen(false)} style={{ ...ghostBtn, minHeight: 56, minWidth: 180 }}>
+                Keep printing
+              </button>
+              <button disabled={cancellingPrint} onClick={() => void confirmCancelPrint()} style={{ ...dangerPrimaryBtn, minHeight: 56, minWidth: 220 }}>
+                {cancellingPrint ? "Cancelling..." : "Yes, cancel and refund"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {jamModalOpen && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.72)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div role="dialog" aria-modal="true" style={{ width: "min(520px, 100%)", background: "var(--kiosk-surface)", border: "1px solid var(--kiosk-danger-border)", borderRadius: 12, padding: 28, textAlign: "center", boxSizing: "border-box" }}>
+            <div style={{ marginBottom: 12, color: "var(--kiosk-danger-text)", fontSize: 48 }}>!</div>
+            <div style={{ fontSize: 22, fontWeight: 700, marginBottom: 14 }}>Bottle stuck in the chute</div>
+            <div style={{ fontSize: 18, lineHeight: 1.45, color: "var(--kiosk-text-secondary)", marginBottom: 24 }}>Deposit is unavailable until staff clears it. Please do not push anything into the machine. Ask staff for help.</div>
+            <button onClick={() => setJamModalOpen(false)} style={{ border: "none", borderRadius: 6, background: "var(--kiosk-accent)", color: "var(--kiosk-accent-text)", fontWeight: 700, minHeight: 56, minWidth: 180 }}>OK</button>
+          </div>
+        </div>
+      )}
 
       {showFeedback && (
         <FeedBackModal context="print" onClose={() => setShowFeedback(false)} />
@@ -934,6 +1042,11 @@ const primaryBtn = (active: boolean): React.CSSProperties => ({
   cursor: active ? "pointer" : "not-allowed", border: "none",
   textAlign: "center",
 });
+const dangerPrimaryBtn: React.CSSProperties = {
+  border: "none", borderRadius: 6, background: "var(--kiosk-danger-bg)", color: "var(--kiosk-danger-text)",
+  fontWeight: 700, cursor: "pointer", opacity: 1,
+};
+
 const ghostBtn: React.CSSProperties = {
   flex: 0.8, minHeight: 52, padding: "12px 10px", borderRadius: 8, fontWeight: 600, fontSize: 15,
   background: "transparent", color: "var(--kiosk-muted)", border: "1px solid var(--kiosk-border-strong)", cursor: "pointer",

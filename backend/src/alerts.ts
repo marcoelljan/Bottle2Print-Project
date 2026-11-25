@@ -46,7 +46,7 @@ export async function sendMail(subject: string, text: string): Promise<{ ok: boo
   }
 }
 
-async function raise(key: string, subject: string, detail: string, reminderMs?: number) {
+export async function raise(key: string, subject: string, detail: string, reminderMs?: number) {
   const now = Date.now();
   if (now - startedAt < STARTUP_QUIET_MS || sending.has(key) || (retryAt.get(key) ?? 0) > now) return;
   if (active.has(key) && (!reminderMs || now - (lastSent.get(key) ?? 0) < reminderMs)) return;
@@ -58,7 +58,7 @@ async function raise(key: string, subject: string, detail: string, reminderMs?: 
   } finally { sending.delete(key); }
 }
 
-async function clear(key: string, subject: string, detail: string) {
+export async function clear(key: string, subject: string, detail: string) {
   if (!active.has(key)) return;
   active.delete(key); lastSent.delete(key);
   const r = await sendMail(subject, detail + "\n\nTime: " + nowText());

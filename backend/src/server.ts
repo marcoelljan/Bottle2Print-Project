@@ -20,11 +20,12 @@ import { recordSensorActivity, setSerialStatus, recordHeartbeat, startHealthWatc
 import { getCalibration, classifyBottle, tofInUse } from "./sensorConfig";
 import { registerBusyCheck } from "./kioskState";
 import { markVerified } from "./pinAuth";
-import { startAlertWatch } from "./alerts";
+import { clear as clearAlert, raise as raiseAlert, startAlertWatch } from "./alerts";
 import { startBackupSchedule } from "./driveBackup";
 import { startEmailBackupSchedule } from "./emailBackup";
-import { getControls, isDisabled, disabledMessage } from "./kioskControls";
+import { getControls, isDisabled, disabledMessage, setControl } from "./kioskControls";
 import { registerTofCalSender, handleTofCalLine } from "./tofCal";
+import { clearJam, getJam, handleJamClearLine, JAM_DETECTION_ENABLED, notifyJamTofEmpty, registerJamClearSender, registerJamTofEmptySender, setJam } from "./jam";
 import { CO2E_KG_PER_KG_PET } from "./forecast";
 import { EventEmitter } from "events";
 import { localOnly, isKioskRequest, directOnly } from "./localOnly";
@@ -271,7 +272,16 @@ app.post("/api/mode", (req, res) => {
 app.get("/api/mode", (_req, res) => res.json({ mode: kioskMode }));
 
 app.get("/api/kiosk/controls", (_req, res) => {
-  res.json(getControls().map(c => ({ feature: c.feature, disabled: c.disabled, message: c.message })));
+  const jam = getJam();
+  res.json([
+    ...getControls().map(c => ({ feature: c.feature, disabled: c.disabled, message: c.message })),
+    { feature: "jam", disabled: jam.active, message: "A bottle is stuck in the chute. Deposits are unavailable until staff clears it." },
+  ]);
+});
+
+app.get("/api/kiosk/jam", (_req, res) => {
+  const jam = getJam();
+  res.json({ active: jam.active, since: jam.since, message: jam.active ? "A bottle is stuck in the chute. Deposits are unavailable until staff clears it." : "" });
 });
 
 app.post("/api/session/verify-pin", async (req, res) => {
@@ -496,6 +506,35 @@ function broadcastState() {
   wss.clients.forEach(c => { if (c.readyState === WebSocket.OPEN) c.send(data); });
 }
 
+let lastTofMm: number | null = null;
+let tofAvailable = false;
+
+function stopForConfirmedJam(source: "chamber" | "intake", mm: number | null) {
+  if (!JAM_DETECTION_ENABLED) return;
+  const existing = getJam();
+  if (!existing.active) {
+    setJam(source, mm);
+    setControl("deposit", true, "A bottle is stuck in the chute. Deposit is unavailable. Please ask staff.", "System Kiosk");
+    db.prepare("INSERT INTO activity_logs (admin_user, action, details) VALUES (?, ?, ?)")
+      .run("System Kiosk", "BOTTLE_JAM", `source=${source}; tof_mm=${mm == null ? "unavailable" : mm}`);
+    const detail = source === "chamber"
+      ? `Bottle jam detected in the chamber${mm == null ? "" : ` at ${cm(mm)} cm`}. Deposits are disabled.`
+      : "Bottle jam detected at the intake. Deposits are disabled.";
+    void raiseAlert("jam", "Bottle jam detected", detail, 6 * 60 * 60 * 1000);
+  }
+
+  depositStopRequested = true;
+  rfidDepositSessionActive = false;
+  takePending();
+  if (continueTimer) { clearTimeout(continueTimer); continueTimer = null; }
+  if (rearmTimer) { clearTimeout(rearmTimer); rearmTimer = null; }
+  if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+  session.step = "result";
+  session.result = "rejected";
+  session.errorMsg = "Bottle stuck in the chute. Please contact staff.";
+  broadcastState();
+}
+
 wss.on("connection", (ws, req) => {
   if (!isKioskRequest(req)) { ws.close(1008, "Kiosk only"); return; }
   ws.send(JSON.stringify({ type: "state", session: { ...session, timestamp: 0 } }));
@@ -529,7 +568,15 @@ function connectSerial() {
     console.log(`Serial open: ${ARDUINO_PORT}`);
     setSerialStatus("connected");
     setTimeout(() => {
-      if (serial === port && port.isOpen) { port.write("RESET\n"); console.log("Sent RESET to Arduino"); }
+      if (serial !== port || !port.isOpen) return;
+      if (JAM_DETECTION_ENABLED) {
+        const cal = getCalibration();
+        port.write(`TOFEMPTY:${cal.tofMountMm}\n`);
+      }
+      if (!getJam().active) {
+        port.write("RESET\n");
+        console.log("Sent RESET to Arduino");
+      }
     }, 2000);
     heartbeatTimer = setInterval(() => sendToArduino("PING"), 5000);
   });
@@ -552,6 +599,15 @@ function sendToArduino(cmd: string) {
 
 startHealthWatch();
 registerTofCalSender(() => sendToArduino("TOFCAL"));
+registerJamClearSender(() => sendToArduino("JAMCLEAR"));
+registerJamTofEmptySender(mm => {
+  if (JAM_DETECTION_ENABLED) sendToArduino(`TOFEMPTY:${mm}`);
+});
+
+if (JAM_DETECTION_ENABLED && getJam().active) {
+  setControl("deposit", true, "A bottle is stuck in the chute. Deposit is unavailable. Please ask staff.", "System Kiosk");
+}
+
 startAlertWatch();
 startEmailBackupSchedule();
 startBackupSchedule();
@@ -562,10 +618,31 @@ lineBus.on("data", (raw: string) => {
   if (!line.startsWith("STATUS:")) console.log("Arduino →", line);
 
   if (line === "PONG") { recordHeartbeat(); return; }
+  if (line.startsWith("JAMCLEAR:")) { handleJamClearLine(line); return; }
+  if (JAM_DETECTION_ENABLED && line.startsWith("JAM:")) {
+    if (line.startsWith("JAM:CHAMBER:")) {
+      const mm = parseFloat(line.split(":")[2]);
+      stopForConfirmedJam("chamber", Number.isFinite(mm) ? mm : null);
+    } else if (line === "JAM:INTAKE") {
+      if (!tofAvailable || (lastTofMm !== null && tofAvailable)) stopForConfirmedJam("intake", lastTofMm);
+    }
+    return;
+  }
+  if (line.startsWith("JAM:")) { console.log("Arduino JAM line ignored: JAM_DETECTION_ENABLED=false"); return; }
   if (line === "RFID:TIMEOUT") return;
     if (line.startsWith("STATUS:")) {
     const [, sensor, value] = line.split(":");
     recordIdleStatus(sensor, value);
+    if (sensor === "TOF") {
+      if (value === "FAIL") tofAvailable = false;
+      else {
+        const mm = parseFloat(value);
+        if (Number.isFinite(mm)) {
+          tofAvailable = true;
+          lastTofMm = mm;
+        }
+      }
+    }
     return;
   }
     if (line.startsWith("TOFCAL:")) { handleTofCalLine(line); return; }
@@ -713,11 +790,12 @@ lineBus.on("data", (raw: string) => {
   }
 
        if (line.startsWith("TOF:RAW:") || line.startsWith("TOF:FAIL")) {
-    if (session.step === "result") return;
+    if (line.startsWith("TOF:FAIL")) tofAvailable = false;
     let heightMm = 0;
     if (line.startsWith("TOF:RAW:")) {
       const raw = parseFloat(line.split(":")[2]);
       const mount = getCalibration().tofMountMm;
+      if (Number.isFinite(raw)) { tofAvailable = true; lastTofMm = raw; }
       heightMm = Number.isFinite(raw) && raw < mount - 15 ? Math.round(mount - raw) : 0; // 0 = no usable height
     }
 

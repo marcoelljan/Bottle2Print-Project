@@ -63,11 +63,13 @@ export default function DepositScreen({ onBack, onNavigate, onIdleTimeout, theme
   const idleStartedAtRef = useRef(Date.now());
   const idleReturnStartedRef = useRef(false);
   const [idleSeconds, setIdleSeconds] = useState(60);
+  const [jamModalOpen, setJamModalOpen] = useState(false);
 
   const step = session?.step ?? "idle";
   const off = useKioskControls();
   const depositOff = "deposit" in off;
-  const rfidBlocked = depositOff || "rfid" in off;
+  const jamActive = "jam" in off;
+  const rfidBlocked = (depositOff && !jamActive) || "rfid" in off;
   const rfidReason = off.deposit ?? off.rfid ?? "";
   const guestReason = off.deposit ?? "";
   const tileOff: React.CSSProperties = { opacity: 0.45, cursor: "not-allowed" };
@@ -103,7 +105,12 @@ export default function DepositScreen({ onBack, onNavigate, onIdleTimeout, theme
       ws.onmessage = (e) => {
         try {
           const msg = JSON.parse(e.data);
-          if (msg.type === "state") setSession(msg.session);
+          if (msg.type === "state") {
+            setSession(msg.session);
+            if (msg.session.errorMsg === "Bottle stuck in the chute. Please contact staff." || msg.session.errorMsg?.includes("Bottle stuck")) {
+              setJamModalOpen(true);
+            }
+          }
         } catch {}
       };
     };
@@ -289,8 +296,8 @@ export default function DepositScreen({ onBack, onNavigate, onIdleTimeout, theme
 </button>
 
 <button
-  onClick={() => { if (!depositOff) handleGuestStart(); }}
-  disabled={depositOff}
+  onClick={() => { if (jamActive) setJamModalOpen(true); else if (!depositOff) handleGuestStart(); }}
+  disabled={false}
   style={{ ...choiceTileStyle, ...(depositOff ? tileOff : {}) }}
 >
   <div style={tileIconWrap}><CreditCardOffIcon size={28} color={depositOff ? "var(--kiosk-muted-low)" : "var(--kiosk-accent-text)"} /></div>
@@ -437,6 +444,17 @@ export default function DepositScreen({ onBack, onNavigate, onIdleTimeout, theme
             <div style={{ marginBottom: 12 }}><AlertTriangleIcon size={48} color="#e74c3c" /></div>
             <div style={{ fontSize: 16, color: "var(--kiosk-danger-text)" }}>{session.errorMsg}</div>
             <button onClick={onBack} style={{ ...backBtn, marginTop: 20, maxWidth: 200 }}>Go back</button>
+          </div>
+        )}
+
+        {jamModalOpen && (
+          <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.72)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+            <div role="dialog" aria-modal="true" style={{ width: "min(520px, 100%)", background: "var(--kiosk-surface)", border: "1px solid var(--kiosk-danger-border)", borderRadius: 12, padding: 28, textAlign: "center", boxSizing: "border-box" }}>
+              <div style={{ marginBottom: 12 }}><AlertTriangleIcon size={48} color="#e74c3c" /></div>
+              <div style={{ fontSize: 22, fontWeight: 700, marginBottom: 14 }}>Bottle stuck in the chute</div>
+              <div style={{ fontSize: 18, lineHeight: 1.45, color: "var(--kiosk-text-secondary)", marginBottom: 24 }}>Deposit is unavailable until staff clears it. Please do not push anything into the machine. Ask staff for help.</div>
+              <button onClick={() => setJamModalOpen(false)} style={{ border: "none", borderRadius: 6, background: "var(--kiosk-accent)", color: "var(--kiosk-accent-text)", fontWeight: 700, minHeight: 56, minWidth: 180 }}>OK</button>
+            </div>
           </div>
         )}
 
