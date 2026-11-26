@@ -18,6 +18,8 @@ import { getPrintPricing, isValidPrintRate, savePrintPricing } from "../printPri
 import { anonymizeRfidHistory } from "../accountHistory";
 import { clearJam, getJam, notifyJamTofEmpty, requestJamClear } from "../jam";
 import { computeAdminAnalytics } from "../analytics";
+import { computeAnalyticsSummary } from "../analyticsSummary";
+import { saveSystemConfig, type SystemConfig } from "../systemConfig";
 import {
   BASE_CASE_OPERATING_COSTS_PHP,
   BASE_CASE_PET_KG_PER_SEMESTER,
@@ -337,6 +339,57 @@ router.get("/api/admin/analytics", requireAuth, (req, res) => {
     }));
   } catch (err: any) {
     res.status(500).json({ error: "Failed to fetch analytics: " + err.message });
+  }
+});
+
+router.get("/api/analytics/summary", requireAuth, (req, res) => {
+  try {
+    const currentBinFillPercent = getSensorStatus().bin?.fillPercent ?? null;
+    res.json(computeAnalyticsSummary(db, {
+      range: req.query.range,
+      series: req.query.series,
+      date: req.query.date,
+      resalePerKg: req.query.resalePerKg,
+      binFillPercent: currentBinFillPercent,
+    }));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Could not compute analytics.";
+    res.status(
+      message.startsWith("Resale price") ||
+      message.startsWith("A valid date") ||
+      message.startsWith("The selected date") ||
+      message.startsWith("A future date")
+        ? 400
+        : 500
+    ).json({ error: message });
+  }
+});
+
+router.put("/api/analytics/config", requireAuth, (req, res) => {
+  const allowedFields: Array<keyof SystemConfig> = [
+    "inkCostBwPerPage",
+    "inkCostColorPerPage",
+    "resalePricePerKg",
+    "bottleWeightG1_5L",
+    "bottleWeightGSmall",
+    "binMaxBottles1_5L",
+    "binMaxBottlesSmall",
+  ];
+  const updates: Partial<SystemConfig> = {};
+  for (const field of allowedFields) {
+    if (req.body?.[field] === undefined) continue;
+    const value = Number(req.body[field]);
+    if (!Number.isFinite(value)) return res.status(400).json({ error: `${field} must be a number.` });
+    updates[field] = value;
+  }
+  if (Object.keys(updates).length === 0) {
+    return res.status(400).json({ error: "Provide at least one analytics setting to update." });
+  }
+  try {
+    res.json({ config: saveSystemConfig(updates) });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Could not save analytics settings.";
+    res.status(400).json({ error: message });
   }
 });
 

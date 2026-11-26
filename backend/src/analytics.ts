@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { getSystemConfig, type SystemConfig } from "./systemConfig";
 
 export type AnalyticsRange = 7 | 30 | 90;
 
@@ -173,6 +174,7 @@ function queryDailyAggregates(
   db: Database.Database,
   startDate: string,
   endDate: string,
+  config: SystemConfig,
   guestFilter?: "card" | "guest"
 ): RawDailyRow[] {
   const guestClause =
@@ -188,7 +190,10 @@ function queryDailyAggregates(
       SELECT
         date(created_at, '+8 hours') AS manila_date,
         SUM(CASE WHEN type = 'deposit' THEN 1 ELSE 0 END) AS bottles_accepted,
-        SUM(CASE WHEN type = 'deposit' THEN COALESCE(weight_g, 0) ELSE 0 END) AS weight_g,
+        SUM(CASE WHEN type = 'deposit' THEN
+          CASE WHEN upper(trim(COALESCE(size, ''))) IN ('XL', '1.5L', '1.5 L')
+            THEN ? ELSE ? END
+          ELSE 0 END) AS weight_g,
         SUM(CASE WHEN type = 'deposit' THEN COALESCE(co2_saved_g, 0) ELSE 0 END) AS co2_saved_g,
         SUM(CASE WHEN type = 'reject' THEN 1 ELSE 0 END) AS rejected_bottles,
         SUM(CASE WHEN type = 'deposit' THEN COALESCE(credits, 0) ELSE 0 END) AS credits_issued,
@@ -205,7 +210,7 @@ function queryDailyAggregates(
       ORDER BY manila_date
       `
     )
-    .all(startDate, endDate) as RawDailyRow[];
+    .all(config.bottleWeightG1_5L, config.bottleWeightGSmall, startDate, endDate) as RawDailyRow[];
 }
 
 function buildZeroFilledSeries(
@@ -397,6 +402,7 @@ export function computeAdminAnalytics(
 ): AdminAnalyticsPayload {
   const range = parseAnalyticsRange(options.range);
   const now = options.now ?? new Date();
+  const config = getSystemConfig(db);
   const { year, dayStartMs } = manilaDateParts(now);
 
   const startMs = dayStartMs - (range - 1) * DAY_MS;
@@ -409,12 +415,12 @@ export function computeAdminAnalytics(
   const prevEndDate = formatDateFromManilaMs(prevEndMs);
 
   // Current range daily series (zero-filled)
-  const currentRows = queryDailyAggregates(db, startDate, endDate);
+  const currentRows = queryDailyAggregates(db, startDate, endDate, config);
   const dailySeries = buildZeroFilledSeries(currentRows, startMs, range);
   const totals = sumSeries(dailySeries);
 
   // Previous range totals for % comparison
-  const prevRows = queryDailyAggregates(db, prevStartDate, prevEndDate);
+  const prevRows = queryDailyAggregates(db, prevStartDate, prevEndDate, config);
   const prevSeries = buildZeroFilledSeries(prevRows, prevStartMs, range);
   const previousTotals = sumSeries(prevSeries);
 
@@ -430,8 +436,8 @@ export function computeAdminAnalytics(
   };
 
   // Card vs Guest split across the selected range
-  const cardRows = queryDailyAggregates(db, startDate, endDate, "card");
-  const guestRows = queryDailyAggregates(db, startDate, endDate, "guest");
+  const cardRows = queryDailyAggregates(db, startDate, endDate, config, "card");
+  const guestRows = queryDailyAggregates(db, startDate, endDate, config, "guest");
   const cardVsGuest: CardGuestSplit = {
     card: sumSeries(buildZeroFilledSeries(cardRows, startMs, range)),
     guest: sumSeries(buildZeroFilledSeries(guestRows, startMs, range)),
@@ -558,7 +564,7 @@ export function computeAdminAnalytics(
   const forecastSeries =
     forecastLookbackDays === range
       ? dailySeries
-      : buildZeroFilledSeries(queryDailyAggregates(db, forecastStartDate, endDate), forecastStartMs, forecastLookbackDays);
+      : buildZeroFilledSeries(queryDailyAggregates(db, forecastStartDate, endDate, config), forecastStartMs, forecastLookbackDays);
 
   const activeDaysRow = db
     .prepare(
@@ -611,12 +617,13 @@ export function computeAdminAnalytics(
           `
           SELECT
             COUNT(*) AS bottles,
-            SUM(COALESCE(weight_g, 0)) AS weight_g
-          FROM transactions
-          WHERE type = 'deposit'
+              SUM(CASE WHEN upper(trim(COALESCE(size, ''))) IN ('XL', '1.5L', '1.5 L')
+                THEN ? ELSE ? END) AS weight_g
+            FROM transactions
+            WHERE type = 'deposit'
           `
-        )
-        .get() as { bottles: number; weight_g: number | null };
+          )
+          .get(config.bottleWeightG1_5L, config.bottleWeightGSmall) as { bottles: number; weight_g: number | null };
       if ((allTimeDeposit.bottles ?? 0) > 0 && (allTimeDeposit.weight_g ?? 0) > 0) {
         avgGramsPerBottle = (allTimeDeposit.weight_g ?? 0) / allTimeDeposit.bottles;
       }

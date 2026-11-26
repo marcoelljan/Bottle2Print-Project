@@ -6,15 +6,16 @@ import { PDFParse } from "pdf-parse";
 import QRCode from "qrcode";
 import { db } from "../db";
 import { upload } from "../upload";
-import { createSession, getSession, updateSession, deleteSession } from "../qrSessions";
-import { getGuestCredits, deductGuestCredits, endGuestSession, addGuestCredit, isGuestActive, startGuestSession } from "../guestSession";
+import { createSession, getSession, updateSession, deleteSession, claimPrintSession, releasePrintSession } from "../qrSessions";
+import { getGuestCredits, tryDeductGuestCredits, endGuestSession, addGuestCredit, isGuestActive, startGuestSession } from "../guestSession";
 import { broadcast } from "../wsHub";
 import { isVerified } from "../pinAuth";
 import { isDisabled, disabledMessage } from "../kioskControls";
 import { sendMail } from "../alerts";
 import { printerReady } from "../sensorHealth";
 import { PDFDocument } from "pdf-lib";
-import { getPrintPricing } from "../printPricing";
+import { calculatePrintCredits, getPrintPricing } from "../printPricing";
+import { getJam } from "../jam";
 
 const router = Router();
 const PI_IP = process.env.PI_IP || "localhost";
@@ -121,7 +122,13 @@ function logSystem(action: string, details: string) {
 
 let lastPrinterMail = 0;
 const cancelledJobs = new Set<string>();   // jobs cancelled because they never finished
-const printJobs = new Map<string, { rfid: string; totalCost: number; isGuest: boolean; refunded: boolean }>();
+const printJobs = new Map<string, {
+  rfid: string;
+  totalCost: number;
+  isGuest: boolean;
+  refunded: boolean;
+  logTable: "print_logs" | "guest_print_logs";
+}>();
 
 function refundPrintJob(jobId: string, reason: string): number | null {
   const job = printJobs.get(jobId);
@@ -134,6 +141,8 @@ function refundPrintJob(jobId: string, reason: string): number | null {
   } else {
     db.prepare("UPDATE users SET credits = credits + ? WHERE rfid = ?").run(job.totalCost, job.rfid);
   }
+  db.prepare(`UPDATE ${job.logTable} SET status = 'refunded', refunded_at = datetime('now') WHERE job_id = ?`)
+    .run(jobId);
   db.prepare("INSERT INTO transactions (rfid, type, size, credits) VALUES (?, 'adjust', ?, ?)")
     .run(job.rfid, reason, job.totalCost);
   return job.totalCost;
@@ -175,8 +184,17 @@ router.get("/api/print/pricing", (_req, res) => {
 // If a queued job is still waiting after limitMs, cancel it and run onStuck
 function watchJob(jobId: string, limitMs: number, onStuck: () => void) {
   const started = Date.now();
+  let queueCheckFailureLogged = false;
   const timer = setInterval(() => {
-    exec("lpstat -o", { timeout: 5000 }, (_e, out) => {
+    exec("lpstat -o", { timeout: 5000 }, (statError, out) => {
+      if (statError) {
+        if (!queueCheckFailureLogged) {
+          logSystem("PRINT_QUEUE_CHECK_FAILED", `Could not check printer queue for job ${jobId}: ${statError.message}`);
+          queueCheckFailureLogged = true;
+        }
+        return;
+      }
+      queueCheckFailureLogged = false;
       const queued = String(out || "").split("\n").some(l => l.startsWith(jobId + " "));
       if (!queued) { clearInterval(timer); return; }          // finished or removed
       if (Date.now() - started > limitMs) {
@@ -195,7 +213,17 @@ router.get("/api/print/job/:jobId", (req, res) => {
   if (!/^[A-Za-z0-9_.-]+$/.test(jobId)) return res.status(400).json({ error: "Invalid job." });
   exec("lpstat -o", { timeout: 5000 }, (_e, out) => {
     const queued = String(out || "").split("\n").some(l => l.startsWith(jobId + " "));
-    if (!queued) return res.json({ state: cancelledJobs.has(jobId) ? "cancelled" : "done" });
+    if (!queued) {
+      const state = cancelledJobs.has(jobId) ? "cancelled" : "done";
+      if (state === "done") {
+        const job = printJobs.get(jobId);
+        if (job && !job.refunded) {
+          db.prepare(`UPDATE ${job.isGuest ? "guest_print_logs" : "print_logs"} SET status = 'completed', completed_at = datetime('now') WHERE job_id = ? AND status = 'queued'`)
+            .run(jobId);
+        }
+      }
+      return res.json({ state });
+    }
     exec("lpstat -l -p", { timeout: 5000 }, (_e2, pout) => {
       const text = String(pout || "");
       const alerts = (text.match(/Alerts:\s*(.*)/i)?.[1] ?? "").toLowerCase();
@@ -399,7 +427,8 @@ router.get("/api/print/preview/:sessionId", async (req, res) => {
 
 router.post("/api/print/qr-confirm/:sessionId", async (req, res) => {
     if (isDisabled("print")) return res.status(503).json({ error: disabledMessage("print") });
-  const session = getSession(req.params.sessionId);
+  const sessionId = req.params.sessionId;
+  const session = getSession(sessionId);
   if (!session || !session.pdfPath) {
     return res.status(404).json({ error: "No uploaded file found for this session." });
   }
@@ -410,13 +439,10 @@ router.post("/api/print/qr-confirm/:sessionId", async (req, res) => {
   if (!mayUseCard(rfid)) {
     return res.status(403).json({ error: "Card not verified. Enter your PIN at the kiosk first." });
   }
-
-  // [EDIT 1] Printer first: if it is down, say so (and keep the file) before talking about credits
-  const printer = await printerReady();
-  if (!printer.ok) {
-    logSystem("PRINTER_NOT_READY", `${printer.reason} (${rfid === "GUEST" ? "Guest" : "RFID " + rfid})`);
-    return res.status(503).json({ error: "Printer not ready: " + printer.reason + " Please ask staff. You have not been charged." });
+  if (!claimPrintSession(sessionId)) {
+    return res.status(409).json({ error: "This print session is already being processed.", errorCode: "PRINT_IN_PROGRESS" });
   }
+  const releasePrintClaim = () => releasePrintSession(sessionId);
 
   const colorMode: "bw" | "color" = req.body.colorMode === "color" ? "color" : "bw";
   const paperSize = sanitizePaperSize(req.body.paperSize);
@@ -431,6 +457,7 @@ router.post("/api/print/qr-confirm/:sessionId", async (req, res) => {
   } else {
     const parsed = parsePageRange(rangeInput, totalPages);
     if (!parsed) {
+      releasePrintClaim();
       return res.status(400).json({ error: `Invalid page range. This document has ${totalPages} page(s).` });
     }
     selectedPages = parsed;
@@ -444,35 +471,64 @@ router.post("/api/print/qr-confirm/:sessionId", async (req, res) => {
     (expectedPricing.bwCreditsPerPage !== pricing.bwCreditsPerPage ||
       expectedPricing.colorCreditsPerPage !== pricing.colorCreditsPerPage)
   ) {
+    releasePrintClaim();
     return res.status(409).json({
       error: "Print pricing changed. Please review the updated total before continuing.",
       pricing,
     });
   }
-  const creditsPerPage = colorMode === "color"
-    ? pricing.colorCreditsPerPage
-    : pricing.bwCreditsPerPage;
-  const totalCost = selectedPages.length * creditsPerPage;
+  const totalCost = calculatePrintCredits(selectedPages.length, colorMode, pricing);
 
   const isGuest = rfid === "GUEST";
+  const logTable = isGuest ? "guest_print_logs" : "print_logs";
 
   // [EDIT 2] Not enough credits: keep the file so the user can pay with bottles without re-uploading
   if (isGuest) {
     const guestCredits = getGuestCredits();
     if (guestCredits < totalCost) {
-      return res.status(403).json({ error: `Not enough credits. You have ${guestCredits}, this job needs ${totalCost}. Go back and pay with bottles.` });
+      releasePrintClaim();
+      const jamActive = getJam().active;
+      return res.status(403).json({
+        error: `Not enough credits. You have ${guestCredits}, this job needs ${totalCost}. Need ${totalCost - guestCredits} more credits.`,
+        errorCode: jamActive ? "BIN_STUCK_AND_INSUFFICIENT" : "INSUFFICIENT_CREDITS",
+        requiredCredits: totalCost,
+        availableCredits: guestCredits,
+        shortfall: totalCost - guestCredits,
+        jamActive,
+      });
     }
   } else {
     const user = db.prepare("SELECT * FROM users WHERE rfid = ?").get(rfid) as any;
     if (!user) {
       if (filePath) fs.unlink(filePath, () => {});
       fs.unlink(pdfPath, () => {});
-      deleteSession(req.params.sessionId);
+      deleteSession(sessionId);
       return res.status(404).json({ error: "User not found." });
     }
     if (user.credits < totalCost) {
-      return res.status(403).json({ error: `Not enough credits. You have ${user.credits}, this job needs ${totalCost}. Go back and pay with bottles.` });
+      releasePrintClaim();
+      return res.status(403).json({
+        error: `Not enough credits. You have ${user.credits}, this job needs ${totalCost}. Need ${totalCost - user.credits} more credits.`,
+        errorCode: "INSUFFICIENT_CREDITS",
+        requiredCredits: totalCost,
+        availableCredits: user.credits,
+        shortfall: totalCost - user.credits,
+      });
     }
+  }
+
+  let printer: Awaited<ReturnType<typeof printerReady>>;
+  try {
+    printer = await printerReady();
+  } catch (error) {
+    releasePrintClaim();
+    console.error("Could not check printer readiness:", error);
+    return res.status(503).json({ error: "Could not check printer readiness. Please ask staff." });
+  }
+  if (!printer.ok) {
+    releasePrintClaim();
+    logSystem("PRINTER_NOT_READY", `${printer.reason} (${isGuest ? "Guest" : "RFID " + rfid})`);
+    return res.status(503).json({ error: "Printer not ready: " + printer.reason + " Please ask staff. You have not been charged." });
   }
 
   const cupsColorFlag = colorMode === "color" ? "RGB" : "Gray";
@@ -480,34 +536,79 @@ router.post("/api/print/qr-confirm/:sessionId", async (req, res) => {
   const cupsOrientationFlag = getCupsOrientationFlag(layout);
   const cmd = `lp ${cupsRangeFlag} -o ColorModel=${cupsColorFlag} -o media=${cupsMediaString} ${cupsOrientationFlag} "${pdfPath}"`;
 
-  // Charge first (atomic), print second, refund if printing fails
+  // Charge once and persist the job before handing it to CUPS.
+  let logId: number;
   if (isGuest) {
-    deductGuestCredits(totalCost);
+    if (!tryDeductGuestCredits(totalCost)) {
+      releasePrintClaim();
+      const availableCredits = getGuestCredits();
+      const jamActive = getJam().active;
+      return res.status(403).json({
+        error: `Not enough credits. You have ${availableCredits}, this job needs ${totalCost}. Need ${totalCost - availableCredits} more credits.`,
+        errorCode: jamActive ? "BIN_STUCK_AND_INSUFFICIENT" : "INSUFFICIENT_CREDITS",
+        requiredCredits: totalCost,
+        availableCredits,
+        shortfall: Math.max(0, totalCost - availableCredits),
+        jamActive,
+      });
+    }
+    try {
+      const result = db.prepare(`
+        INSERT INTO guest_print_logs (session_id, rfid, status, pages, color_mode, credits_charged)
+        VALUES (?, 'GUEST', 'processing', ?, ?, ?)
+      `).run(sessionId, selectedPages.length, colorMode, totalCost);
+      logId = Number(result.lastInsertRowid);
+    } catch (error) {
+      addGuestCredit(totalCost);
+      releasePrintClaim();
+      console.error("Could not save guest print job:", error);
+      return res.status(500).json({ error: "Could not save the print job. Credits were not charged." });
+    }
   } else {
-    const charged = db.prepare("UPDATE users SET credits = credits - ? WHERE rfid = ? AND credits >= ?").run(totalCost, rfid, totalCost);
-    if (charged.changes === 0) {
-      return res.status(403).json({ error: "Not enough credits. Go back and pay with bottles." });
+    try {
+      const chargeAndLog = db.transaction(() => {
+        const charged = db.prepare("UPDATE users SET credits = credits - ? WHERE rfid = ? AND credits >= ?")
+          .run(totalCost, rfid, totalCost);
+        if (charged.changes === 0) return null;
+        const result = db.prepare(`
+          INSERT INTO print_logs (session_id, rfid, status, pages, color_mode, credits_charged)
+          VALUES (?, ?, 'processing', ?, ?, ?)
+        `).run(sessionId, rfid, selectedPages.length, colorMode, totalCost);
+        return Number(result.lastInsertRowid);
+      });
+      const result = chargeAndLog();
+      if (result === null) {
+        releasePrintClaim();
+        return res.status(403).json({ error: "Not enough credits.", errorCode: "INSUFFICIENT_CREDITS" });
+      }
+      logId = result;
+    } catch (error) {
+      releasePrintClaim();
+      console.error("Could not save print job:", error);
+      return res.status(500).json({ error: "Could not save the print job. Credits were not charged." });
     }
   }
 
   exec(cmd, (error, stdout, stderr) => {
     if (error) {   // printing failed: give the credits back and KEEP the file
       logSystem("PRINT_FAILED", `${isGuest ? "Guest" : "RFID " + rfid}: ${String(stderr || error.message).slice(0, 150)}, ${totalCost} credits refunded`);
+      db.prepare(`UPDATE ${logTable} SET status = 'failed' WHERE id = ?`).run(logId);
       if (isGuest) addGuestCredit(totalCost);
       else db.prepare("UPDATE users SET credits = credits + ? WHERE rfid = ?").run(totalCost, rfid);
+      releasePrintClaim();
       return res.status(500).json({ error: stderr || error.message });
     }
 
         // [EDIT 3] Only a successful print removes the uploaded file
     if (filePath && filePath !== pdfPath) fs.unlink(filePath, () => {});
     fs.unlink(pdfPath, () => {});
-    deleteSession(req.params.sessionId);
+    deleteSession(sessionId);
 
     if (isGuest) {
       try {
         db.prepare("INSERT INTO transactions (rfid, type, size, credits) VALUES ('GUEST', 'print', ?, ?)")
           .run(`${selectedPages.length} page(s), ${colorMode}`, totalCost);
-      } catch (e) { console.error("guest print log failed:", e); }
+      } catch (e) { console.error("guest print transaction log failed:", e); }
       if (getGuestCredits() <= 0) endGuestSession();   // keep the session if credits are left over
     } else {
       db.prepare("INSERT INTO transactions (rfid, type, size, credits) VALUES (?, 'print', ?, ?)")
@@ -515,8 +616,10 @@ router.post("/api/print/qr-confirm/:sessionId", async (req, res) => {
     }
 
     const jobId = (stdout.match(/request id is (\S+)/) ?? [])[1];
+    db.prepare(`UPDATE ${logTable} SET status = ?, job_id = ?, completed_at = ? WHERE id = ?`)
+      .run(jobId ? "queued" : "completed", jobId ?? null, jobId ? null : new Date().toISOString(), logId);
     if (jobId && /^[A-Za-z0-9_.-]+$/.test(jobId)) {
-      printJobs.set(jobId, { rfid, totalCost, isGuest, refunded: false });
+      printJobs.set(jobId, { rfid, totalCost, isGuest, refunded: false, logTable });
       watchJob(jobId, 120000 + selectedPages.length * 20000, () => {
         cancelledJobs.add(jobId);
         const refunded = refundPrintJob(jobId, "Print refunded: the job did not finish");

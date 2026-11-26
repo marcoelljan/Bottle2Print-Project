@@ -24,7 +24,7 @@ interface Props {
 type Tab = "analytics" | "logs" | "users" | "transactions" | "feedback" | "admins" | "sensors";
 type Role = "admin" | "super_admin";
 type AnalyticsRange = 7 | 30 | 90;
-type AnalyticsView = "range" | "daily" | "yearly";
+type AnalyticsView = "range" | "daily" | "yearly" | "selected";
 type ForecastMetric = "bottles" | "co2SavedG" | "confirmedPrints";
 
 interface DailyAnalyticsPoint {
@@ -121,6 +121,44 @@ interface AnalyticsData {
   binHistory: BinHistoryPoint[];
   forecast: AnalyticsForecast;
 }
+interface AnalyticsSummaryMetrics {
+  bottles: number;
+  bottles1_5L: number;
+  bottlesSmall: number;
+  kg: number;
+  co2SavedG: number;
+  printsOk: number;
+  printsRefunded: number;
+  creditsSpent: number;
+  inkCost: number;
+  pagesBw: number;
+  pagesColor: number;
+  resaleIncome: number;
+  netValue: number;
+  bottlesNeededFor1Peso: { "1.5L": number; small: number };
+  bottlesToCoverInk: { "1.5L": number; small: number };
+}
+interface AnalyticsSummary {
+  range: "today" | "date" | "7d" | "30d" | "90d";
+  series: "hourly" | "daily" | "yearly";
+  selectedDate: string | null;
+  startDate: string;
+  endDate: string;
+  resalePricePerKg: number;
+  config: {
+    inkCostBwPerPage: number;
+    inkCostColorPerPage: number;
+    bottleWeightG1_5L: number;
+    bottleWeightGSmall: number;
+    binMaxBottles1_5L: number;
+    binMaxBottlesSmall: number;
+  };
+  today: AnalyticsSummaryMetrics;
+  totals: AnalyticsSummaryMetrics;
+  buckets: Array<AnalyticsSummaryMetrics & { label: string }>;
+  binFillPercent: number | null;
+  binFillPercentByType: { "1.5L": number | null; small: number | null };
+}
 
 const ANALYTICS_RANGES: { value: AnalyticsRange; label: string }[] = [
   { value: 7, label: "7 days" },
@@ -132,12 +170,24 @@ const ANALYTICS_VIEWS: { value: AnalyticsView; label: string }[] = [
   { value: "range", label: "Daily series" },
   { value: "daily", label: "Today (hourly)" },
   { value: "yearly", label: "Yearly (monthly)" },
+  { value: "selected", label: "Selected date (hourly)" },
 ];
+
+function getManilaDateString(date = new Date()): string {
+  const parts = new Intl.DateTimeFormat("en", {
+    timeZone: "Asia/Manila",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find(item => item.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
 
 const formatResalePhp = (value: number) =>
   `₱${value.toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-const clampResalePrice = (value: number) => Math.min(10, Math.max(4, value));
+const clampResalePrice = (value: number) => Math.round(Math.min(1000, Math.max(0.01, value)) * 100) / 100;
 
 function formatDeltaBadge(delta: number | null): { text: string; color: string } {
   if (delta === null) return { text: "No prior data", color: "var(--admin-muted)" };
@@ -156,6 +206,7 @@ function AnalyticsSeriesChart({
   secondaryLabel,
   primaryLabel,
   fixedMax,
+  allowNegative = false,
 }: {
   title: string;
   subtitle?: string;
@@ -166,16 +217,20 @@ function AnalyticsSeriesChart({
   secondaryLabel?: string;
   primaryLabel?: string;
   fixedMax?: number;
+  allowNegative?: boolean;
 }) {
   const maxPrimary = Math.max(0, ...points.map(p => p.value));
   const maxSecondary = Math.max(0, ...points.map(p => p.secondaryValue ?? 0));
   const rawMax = fixedMax ?? Math.max(maxPrimary, maxSecondary);
-  const scaleMax = rawMax || 1;
+  const minValue = allowNegative ? Math.min(0, ...points.map(p => p.value)) : 0;
+  const maxValue = allowNegative ? Math.max(0, rawMax) : rawMax;
+  const scaleRange = maxValue - minValue || 1;
+  const yFor = (value: number) => 108 - ((value - minValue) / scaleRange) * 80;
   const coords = points.map((p, idx) => ({
     ...p,
     x: points.length <= 1 ? 225 : 44 + idx * (362 / (points.length - 1)),
-    y: 108 - (p.value / scaleMax) * 80,
-    y2: p.secondaryValue !== undefined ? 108 - (p.secondaryValue / scaleMax) * 80 : undefined,
+    y: yFor(p.value),
+    y2: p.secondaryValue !== undefined ? yFor(p.secondaryValue) : undefined,
   }));
   const line1 = coords.map(c => `${c.x},${c.y}`).join(" ");
   const line2 = secondaryColor && coords.every(c => c.y2 !== undefined)
@@ -199,17 +254,20 @@ function AnalyticsSeriesChart({
       </div>
       <svg viewBox="0 0 420 146" role="img" aria-label={title} style={{ display: "block", width: "100%", height: 132 }}>
         {[0, 0.5, 1].map(fraction => {
-          const y = 108 - fraction * 80;
-          const tickVal = rawMax * fraction;
+          const tickVal = minValue + scaleRange * fraction;
+          const y = yFor(tickVal);
           return (
             <g key={fraction}>
               <line x1="44" x2="406" y1={y} y2={y} stroke="var(--admin-border)" strokeDasharray="3 4" />
               <text x="36" y={y + 3} textAnchor="end" fill="var(--admin-muted)" fontSize="9">
-                {rawMax < 2 && rawMax > 0 ? tickVal.toFixed(1) : Math.round(tickVal).toLocaleString()}
+                {Math.abs(tickVal) < 2 && Math.abs(tickVal) > 0 ? tickVal.toFixed(1) : Math.round(tickVal).toLocaleString()}
               </text>
             </g>
           );
         })}
+        {allowNegative && (
+          <line x1="44" x2="406" y1={yFor(0)} y2={yFor(0)} stroke="var(--admin-muted)" strokeDasharray="2 3" />
+        )}
         {line2 && (
           <polyline points={line2} fill="none" stroke={secondaryColor} strokeWidth="2" strokeDasharray="4 4" strokeLinejoin="round" strokeLinecap="round" />
         )}
@@ -490,21 +548,18 @@ export default function AdminScreen({ theme, onToggleTheme }: Props) {
   });
   const [analyticsRange, setAnalyticsRange] = useState<AnalyticsRange>(30);
   const [analyticsView, setAnalyticsView] = useState<AnalyticsView>("range");
+  const [selectedAnalyticsDate, setSelectedAnalyticsDate] = useState(() => getManilaDateString());
   const [forecastMetric, setForecastMetric] = useState<ForecastMetric>("bottles");
-  const [showResale, setShowResale] = useState(false);
-  const [resalePriceInput, setResalePriceInput] = useState<string>(() => {
-    try {
-      const saved = window.localStorage.getItem("b2p-resale-price");
-      if (saved !== null) {
-        const parsed = Number(saved);
-        if (Number.isFinite(parsed)) return String(clampResalePrice(parsed));
-      }
-    } catch {}
-    return "7";
-  });
+  const [showResale, setShowResale] = useState(true);
+  const [resalePriceInput, setResalePriceInput] = useState("6");
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
   const [analyticsError, setAnalyticsError] = useState("");
+  const [analyticsSummary, setAnalyticsSummary] = useState<AnalyticsSummary | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
+  const [summaryError, setSummaryError] = useState("");
+  const resalePriceTouchedRef = useRef(false);
+  const [resaleConfigError, setResaleConfigError] = useState("");
   const analyticsRangeRef = useRef<AnalyticsRange>(30);
   useEffect(() => { analyticsRangeRef.current = analyticsRange; }, [analyticsRange]);
   const [refreshTick, setRefreshTick] = useState(0);
@@ -512,12 +567,12 @@ export default function AdminScreen({ theme, onToggleTheme }: Props) {
   const resaleEstimate = useMemo(() => {
     const trimmed = resalePriceInput.trim();
     const parsed = trimmed === "" ? NaN : Number(trimmed);
-    const isValid = Number.isFinite(parsed) && parsed >= 4 && parsed <= 10;
+    const isValid = Number.isFinite(parsed) && parsed >= 0.01 && parsed <= 1000;
     const error =
       trimmed === ""
-        ? "Enter a resale price between ₱4 and ₱10 per kg."
-        : !Number.isFinite(parsed) || parsed < 4 || parsed > 10
-          ? "Price must be between ₱4 and ₱10 per kg (clamped on blur)."
+        ? "Enter a resale price between ₱0.01 and ₱1,000 per kg."
+        : !Number.isFinite(parsed) || parsed < 0.01 || parsed > 1000
+          ? "Price must be between ₱0.01 and ₱1,000 per kg."
           : "";
     const activePrice = Number.isFinite(parsed) ? clampResalePrice(parsed) : null;
 
@@ -529,11 +584,8 @@ export default function AdminScreen({ theme, onToggleTheme }: Props) {
     const forecast7Kg = analytics.forecast.ready ? analytics.forecast.next7Days.plasticWeightKg : null;
     const forecast30Kg = analytics.forecast.ready ? analytics.forecast.next30Days.plasticWeightKg : null;
 
-    const baseRates: Array<{ price: number; label: string }> = [
-      { price: 4, label: "₱4/kg" },
-      { price: 7, label: "₱7/kg (mid)" },
-      { price: 10, label: "₱10/kg" },
-    ];
+    const baseRates: Array<{ price: number; label: string }> = [5, 6, 7, 8]
+      .map(price => ({ price, label: `₱${price}/kg` }));
     const hasCustomInBase = activePrice !== null && baseRates.some(r => r.price === activePrice);
     const rows = baseRates.map(r => ({
       price: r.price,
@@ -748,6 +800,75 @@ useEffect(() => {
   });
   return () => { active = false; };
 }, [analyticsRange, passwordChanged, refreshTick, token, verified]);
+
+useEffect(() => {
+  if (!verified || !passwordChanged || !token) {
+    return;
+  }
+  const parsedPrice = resalePriceInput.trim() === "" ? NaN : Number(resalePriceInput);
+  if (resalePriceTouchedRef.current && (!Number.isFinite(parsedPrice) || parsedPrice < 0.01 || parsedPrice > 1000)) {
+    setSummaryError("Enter a resale price between ₱0.01 and ₱1,000 per kg.");
+    return;
+  }
+  let active = true;
+  setSummaryLoading(true);
+  setSummaryError("");
+  const range = analyticsView === "selected"
+    ? "date"
+    : analyticsView === "daily"
+      ? "today"
+      : `${analyticsRange}d`;
+  const series = analyticsView === "daily" || analyticsView === "selected"
+    ? "hourly"
+    : analyticsView === "yearly"
+      ? "yearly"
+      : "daily";
+  const params = new URLSearchParams({ range, series });
+  if (analyticsView === "selected") params.set("date", selectedAnalyticsDate);
+  if (resalePriceTouchedRef.current) params.set("resalePerKg", String(parsedPrice));
+  fetch(`${API}/api/analytics/summary?${params}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  }).then(async response => {
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.error ?? `Analytics summary request failed (${response.status}).`);
+    }
+    return response.json() as Promise<AnalyticsSummary>;
+  }).then(data => {
+    if (!active) return;
+    setAnalyticsSummary(data);
+    if (!resalePriceTouchedRef.current) setResalePriceInput(String(data.resalePricePerKg));
+  }).catch(error => {
+    if (active) setSummaryError(error instanceof Error ? error.message : "Could not load analytics summary.");
+  }).finally(() => {
+    if (active) setSummaryLoading(false);
+  });
+  return () => { active = false; };
+}, [analyticsRange, analyticsView, passwordChanged, refreshTick, resalePriceInput, selectedAnalyticsDate, token, verified]);
+
+useEffect(() => {
+  if (!resalePriceTouchedRef.current || !verified || !passwordChanged || !token) return;
+  const price = resalePriceInput.trim() === "" ? NaN : Number(resalePriceInput);
+  if (!Number.isFinite(price) || price < 0.01 || price > 1000) return;
+  const timer = setTimeout(async () => {
+    try {
+      const response = await fetch(`${API}/api/analytics/config`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ resalePricePerKg: price }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error ?? "Could not save resale price.");
+      setResaleConfigError("");
+    } catch (error) {
+      setResaleConfigError(error instanceof Error ? error.message : "Could not save resale price.");
+    }
+  }, 500);
+  return () => clearTimeout(timer);
+}, [passwordChanged, resalePriceInput, token, verified]);
 
   useEffect(() => {
     fetch(`${API}/api/mode`, {
@@ -1816,7 +1937,9 @@ const adjustCredits = async (mode: "add" | "remove") => {
               <div>
                 <div style={{ fontSize: 18, fontWeight: 700, color: "var(--admin-text)" }}>Actual</div>
                 <div style={{ fontSize: 12, color: "var(--admin-muted)" }}>
-                  {analytics
+                  {analyticsView === "selected"
+                    ? `${selectedAnalyticsDate} · Asia/Manila`
+                    : analytics
                     ? `${analytics.startDate} to ${analytics.endDate} · Asia/Manila`
                     : `Last ${analyticsRange} days · Asia/Manila`}
                 </div>
@@ -1856,6 +1979,19 @@ const adjustCredits = async (mode: "add" | "remove") => {
                     >{option.label}</button>
                   ))}
                 </div>
+                {analyticsView === "selected" && (
+                  <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 10, fontWeight: 700, color: "var(--admin-muted)" }}>
+                    DATE (ASIA/MANILA)
+                    <input
+                      type="date"
+                      value={selectedAnalyticsDate}
+                      max={getManilaDateString()}
+                      onChange={event => setSelectedAnalyticsDate(event.target.value)}
+                      aria-label="Select analytics date"
+                      style={{ ...inputStyle, minHeight: 36, padding: "5px 8px", fontSize: 12 }}
+                    />
+                  </label>
+                )}
                 <button
                   type="button"
                   aria-pressed={showResale}
@@ -1873,9 +2009,90 @@ const adjustCredits = async (mode: "add" | "remove") => {
 
             {analyticsError && <div role="alert" style={{ color: "var(--kiosk-danger-text)", fontSize: 13 }}>{analyticsError}</div>}
             {analyticsLoading && !analytics && <div style={{ color: "var(--admin-muted)", fontSize: 13 }}>Loading analytics...</div>}
+            {summaryError && <div role="alert" style={{ color: "var(--kiosk-danger-text)", fontSize: 13 }}>{summaryError}</div>}
+            {summaryLoading && !analyticsSummary && <div style={{ color: "var(--admin-muted)", fontSize: 13 }}>Loading today and print-cost metrics...</div>}
+            {analyticsSummary && (
+              <section aria-label="Today quick metrics" style={{ display: "flex", flexDirection: "column", gap: 10, flexShrink: 0 }}>
+                <div style={{ fontSize: 18, fontWeight: 700, color: "var(--admin-text)" }}>
+                  Today <span style={{ fontSize: 12, fontWeight: 500, color: "var(--admin-muted)" }}>since 00:00 · Asia/Manila</span>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(165px, 1fr))", gap: 10 }}>
+                  {[
+                    {
+                      label: "Bottles accepted",
+                      value: analyticsSummary.today.bottles.toLocaleString(),
+                      sub: `${analyticsSummary.today.bottles1_5L} × 1.5L · ${analyticsSummary.today.bottlesSmall} × S-type`,
+                      color: "var(--kiosk-accent-text)",
+                    },
+                    {
+                      label: "Bottles recycled",
+                      value: `${analyticsSummary.today.bottles.toLocaleString()} · ${analyticsSummary.today.kg.toFixed(2)} kg`,
+                      sub: "Weight estimated from bottle-type settings",
+                      color: "var(--kiosk-success-text)",
+                    },
+                    {
+                      label: "Estimated CO₂e saved",
+                      value: `${analyticsSummary.today.co2SavedG.toLocaleString()} g`,
+                      sub: "Existing accepted-bottle CO₂e formula",
+                      color: "var(--kiosk-info-text)",
+                    },
+                    {
+                      label: "Prints today",
+                      value: `${analyticsSummary.today.printsOk} successful`,
+                      sub: `${analyticsSummary.today.printsRefunded} refunded`,
+                      color: "var(--admin-text)",
+                    },
+                    {
+                      label: "Print credits spent",
+                      value: analyticsSummary.today.creditsSpent.toLocaleString(),
+                      sub: "Refunded jobs excluded",
+                      color: "var(--admin-text)",
+                    },
+                    {
+                      label: "Ink cost today",
+                      value: formatResalePhp(analyticsSummary.today.inkCost),
+                      sub: `${analyticsSummary.today.pagesBw} B&W pages · ${analyticsSummary.today.pagesColor} color pages`,
+                      color: "var(--kiosk-danger-text)",
+                    },
+                    {
+                      label: "Net value today",
+                      value: formatResalePhp(analyticsSummary.today.netValue),
+                      sub: `${formatResalePhp(analyticsSummary.today.resaleIncome)} resale − ${formatResalePhp(analyticsSummary.today.inkCost)} ink`,
+                      color: analyticsSummary.today.netValue >= 0 ? "var(--kiosk-success-text)" : "var(--kiosk-danger-text)",
+                    },
+                  ].map(card => (
+                    <div key={card.label} style={{ ...adminStatCard, padding: "12px 14px" }}>
+                      <div style={adminStatLabel}>{card.label}</div>
+                      <div style={{ ...adminStatVal, color: card.color, fontSize: 19 }}>{card.value}</div>
+                      <div style={{ fontSize: 11, color: "var(--admin-muted)", marginTop: 3 }}>{card.sub}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ ...adminStatCard, padding: "10px 14px", display: "flex", flexWrap: "wrap", alignItems: "center", gap: 14 }}>
+                  <strong style={{ color: "var(--admin-text)", fontSize: 12 }}>Bottles needed to earn ₱1</strong>
+                  <span>1.5L: {analyticsSummary.today.bottlesNeededFor1Peso["1.5L"]}</span>
+                  <span>S-type: {analyticsSummary.today.bottlesNeededFor1Peso.small}</span>
+                  <span style={{ color: "var(--admin-muted)" }}>To cover today’s ink ({formatResalePhp(analyticsSummary.today.inkCost)}):</span>
+                  <span>1.5L: {analyticsSummary.today.bottlesToCoverInk["1.5L"]}</span>
+                  <span>S-type: {analyticsSummary.today.bottlesToCoverInk.small}</span>
+                  <span style={{ color: "var(--admin-muted)" }}>
+                    Bin fill: {analyticsSummary.binFillPercent === null ? "unavailable" : `${analyticsSummary.binFillPercent}%`} combined sensor
+                    · per-type fill unavailable from current bin telemetry
+                  </span>
+                </div>
+              </section>
+            )}
             {analytics && (() => {
               const chartSource =
-                analyticsView === "daily"
+                analyticsView === "selected" && analyticsSummary
+                  ? analyticsSummary.buckets.map(bucket => ({
+                      label: bucket.label,
+                      bottles: bucket.bottles,
+                      co2: bucket.co2SavedG,
+                      confirmedPrints: bucket.printsOk,
+                      submittedPrints: bucket.printsRefunded,
+                    }))
+                  : analyticsView === "daily"
                   ? analytics.todayHourly.map(h => ({
                       label: h.hour,
                       bottles: h.bottlesAccepted,
@@ -1899,7 +2116,9 @@ const adjustCredits = async (mode: "add" | "remove") => {
                         submittedPrints: d.submittedPrints,
                       }));
               const viewSubtitle =
-                analyticsView === "daily"
+                analyticsView === "selected"
+                  ? `${selectedAnalyticsDate} (Asia/Manila) by hour`
+                  : analyticsView === "daily"
                   ? `Today (${analytics.endDate}) by hour`
                   : analyticsView === "yearly"
                     ? `${analytics.endDate.slice(0, 4)} by month`
@@ -1907,6 +2126,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
 
               return (
                 <>
+                  {analyticsView !== "selected" && (
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(165px, 1fr))", gap: 10, flexShrink: 0 }}>
                     {[
                       {
@@ -1918,7 +2138,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                       },
                       {
                         label: "Plastic recycled",
-                        sub: `${analytics.totals.creditsIssued.toLocaleString()} credits issued · load-cell weight estimate`,
+                        sub: `${analytics.totals.creditsIssued.toLocaleString()} credits issued · bottle-type weight estimate`,
                         value: `${analytics.totals.plasticWeightKg.toFixed(2)} kg`,
                         delta: analytics.percentChange.plasticWeightKg,
                         color: "var(--kiosk-success-text)",
@@ -1967,8 +2187,70 @@ const adjustCredits = async (mode: "add" | "remove") => {
                       );
                     })}
                   </div>
+                  )}
+
+                  {analyticsSummary && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8, flexShrink: 0 }}>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: "var(--admin-text)" }}>
+                        {analyticsSummary.range === "date"
+                          ? `Totals for ${analyticsSummary.selectedDate}`
+                          : analyticsSummary.range === "today"
+                            ? "Today totals"
+                            : analyticsSummary.series === "yearly"
+                              ? "Year-to-date totals"
+                              : `Selected ${analyticsSummary.range} totals`}
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(165px, 1fr))", gap: 10 }}>
+                        {[
+                          {
+                            label: "Bottle weight",
+                            value: `${analyticsSummary.totals.kg.toFixed(2)} kg`,
+                            sub: `${analyticsSummary.totals.bottles1_5L} × 1.5L · ${analyticsSummary.totals.bottlesSmall} × S-type`,
+                            color: "var(--kiosk-success-text)",
+                          },
+                          {
+                            label: "Prints successful / refunded",
+                            value: `${analyticsSummary.totals.printsOk} / ${analyticsSummary.totals.printsRefunded}`,
+                            sub: "Completed / returned credits",
+                            color: "var(--admin-text)",
+                          },
+                          {
+                            label: "Print credits spent",
+                            value: analyticsSummary.totals.creditsSpent.toLocaleString(),
+                            sub: "Refunded jobs excluded",
+                            color: "var(--admin-text)",
+                          },
+                          {
+                            label: "Ink cost",
+                            value: formatResalePhp(analyticsSummary.totals.inkCost),
+                            sub: `${analyticsSummary.totals.pagesBw} B&W · ${analyticsSummary.totals.pagesColor} color pages`,
+                            color: "var(--kiosk-danger-text)",
+                          },
+                          {
+                            label: "Bottle resale income",
+                            value: formatResalePhp(analyticsSummary.totals.resaleIncome),
+                            sub: `${analyticsSummary.resalePricePerKg.toFixed(2)} per kg`,
+                            color: "var(--kiosk-success-text)",
+                          },
+                          {
+                            label: "Net value",
+                            value: formatResalePhp(analyticsSummary.totals.netValue),
+                            sub: `${formatResalePhp(analyticsSummary.totals.resaleIncome)} resale − ${formatResalePhp(analyticsSummary.totals.inkCost)} ink`,
+                            color: analyticsSummary.totals.netValue >= 0 ? "var(--kiosk-success-text)" : "var(--kiosk-danger-text)",
+                          },
+                        ].map(card => (
+                          <div key={card.label} style={{ ...adminStatCard, padding: "12px 14px" }}>
+                            <div style={adminStatLabel}>{card.label}</div>
+                            <div style={{ ...adminStatVal, color: card.color, fontSize: 20 }}>{card.value}</div>
+                            <div style={{ fontSize: 11, color: "var(--admin-muted)", marginTop: 3 }}>{card.sub}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   {/* Card vs Guest Split */}
+                  {analyticsView !== "selected" && (
                   <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10, flexShrink: 0 }}>
                     {([
                       ["Card users (RFID)", analytics.cardVsGuest.card, "var(--kiosk-info-text)"],
@@ -1985,9 +2267,10 @@ const adjustCredits = async (mode: "add" | "remove") => {
                       </div>
                     ))}
                   </div>
+                  )}
 
                   {/* Toggleable Resale Estimate Panel */}
-                  {showResale && (
+                  {showResale && analyticsView !== "selected" && (
                     <div style={{ ...adminStatCard, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 12, flexShrink: 0 }}>
                       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
                         <div>
@@ -2000,36 +2283,46 @@ const adjustCredits = async (mode: "add" | "remove") => {
                           Resale price (₱ per kg)
                           <input
                             type="number"
-                            min={4}
-                            max={10}
-                            step={0.5}
+                            min={0.01}
+                            max={1000}
+                            step={0.01}
                             value={resalePriceInput}
                             onChange={event => {
-                              const raw = event.target.value;
-                              setResalePriceInput(raw);
-                              const num = raw.trim() === "" ? NaN : Number(raw);
-                              if (Number.isFinite(num) && num >= 4 && num <= 10) {
-                                try {
-                                  window.localStorage.setItem("b2p-resale-price", String(num));
-                                } catch {}
-                              }
+                              resalePriceTouchedRef.current = true;
+                              setResalePriceInput(event.target.value);
                             }}
                             onBlur={() => {
                               const parsed = resalePriceInput.trim() === "" ? NaN : Number(resalePriceInput);
-                              const clamped = Number.isFinite(parsed) ? clampResalePrice(parsed) : 7;
-                              const nextStr = String(clamped);
+                              const nextStr = String(Number.isFinite(parsed) ? clampResalePrice(parsed) : 6);
                               setResalePriceInput(nextStr);
-                              try {
-                                window.localStorage.setItem("b2p-resale-price", nextStr);
-                              } catch {}
                             }}
                             style={{ ...inputStyle, width: 150, padding: "7px 10px", fontSize: 14 }}
                           />
+                          <div style={{ display: "flex", gap: 5, marginTop: 6 }}>
+                            {[5, 6, 7, 8].map(price => (
+                              <button
+                                key={price}
+                                type="button"
+                                aria-pressed={Number(resalePriceInput) === price}
+                                onClick={() => {
+                                  resalePriceTouchedRef.current = true;
+                                  setResalePriceInput(String(price));
+                                }}
+                                style={{
+                                  ...actionBtn(Number(resalePriceInput) === price ? "var(--admin-hover)" : "var(--admin-surface)", "var(--admin-text)"),
+                                  minHeight: 28,
+                                  padding: "3px 8px",
+                                  fontSize: 11,
+                                }}
+                              >₱{price}</button>
+                            ))}
+                          </div>
                           {resaleEstimate.error && (
                             <span role="alert" style={{ fontSize: 11, fontWeight: 500, color: "var(--kiosk-danger-text)" }}>
                               {resaleEstimate.error}
                             </span>
                           )}
+                          {resaleConfigError && <span role="alert" style={{ fontSize: 11, color: "var(--kiosk-danger-text)" }}>{resaleConfigError}</span>}
                         </label>
                       </div>
 
@@ -2142,15 +2435,25 @@ const adjustCredits = async (mode: "add" | "remove") => {
                       unitSuffix=" g"
                     />
                     <AnalyticsSeriesChart
-                      title="Print jobs (confirmed vs submitted)"
+                      title={analyticsView === "selected" ? "Print jobs (successful vs refunded)" : "Print jobs (confirmed vs submitted)"}
                       subtitle={viewSubtitle}
                       points={chartSource.map(p => ({ label: p.label, value: p.confirmedPrints, secondaryValue: p.submittedPrints }))}
                       color="var(--kiosk-info-text)"
-                      primaryLabel="Confirmed"
+                      primaryLabel={analyticsView === "selected" ? "Successful" : "Confirmed"}
                       secondaryColor="var(--admin-muted)"
-                      secondaryLabel="Submitted"
+                      secondaryLabel={analyticsView === "selected" ? "Refunded" : "Submitted"}
                     />
-                    {analytics.binHistory.length > 0 && (
+                    {analyticsSummary && (
+                      <AnalyticsSeriesChart
+                        title="Net value"
+                        subtitle={`${analyticsSummary.startDate} to ${analyticsSummary.endDate} · resale income minus ink cost`}
+                        points={analyticsSummary.buckets.map(bucket => ({ label: bucket.label, value: bucket.netValue }))}
+                        color={analyticsSummary.totals.netValue >= 0 ? "var(--kiosk-success-text)" : "var(--kiosk-danger-text)"}
+                        unitSuffix=" ₱"
+                        allowNegative
+                      />
+                    )}
+                    {analyticsView !== "selected" && analytics.binHistory.length > 0 && (
                       <AnalyticsSeriesChart
                         title="Bin fill % history"
                         subtitle={analytics.binFillPercent !== null ? `Latest: ${analytics.binFillPercent}%` : "Recorded readings"}
@@ -2163,6 +2466,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                   </div>
 
                   {/* Forecast Section */}
+                  {analyticsView !== "selected" && (
                   <div style={{ borderTop: "1px solid var(--admin-border-strong)", paddingTop: 14, display: "flex", flexDirection: "column", gap: 10, flexShrink: 0 }}>
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
                       <div>
@@ -2252,6 +2556,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                       </>
                     )}
                   </div>
+                  )}
                 </>
               );
             })()}

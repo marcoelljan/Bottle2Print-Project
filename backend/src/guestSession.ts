@@ -40,9 +40,13 @@ export function getGuestCredits(): number {
   return isGuestActive() ? guestSession.credits : 0;
 }
 
-export function deductGuestCredits(amount: number) {
-  guestSession.credits = Math.max(0, guestSession.credits - amount);
+export function tryDeductGuestCredits(amount: number): boolean {
+  if (!Number.isSafeInteger(amount) || amount < 0 || !isGuestActive() || guestSession.credits < amount) {
+    return false;
+  }
+  guestSession.credits -= amount;
   guestSession.lastActivity = Date.now();
+  return true;
 }
 
 // Keep the session alive while the guest is clearly still at the kiosk

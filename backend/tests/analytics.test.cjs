@@ -27,6 +27,15 @@ function createTestDb() {
       fill_percent INTEGER NOT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+    CREATE TABLE system_config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO system_config (key, value) VALUES
+      ('ink_cost_bw_per_page', '0.37'),
+      ('ink_cost_color_per_page', '0.74'),
+      ('resale_price_per_kg', '6'),
+      ('bottle_weight_g_1_5l', '49.09'),
+      ('bottle_weight_g_small', '17.33'),
+      ('bin_max_bottles_1_5l', '55'),
+      ('bin_max_bottles_small', '75');
   `);
   databases.push(db);
   return db;
@@ -69,6 +78,9 @@ test("buckets UTC timestamps into Asia/Manila dates and busiest hour", () => {
   assert.equal(day25.creditsIssued, 5);
 
   assert.equal(result.totals.bottlesAccepted, 2);
+  assert.equal(result.totals.plasticWeightKg, 0.07);
+  assert.equal(day24.plasticWeightKg, 0.02);
+  assert.equal(day25.plasticWeightKg, 0.05);
   assert.equal(result.cardVsGuest.card.bottlesAccepted, 1);
   assert.equal(result.cardVsGuest.guest.bottlesAccepted, 1);
   assert.equal(result.busiestHour.hour, 0); // tied at 1 each, earliest hour wins (00:00)
@@ -155,11 +167,11 @@ test("returns not-ready forecast under 14 days and blended forecast at 14+ days"
   assert.equal("estimatedBinFullDate" in withoutBin.forecast, false);
 });
 
-test("computes forecast plasticWeightKg from range average grams per bottle with all-time fallback", () => {
+test("computes forecast plasticWeightKg from configured bottle-type weights with all-time fallback", () => {
   const db = createTestDb();
   const now = new Date("2026-11-25T02:00:00Z");
 
-  // 14 consecutive days of deposits, 20g each, ending 2026-11-17 (so range=7 from Nov 19..25 has 0 deposits!)
+  // 14 consecutive small-type deposits ending 2026-11-17 (so range=7 from Nov 19..25 has none).
   for (let i = 0; i < 14; i++) {
     const dt = new Date(Date.UTC(2026, 10, 4 + i, 4, 0, 0)).toISOString().slice(0, 19).replace("T", " ");
     db.prepare(`
@@ -173,26 +185,26 @@ test("computes forecast plasticWeightKg from range average grams per bottle with
     VALUES ('CARD1', 'reject', NULL, 500, 0, 0, '2026-11-24 04:00:00')
   `).run();
 
-  // range=30 includes those 14 days (20g/bottle average)
+  // Range=30 includes those 14 days and uses the configured S-type reference weight.
   const range30 = computeAdminAnalytics(db, { range: 30, now });
   assert.equal(range30.forecast.ready, true);
-  assert.equal(range30.forecast.avgGramsPerBottle, 20);
+  assert.equal(range30.forecast.avgGramsPerBottle, 17.33);
   assert.equal(
     range30.forecast.next7Days.plasticWeightKg,
-    Math.round((range30.forecast.next7Days.bottles * 20 / 1000 + Number.EPSILON) * 100) / 100
+    Math.round((range30.forecast.next7Days.bottles * 17.33 / 1000 + Number.EPSILON) * 100) / 100
   );
   assert.equal(
     range30.forecast.next30Days.plasticWeightKg,
-    Math.round((range30.forecast.next30Days.bottles * 20 / 1000 + Number.EPSILON) * 100) / 100
+    Math.round((range30.forecast.next30Days.bottles * 17.33 / 1000 + Number.EPSILON) * 100) / 100
   );
 
-  // range=7 has 0 accepted deposits in Nov 19..25, so it falls back to all-time accepted average (still 20g)
+  // Range=7 has no accepted deposits in Nov 19..25, so it falls back to the same configured type weight.
   const range7 = computeAdminAnalytics(db, { range: 7, now });
   assert.equal(range7.totals.bottlesAccepted, 0);
   assert.equal(range7.forecast.ready, true);
-  assert.equal(range7.forecast.avgGramsPerBottle, 20);
+  assert.equal(range7.forecast.avgGramsPerBottle, 17.33);
   assert.equal(
     range7.forecast.next30Days.plasticWeightKg,
-    Math.round((range7.forecast.next30Days.bottles * 20 / 1000 + Number.EPSILON) * 100) / 100
+    Math.round((range7.forecast.next30Days.bottles * 17.33 / 1000 + Number.EPSILON) * 100) / 100
   );
 });

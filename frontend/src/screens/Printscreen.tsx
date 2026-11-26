@@ -118,6 +118,9 @@ export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
   const [cancelRefund, setCancelRefund] = useState(0);
   const [cancelAlreadyFinished, setCancelAlreadyFinished] = useState(false);
   const [jamModalOpen, setJamModalOpen] = useState(false);
+  const [jamShortfall, setJamShortfall] = useState<number | null>(null);
+  const [creditAlertOpen, setCreditAlertOpen] = useState(false);
+  const [creditAlertMessage, setCreditAlertMessage] = useState("");
   const cancelRequestedRef = useRef(false);
 
   // Kiosk controls: { feature: message } for every part the admin switched off
@@ -309,10 +312,16 @@ export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
         const guestUser: User = { rfid: "GUEST", name: "Guest", studentId: "", credits: status.credits ?? 0 };
         setUser(guestUser);
         if (guestUser.credits < creditCost) {
-          if (jamActive) setJamModalOpen(true);
-          else startGuestDeposit();
+          const shortfall = creditCost - guestUser.credits;
+          if (jamActive) {
+            setJamShortfall(shortfall);
+            setJamModalOpen(true);
+          } else {
+            setCreditAlertMessage(`Not enough credits. You have ${guestUser.credits}; this job needs ${creditCost}. Need ${shortfall} more credits.`);
+            setCreditAlertOpen(true);
+          }
         } else {
-          handlePrint();
+          handlePrint(true);
         }
         return;
       }
@@ -339,13 +348,14 @@ export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
   }, [requestedPreviewRange, rangeIsValid]);
   const previewIsCurrent = rangeIsValid && previewRange === (requestedPreviewRange || "all");
 
-  // Non-RFID is blocked if Print is off, or if Deposit is off and the guest's banked credits can't cover the job
+  // A jam only blocks earning more credits; it must not block an affordable print.
   const guestCanCover = guestCredits >= creditCost && creditCost > 0;
-  const guestBlocked = printOff || (depositOff && !jamActive && !guestCanCover);
+  const guestBlocked = printOff;
   const guestReason = printOff
     ? (off.print || "Temporarily unavailable.")
-    : (off.deposit || "Temporarily unavailable.") +
-      (guestCredits > 0 ? ` (You have ${guestCredits} credits, this job needs ${creditCost}.)` : "");
+    : depositOff
+      ? (off.deposit || "Temporarily unavailable.")
+      : (guestCredits > 0 ? `You have ${guestCredits} credits; this job needs ${creditCost}.` : "");
 
   const startGuestDeposit = async () => {
     autoPrintFiredRef.current = false;
@@ -393,7 +403,7 @@ export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
     }
   };
 
-  const handlePrint = async () => {
+  const handlePrint = async (isGuestPrint = user?.rfid === "GUEST") => {
        if (!sessionId || printingRef.current) return;   // ignore a second tap while one print is running
     printingRef.current = true;
     setStep("printing");
@@ -429,6 +439,19 @@ export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
           output: data.output ?? "",
         });
         await waitForPrint(data.jobId ?? null);
+      } else if (data.errorCode === "INSUFFICIENT_CREDITS" || data.errorCode === "BIN_STUCK_AND_INSUFFICIENT") {
+        await refreshGuestCredits();
+        setStep("confirm");
+        if (isGuestPrint && (data.errorCode === "BIN_STUCK_AND_INSUFFICIENT" || data.jamActive)) {
+          setJamShortfall(data.shortfall ?? Math.max(0, creditCost - guestCredits));
+          setJamModalOpen(true);
+        } else if (isGuestPrint) {
+          setCreditAlertMessage(data.error ?? "Not enough credits.");
+          setCreditAlertOpen(true);
+        } else {
+          setErrorMsg(data.error ?? "Not enough credits.");
+          setStep("error");
+        }
       } else {
         setErrorMsg(data.error ?? "Print failed.");
         setStep("error");
@@ -492,7 +515,7 @@ export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
       (async () => {
         await fetch(`${API}/api/deposit/guest-stop`, { method: "POST" });
         setUser(u => (u ? { ...u, credits: kioskSession.credits } : u));
-        handlePrint();
+        handlePrint(true);
       })();
     }
   }, [kioskSession, step, creditCost]);
@@ -764,14 +787,14 @@ export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
                   {rfidBlocked ? "RFID & PIN (unavailable)" : "RFID & PIN"}
                 </button>
                 <button
-                  onClick={() => { if (jamActive) setJamModalOpen(true); else if (!guestBlocked) handleGuestChoice(); }}
+                  onClick={() => void handleGuestChoice()}
                   style={{
                     ...primaryBtn(rangeIsValid && !guestBlocked),
                     background: rangeIsValid && !guestBlocked ? "#2ecc71" : "var(--kiosk-border)",
                     color: rangeIsValid && !guestBlocked ? "#000" : "var(--kiosk-muted-dim)",
                   }}
-                  disabled={!rangeIsValid || (guestBlocked && !jamActive) || !printPricing || pricingLoading || !!pricingError}
-                  title={guestBlocked ? guestReason : undefined}
+                  disabled={!rangeIsValid || guestBlocked || !printPricing || pricingLoading || !!pricingError}
+                  title={guestBlocked ? guestReason : depositOff && !guestCanCover ? off.deposit : undefined}
                 >
                   {guestBlocked ? "Non-RFID (unavailable)" : "Non-RFID (Bottles)"}
                 </button>
@@ -973,8 +996,36 @@ export default function PrintScreen({ onBack, theme, onToggleTheme }: Props) {
           <div role="dialog" aria-modal="true" style={{ width: "min(520px, 100%)", background: "var(--kiosk-surface)", border: "1px solid var(--kiosk-danger-border)", borderRadius: 12, padding: 28, textAlign: "center", boxSizing: "border-box" }}>
             <div style={{ marginBottom: 12, color: "var(--kiosk-danger-text)", fontSize: 48 }}>!</div>
             <div style={{ fontSize: 22, fontWeight: 700, marginBottom: 14 }}>Bottle stuck in the chute</div>
-            <div style={{ fontSize: 18, lineHeight: 1.45, color: "var(--kiosk-text-secondary)", marginBottom: 24 }}>Deposit is unavailable until staff clears it. Please do not push anything into the machine. Ask staff for help.</div>
-            <button onClick={() => setJamModalOpen(false)} style={{ border: "none", borderRadius: 6, background: "var(--kiosk-accent)", color: "var(--kiosk-accent-text)", fontWeight: 700, minHeight: 56, minWidth: 180 }}>OK</button>
+            <div style={{ fontSize: 18, lineHeight: 1.45, color: "var(--kiosk-text-secondary)", marginBottom: 24 }}>
+              Deposit is unavailable until staff clears it. Please do not push anything into the machine. Ask staff for help.
+              {jamShortfall !== null && (
+                <div style={{ marginTop: 12, color: "var(--kiosk-danger-text)", fontWeight: 700 }}>
+                  Not enough credits for this print. Need {jamShortfall} more credits.
+                </div>
+              )}
+            </div>
+            <button onClick={() => { setJamModalOpen(false); setJamShortfall(null); }} style={{ border: "none", borderRadius: 6, background: "var(--kiosk-accent)", color: "var(--kiosk-accent-text)", fontWeight: 700, minHeight: 56, minWidth: 180 }}>OK</button>
+          </div>
+        </div>
+      )}
+
+      {creditAlertOpen && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(0,0,0,0.72)", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div role="alertdialog" aria-modal="true" style={{ width: "min(520px, 100%)", background: "var(--kiosk-surface)", border: "1px solid var(--kiosk-warning-border)", borderRadius: 12, padding: 28, textAlign: "center", boxSizing: "border-box" }}>
+            <div style={{ fontSize: 22, fontWeight: 700, marginBottom: 14 }}>Not enough credits</div>
+            <div style={{ fontSize: 18, lineHeight: 1.45, color: "var(--kiosk-text-secondary)", marginBottom: 24 }}>{creditAlertMessage}</div>
+            <div style={{ display: "flex", justifyContent: "center", gap: 12, flexWrap: "wrap" }}>
+              <button onClick={() => setCreditAlertOpen(false)} style={{ ...ghostBtn, minHeight: 52, minWidth: 140 }}>OK</button>
+              {!depositOff && !jamActive && (
+                <button
+                  onClick={() => {
+                    setCreditAlertOpen(false);
+                    void startGuestDeposit();
+                  }}
+                  style={{ ...primaryBtn(true), minHeight: 52, minWidth: 180 }}
+                >Insert more bottles</button>
+              )}
+            </div>
           </div>
         </div>
       )}

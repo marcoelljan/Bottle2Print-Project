@@ -6,6 +6,7 @@ interface QrSession {
   fileName?: string;
   pageCount?: number;
   createdAt: number;
+  printing?: boolean;
 }
 
 const sessions = new Map<string, QrSession>();
@@ -31,6 +32,18 @@ export function updateSession(sessionId: string, data: Partial<QrSession>) {
   if (!s) return null;
   Object.assign(s, data);
   return s;
+}
+
+export function claimPrintSession(sessionId: string): boolean {
+  const session = sessions.get(sessionId);
+  if (!session || session.printing) return false;
+  session.printing = true;
+  return true;
+}
+
+export function releasePrintSession(sessionId: string) {
+  const session = sessions.get(sessionId);
+  if (session) session.printing = false;
 }
 
 export function deleteSession(sessionId: string) {

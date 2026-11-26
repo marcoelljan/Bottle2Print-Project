@@ -5,6 +5,8 @@ export interface PrintPricing {
   colorCreditsPerPage: number;
 }
 
+export type PrintColorMode = "bw" | "color";
+
 const MAX_CREDITS_PER_PAGE = 1_000_000;
 
 db.exec(`
@@ -34,6 +36,22 @@ export function getPrintPricing(): PrintPricing {
 
   if (!row) throw new Error("Print pricing is not configured.");
   return row;
+}
+
+export function calculatePrintCredits(
+  pages: number,
+  colorMode: PrintColorMode,
+  pricing: PrintPricing = getPrintPricing()
+): number {
+  if (!Number.isSafeInteger(pages) || pages < 1) {
+    throw new Error("Print page count must be a positive whole number.");
+  }
+  const creditsPerPage = colorMode === "color"
+    ? pricing.colorCreditsPerPage
+    : pricing.bwCreditsPerPage;
+  const total = pages * creditsPerPage;
+  if (!Number.isSafeInteger(total)) throw new Error("Print credit total is too large.");
+  return total;
 }
 
 export function savePrintPricing(pricing: PrintPricing): PrintPricing {
