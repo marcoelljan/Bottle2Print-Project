@@ -1,0 +1,198 @@
+.reward-announcement {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  z-index: 9000;
+  width: min(94vw, 580px);
+  overflow: hidden;
+  border: 1px solid rgba(255, 213, 106, 0.72);
+  border-radius: 18px;
+  background:
+    radial-gradient(ellipse at 12% -30%, rgba(255, 210, 94, 0.3), transparent 58%),
+    linear-gradient(135deg, rgba(33, 38, 40, 0.98), rgba(19, 27, 31, 0.98));
+  box-shadow:
+    0 16px 48px rgba(0, 0, 0, 0.42),
+    0 0 0 1px rgba(255, 255, 255, 0.06) inset,
+    0 0 28px rgba(255, 184, 48, 0.22);
+  color: #fff;
+  animation: reward-notice-enter 520ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+.reward-announcement::before {
+  position: absolute;
+  top: -60%;
+  bottom: -60%;
+  left: -45%;
+  width: 30%;
+  content: "";
+  pointer-events: none;
+  background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+  transform: skewX(-18deg);
+  animation: reward-notice-shine 4.8s ease-in-out 700ms infinite;
+}
+
+.reward-announcement__main {
+  position: relative;
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 14px;
+  border: 0;
+  padding: 14px 52px 16px 16px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.reward-announcement__main:focus-visible,
+.reward-announcement__close:focus-visible {
+  outline: 3px solid #ffe39a;
+  outline-offset: -4px;
+}
+
+.reward-announcement__image,
+.reward-announcement__icon {
+  width: 58px;
+  height: 58px;
+  flex: 0 0 58px;
+  border: 1px solid rgba(255, 221, 143, 0.68);
+  border-radius: 13px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+
+.reward-announcement__image {
+  object-fit: cover;
+}
+
+.reward-announcement__icon {
+  display: grid;
+  place-items: center;
+  background: linear-gradient(145deg, #ffe9ab, #e99c18);
+  color: #402600;
+  font-size: 30px;
+}
+
+.reward-announcement__copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.reward-announcement__eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 4px;
+  color: #ffd879;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.reward-announcement__title {
+  display: block;
+  overflow: hidden;
+  font-size: 15px;
+  font-weight: 800;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+}
+
+.reward-announcement__subtitle {
+  display: block;
+  margin-top: 3px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.reward-announcement__close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.18);
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 19px;
+  cursor: pointer;
+}
+
+.reward-announcement__timer {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 3px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.reward-announcement__timer::after {
+  display: block;
+  width: 100%;
+  height: 100%;
+  content: "";
+  transform-origin: left center;
+  background: linear-gradient(90deg, #ffd25e, #fff1bd);
+  animation: reward-notice-countdown 18s linear forwards;
+}
+
+.reward-announcement--message {
+  border-color: rgba(116, 209, 179, 0.68);
+  background:
+    radial-gradient(ellipse at 12% -30%, rgba(74, 190, 152, 0.24), transparent 58%),
+    linear-gradient(135deg, rgba(27, 39, 39, 0.98), rgba(19, 27, 31, 0.98));
+}
+
+.reward-announcement--message .reward-announcement__icon {
+  border-color: rgba(116, 209, 179, 0.62);
+  background: linear-gradient(145deg, #bff3dd, #269b77);
+  color: #063e30;
+}
+
+.reward-announcement--message .reward-announcement__eyebrow {
+  color: #9de8cc;
+}
+
+@keyframes reward-notice-enter {
+  from { opacity: 0; transform: translate(-50%, -22px) scale(0.97); }
+  to { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
+
+@keyframes reward-notice-shine {
+  0%, 62% { left: -45%; opacity: 0; }
+  68% { opacity: 1; }
+  82%, 100% { left: 125%; opacity: 0; }
+}
+
+@keyframes reward-notice-countdown {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reward-announcement,
+  .reward-announcement::before,
+  .reward-announcement__timer::after {
+    animation: none;
+  }
+}
+
+@media (max-width: 420px) {
+  .reward-announcement__main {
+    gap: 10px;
+    padding-left: 12px;
+  }
+  .reward-announcement__image,
+  .reward-announcement__icon {
+    width: 48px;
+    height: 48px;
+    flex-basis: 48px;
+  }
+}

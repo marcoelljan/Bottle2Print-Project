@@ -112,7 +112,7 @@ test("nets print refunds against submitted prints without subtracting admin adju
   assert.equal(result.cardVsGuest.guest.confirmedPrints, 0);
 });
 
-test("zero-fills daily series across 7, 30, and 90 day ranges", () => {
+test("zero-fills daily series across 1, 7, 14, 30, and 90 day ranges", () => {
   const db = createTestDb();
   db.prepare(`
     INSERT INTO transactions (rfid, type, size, weight_g, co2_saved_g, credits, created_at)
@@ -120,7 +120,7 @@ test("zero-fills daily series across 7, 30, and 90 day ranges", () => {
   `).run();
 
   const now = new Date("2026-11-25T02:00:00Z");
-  for (const range of [7, 30, 90]) {
+  for (const range of [1, 7, 14, 30, 90]) {
     const res = computeAdminAnalytics(db, { range, now });
     assert.equal(res.dailySeries.length, range);
     assert.equal(res.dailySeries[res.dailySeries.length - 1].date, "2026-11-25");

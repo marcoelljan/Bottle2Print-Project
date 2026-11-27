@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { getSystemConfig, type SystemConfig } from "./systemConfig";
 
-export type AnalyticsSummaryRange = "today" | "date" | "7d" | "30d" | "90d";
+export type AnalyticsSummaryRange = "today" | "date" | "1d" | "7d" | "14d" | "30d" | "90d";
 export type AnalyticsSummarySeries = "hourly" | "daily" | "yearly";
 
 interface DepositAggregate {
@@ -60,7 +60,10 @@ function dateOffset(date: string, days: number): string {
 }
 
 function parseRange(value: unknown): AnalyticsSummaryRange {
-  if (value === "today" || value === "date" || value === "7d" || value === "30d" || value === "90d") return value;
+  if (
+    value === "today" || value === "date" || value === "1d" || value === "7d" ||
+    value === "14d" || value === "30d" || value === "90d"
+  ) return value;
   return "30d";
 }
 

@@ -21,6 +21,25 @@ import { computeAdminAnalytics } from "../analytics";
 import { computeAnalyticsSummary } from "../analyticsSummary";
 import { saveSystemConfig, type SystemConfig } from "../systemConfig";
 import {
+  commitRfidCreditReservation,
+  consumeRfidCredits,
+  expireRfidCredits,
+  getReservedRewardCredits,
+  grantRfidCredits,
+  isValidIsoDate,
+  restoreRfidCredits,
+  RFID_CREDIT_VALIDITY_DAYS,
+} from "../rfidCredits";
+import {
+  createCardExpiryDate,
+  expireCardIfOverdue,
+  expireOverdueCards,
+  forceExpireCard,
+  getCardValidityDays,
+  isCardExpiryDue,
+} from "../cardExpiry";
+import { broadcast } from "../wsHub";
+import {
   BASE_CASE_OPERATING_COSTS_PHP,
   BASE_CASE_PET_KG_PER_SEMESTER,
   CO2E_KG_PER_KG_PET,
@@ -104,6 +123,17 @@ function requireAuth(req: any, res: any, next: any) {
 function requireSuperAdmin(req: any, res: any, next: any) {
   if (req.admin?.role !== "super_admin") return res.status(403).json({ error: "Super-admin access required." });
   next();
+}
+
+function publishCardStatus(rfid: string) {
+  const card = db.prepare(`
+    SELECT rfid, card_status AS status, expires_at AS expiresAt,
+           flagged_reason AS reason, flagged_at AS flaggedAt,
+           reactivated_at AS reactivatedAt, reactivation_count AS reactivationCount,
+           credits
+    FROM users WHERE rfid = ?
+  `).get(rfid);
+  if (card) broadcast({ type: "card_status_changed", card });
 }
 
 // Lockout is tracked per username (5 tries) and per device/IP (15 tries), 3 minutes each
@@ -362,6 +392,305 @@ router.get("/api/analytics/summary", requireAuth, (req, res) => {
         ? 400
         : 500
     ).json({ error: message });
+  }
+});
+
+router.get("/api/admin/rewards", requireAuth, (_req, res) => {
+  try {
+    expireRfidCredits(db);
+    const offers = db.prepare(`
+      SELECT id, title, description, terms, image, price_php AS pricePhp,
+             price_php, listed_at AS listedAt, listed_at, quantity_available AS quantityAvailable,
+             max_per_user AS maxPerUser, starts_on AS startsOn, ends_on AS endsOn,
+             status, created_by AS createdBy, created_at AS createdAt, updated_at AS updatedAt
+      FROM reward_offers ORDER BY created_at DESC, id DESC
+    `).all();
+    const requests = db.prepare(`
+      SELECT r.id, r.rfid, TRIM(u.firstname || ' ' || COALESCE(u.middlename, '') || ' ' || u.surname) AS userName,
+             r.offer_id AS offerId, r.offer_title AS offerTitle, r.credit_cost AS creditCost,
+             r.regular_price AS regularPrice, r.discounted_price AS discountedPrice,
+             r.status, r.requested_at AS requestedAt,
+             r.updated_at AS updatedAt, r.resolved_by AS resolvedBy, r.resolution_note AS resolutionNote
+      FROM reward_requests r JOIN users u ON u.rfid = r.rfid
+      ORDER BY CASE r.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 WHEN 'ready' THEN 2 ELSE 3 END,
+               r.requested_at ASC, r.id ASC
+      LIMIT 500
+    `).all();
+    const redemptions = db.prepare(`
+      SELECT r.id, r.session_id AS sessionId, r.rfid,
+             TRIM(u.firstname || ' ' || COALESCE(u.middlename, '') || ' ' || u.surname) AS userName,
+             r.reward_id AS rewardId, r.reward_title AS rewardTitle, r.price_php AS pricePhp,
+             r.credits_applied AS creditsApplied, r.discount_php AS discountPhp,
+             r.amount_due_php AS amountDuePhp, r.credits_per_peso_used AS creditsPerPesoUsed,
+             r.status, r.requested_at AS requestedAt, r.updated_at AS updatedAt,
+             r.resolved_by AS resolvedBy, r.resolution_note AS resolutionNote
+      FROM reward_redemptions r JOIN users u ON u.rfid = r.rfid
+      ORDER BY CASE r.status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 WHEN 'ready' THEN 2 ELSE 3 END,
+               r.requested_at ASC, r.id ASC
+      LIMIT 500
+    `).all();
+    const creditsPerPesoRow = db.prepare("SELECT value FROM system_config WHERE key = 'credits_per_peso'").get() as { value: string } | undefined;
+    const newBadgeDaysRow = db.prepare("SELECT value FROM system_config WHERE key = 'reward_new_badge_days'").get() as { value: string } | undefined;
+    res.json({
+      creditValidityDays: RFID_CREDIT_VALIDITY_DAYS,
+      creditsPerPeso: Number(creditsPerPesoRow?.value ?? 10),
+      newBadgeDays: Number(newBadgeDaysRow?.value ?? 7),
+      offers,
+      requests,
+      redemptions,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not load rewards.";
+    res.status(500).json({ error: message });
+  }
+});
+
+router.post("/api/admin/rewards/offers", requireAuth, (req: any, res) => {
+  const {
+    title, description = "", terms = "", image = "",
+    quantityAvailable = null, maxPerUser = 1, startsOn = null, endsOn = null,
+  } = req.body ?? {};
+  const priceInput = req.body?.pricePhp ?? req.body?.price_php;
+  const cleanTitle = typeof title === "string" ? title.trim() : "";
+  const status = req.body?.status ?? "active";
+  const quantity = quantityAvailable === "" || quantityAvailable === null ? null : Number(quantityAvailable);
+  const perUser = Number(maxPerUser);
+  const price = priceInput === "" || priceInput === null || priceInput === undefined ? NaN : Number(priceInput);
+  if (!cleanTitle || cleanTitle.length > 100) return res.status(400).json({ error: "Offer title is required and must be 100 characters or fewer." });
+  if (!Number.isSafeInteger(perUser) || perUser <= 0 || perUser > 10000) return res.status(400).json({ error: "Per-user limit must be a positive whole number." });
+  if (quantity !== null && (!Number.isSafeInteger(quantity) || quantity < 0 || quantity > 1000000)) {
+    return res.status(400).json({ error: "Quantity must be blank for unlimited or a whole number from 0 to 1,000,000." });
+  }
+  if (!Number.isFinite(price) || price < 0 || price > 1000000 || Math.abs(price * 100 - Math.round(price * 100)) > 1e-8) return res.status(400).json({ error: "Reward price must be a non-negative amount with at most two decimal places." });
+  if ((startsOn !== null && !isValidIsoDate(startsOn)) || (endsOn !== null && !isValidIsoDate(endsOn)) || (startsOn && endsOn && startsOn > endsOn)) {
+    return res.status(400).json({ error: "Offer dates must be valid and the end date cannot be before the start date." });
+  }
+  if (!["active", "paused", "ended"].includes(status)) return res.status(400).json({ error: "Invalid offer status." });
+  if (typeof description !== "string" || description.length > 2000 || typeof terms !== "string" || terms.length > 2000 || typeof image !== "string" || image.length > 2000) {
+    return res.status(400).json({ error: "Description and terms must be 2,000 characters or fewer." });
+  }
+  try {
+    const inserted = db.prepare(`
+      INSERT INTO reward_offers
+        (title, description, terms, image, price_php, listed_at, regular_price, discounted_price, credit_cost,
+         quantity_available, max_per_user, starts_on, ends_on, created_by)
+      VALUES (?, ?, ?, ?, ?, CASE WHEN ? = 'active' THEN datetime('now') ELSE NULL END, ?, ?, 1, ?, ?, ?, ?, ?)
+    `).run(cleanTitle, description.trim(), terms.trim(), image.trim(), price, status,
+      price, price, quantity, perUser, startsOn, endsOn, req.admin.username);
+    logActivity(req.admin.username, "CREATE_REWARD_OFFER", `Created reward offer #${inserted.lastInsertRowid}: ${cleanTitle}`);
+    if (status === "active") {
+      broadcast({
+        type: "reward_announcement",
+        announcement_id: crypto.randomUUID(),
+        reward_id: Number(inserted.lastInsertRowid),
+        name: cleanTitle,
+        price_php: price,
+        image: image.trim() || null,
+      });
+    }
+    res.status(201).json({ success: true, id: Number(inserted.lastInsertRowid) });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not create offer.";
+    res.status(500).json({ error: message });
+  }
+});
+
+router.patch("/api/admin/rewards/offers/:id", requireAuth, (req: any, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ error: "Invalid offer." });
+  const existing = db.prepare("SELECT * FROM reward_offers WHERE id = ?").get(id) as any;
+  if (!existing) return res.status(404).json({ error: "Offer not found." });
+  const body = req.body ?? {};
+  const title = body.title === undefined ? existing.title : String(body.title).trim();
+  const description = body.description === undefined ? existing.description : body.description;
+  const terms = body.terms === undefined ? existing.terms : body.terms;
+  const image = body.image === undefined ? existing.image ?? "" : body.image;
+  const quantityRaw = body.quantityAvailable === undefined ? existing.quantity_available : body.quantityAvailable;
+  const quantity = quantityRaw === "" || quantityRaw === null ? null : Number(quantityRaw);
+  const maxPerUser = body.maxPerUser === undefined ? existing.max_per_user : Number(body.maxPerUser);
+  const priceRaw = body.pricePhp === undefined ? body.price_php === undefined ? existing.price_php : body.price_php : body.pricePhp;
+  const price = priceRaw === "" || priceRaw === null ? NaN : Number(priceRaw);
+  const startsOn = body.startsOn === undefined ? existing.starts_on : body.startsOn || null;
+  const endsOn = body.endsOn === undefined ? existing.ends_on : body.endsOn || null;
+  const status = body.status === undefined ? existing.status : body.status;
+  if (!title || title.length > 100 || typeof description !== "string" || description.length > 2000 || typeof terms !== "string" || terms.length > 2000) {
+    return res.status(400).json({ error: "Offer title is required (100 characters max); description and terms must be 2,000 characters or fewer." });
+  }
+  if (!Number.isSafeInteger(maxPerUser) || maxPerUser <= 0 || maxPerUser > 10000) {
+    return res.status(400).json({ error: "Per-user limit must be a positive whole number." });
+  }
+  if (quantity !== null && (!Number.isSafeInteger(quantity) || quantity < 0 || quantity > 1000000)) return res.status(400).json({ error: "Invalid offer quantity." });
+  if (!Number.isFinite(price) || price < 0 || price > 1000000 || Math.abs(price * 100 - Math.round(price * 100)) > 1e-8) return res.status(400).json({ error: "Reward price must be a non-negative amount with at most two decimal places." });
+  if (typeof description !== "string" || typeof terms !== "string" || typeof image !== "string" || image.length > 2000) {
+    return res.status(400).json({ error: "Description, terms, or image is invalid." });
+  }
+  if ((startsOn !== null && !isValidIsoDate(startsOn)) || (endsOn !== null && !isValidIsoDate(endsOn)) || (startsOn && endsOn && startsOn > endsOn)) {
+    return res.status(400).json({ error: "Offer dates must be valid and the end date cannot be before the start date." });
+  }
+  if (!["active", "paused", "ended"].includes(status)) return res.status(400).json({ error: "Invalid offer status." });
+  try {
+    const activated = existing.status !== "active" && status === "active";
+    db.prepare(`
+      UPDATE reward_offers SET title = ?, description = ?, terms = ?, image = ?, price_php = ?,
+        regular_price = ?, discounted_price = ?, quantity_available = ?, max_per_user = ?,
+        starts_on = ?, ends_on = ?, status = ?,
+        listed_at = CASE WHEN ? = 1 THEN datetime('now') ELSE listed_at END,
+        updated_at = datetime('now')
+      WHERE id = ?
+    `).run(title, description.trim(), terms.trim(), image.trim(), price, price, price,
+      quantity, maxPerUser, startsOn, endsOn, status, activated ? 1 : 0, id);
+    logActivity(req.admin.username, "UPDATE_REWARD_OFFER", `Updated reward offer #${id}: ${title}`);
+    if (activated) {
+      broadcast({
+        type: "reward_announcement",
+        announcement_id: crypto.randomUUID(),
+        reward_id: id,
+        name: title,
+        price_php: price,
+        image: image.trim() || null,
+      });
+    }
+    res.json({ success: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not update offer.";
+    res.status(500).json({ error: message });
+  }
+});
+
+router.put("/api/admin/config/credits-per-peso", requireAuth, (req: any, res) => {
+  const value = Number(req.body?.creditsPerPeso ?? req.body?.credits_per_peso);
+  if (!Number.isFinite(value) || value <= 0 || value > 1000000) {
+    return res.status(400).json({ error: "Credits per peso must be a positive number no greater than 1,000,000." });
+  }
+  db.prepare(`
+    INSERT INTO system_config (key, value) VALUES ('credits_per_peso', ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(String(value));
+  logActivity(req.admin.username, "UPDATE_REWARD_PRICING", `Set credits per peso to ${value}`);
+  res.json({ creditsPerPeso: value, credits_per_peso: value });
+});
+
+router.put("/api/admin/config/reward-new-badge-days", requireAuth, (req: any, res) => {
+  const value = Number(req.body?.newBadgeDays);
+  if (!Number.isSafeInteger(value) || value < 1 || value > 365) {
+    return res.status(400).json({ error: "New badge duration must be a whole number from 1 to 365 days." });
+  }
+  db.prepare(`
+    INSERT INTO system_config (key, value) VALUES ('reward_new_badge_days', ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(String(value));
+  logActivity(req.admin.username, "UPDATE_REWARD_SETTINGS", `Set reward New badge duration to ${value} days`);
+  res.json({ newBadgeDays: value });
+});
+
+router.post("/api/admin/rewards/redemptions/:id/status", requireAuth, (req: any, res) => {
+  const id = Number(req.params.id);
+  const nextStatus = req.body?.status;
+  const note = typeof req.body?.note === "string" ? req.body.note.trim().slice(0, 500) : "";
+  if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ error: "Invalid redemption." });
+  if (!["approved", "ready", "fulfilled", "declined"].includes(nextStatus)) {
+    return res.status(400).json({ error: "Invalid redemption status." });
+  }
+  expireRfidCredits(db);
+  try {
+    const result = db.transaction(() => {
+      const redemption = db.prepare("SELECT * FROM reward_redemptions WHERE id = ?").get(id) as any;
+      if (!redemption) throw new Error("Redemption not found.");
+      const allowed: Record<string, string[]> = {
+        pending: ["approved", "declined"],
+        approved: ["ready", "fulfilled", "declined"],
+        ready: ["fulfilled", "declined"],
+      };
+      if (!allowed[redemption.status]?.includes(nextStatus)) throw new Error("This status transition is not allowed.");
+      if (nextStatus === "declined") {
+        const expiryEvent = expireCardIfOverdue(db, redemption.rfid);
+        if (expiryEvent) broadcast({ type: "card_status_changed", card: expiryEvent });
+        const card = db.prepare("SELECT card_status AS status, expires_at AS expiresAt FROM users WHERE rfid = ?")
+          .get(redemption.rfid) as { status: string; expiresAt: string | null } | undefined;
+        const cardExpired = !card || card.status === "expired" || isCardExpiryDue(card.expiresAt, new Date());
+        const restoration = redemption.credits_applied <= 0 || cardExpired
+          ? { returned: 0, expired: cardExpired ? redemption.credits_applied : 0 }
+          : restoreRfidCredits(db, redemption.rfid, "reward_redemption", redemption.session_id);
+        if (cardExpired && redemption.credits_applied > 0) {
+          db.prepare(`
+            UPDATE rfid_credit_allocations SET status = 'expired'
+            WHERE rfid = ? AND reference_type = 'reward_redemption' AND reference_id = ? AND status = 'spent'
+          `).run(redemption.rfid, redemption.session_id);
+        }
+        if (redemption.reward_id !== null) {
+          db.prepare("UPDATE reward_offers SET quantity_available = quantity_available + 1 WHERE id = ? AND quantity_available IS NOT NULL")
+            .run(redemption.reward_id);
+        }
+        if (restoration.returned > 0) {
+          db.prepare("INSERT INTO transactions (rfid, type, size, credits) VALUES (?, 'reward_return', ?, ?)")
+            .run(redemption.rfid, `Reward redemption declined (#${id})`, restoration.returned);
+        }
+        if (restoration.expired > 0) {
+          db.prepare("INSERT INTO transactions (rfid, type, size, credits) VALUES (?, 'adjust', ?, ?)")
+            .run(redemption.rfid, `Reward redemption credits expired (#${id})`, -restoration.expired);
+        }
+      }
+      db.prepare(`
+        UPDATE reward_redemptions SET status = ?, updated_at = datetime('now'),
+          resolved_by = ?, resolution_note = ?
+        WHERE id = ?
+      `).run(nextStatus, req.admin.username, note || null, id);
+      return redemption;
+    })();
+    logActivity(req.admin.username, "UPDATE_REWARD_REDEMPTION", `Redemption #${id} changed from ${result.status} to ${nextStatus}`);
+    res.json({ success: true, status: nextStatus });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not update redemption.";
+    res.status(message === "Redemption not found." ? 404 : 409).json({ error: message });
+  }
+});
+
+router.post("/api/admin/rewards/requests/:id/status", requireAuth, (req: any, res) => {
+  const id = Number(req.params.id);
+  const nextStatus = req.body?.status;
+  const note = typeof req.body?.note === "string" ? req.body.note.trim().slice(0, 500) : "";
+  if (!Number.isSafeInteger(id) || id <= 0) return res.status(400).json({ error: "Invalid reward request." });
+  if (!["approved", "ready", "fulfilled", "declined"].includes(nextStatus)) return res.status(400).json({ error: "Invalid request status." });
+  expireRfidCredits(db);
+  try {
+    const result = db.transaction(() => {
+      const request = db.prepare("SELECT * FROM reward_requests WHERE id = ?").get(id) as any;
+      if (!request) throw new Error("Reward request not found.");
+      const allowed: Record<string, string[]> = {
+        pending: ["approved", "declined"],
+        approved: ["ready", "fulfilled", "declined"],
+        ready: ["fulfilled", "declined"],
+      };
+      if (!allowed[request.status]?.includes(nextStatus)) throw new Error("This status transition is not allowed.");
+      if (nextStatus === "fulfilled") {
+        commitRfidCreditReservation(db, request.rfid, "reward_request", String(id));
+      } else if (nextStatus === "declined") {
+        const restoration = restoreRfidCredits(db, request.rfid, "reward_request", String(id));
+        if (request.offer_id !== null) {
+          db.prepare("UPDATE reward_offers SET quantity_available = quantity_available + 1 WHERE id = ? AND quantity_available IS NOT NULL")
+            .run(request.offer_id);
+        }
+        if (restoration.returned > 0) {
+          db.prepare("INSERT INTO transactions (rfid, type, size, credits) VALUES (?, 'reward_return', ?, ?)")
+            .run(request.rfid, `Reward request declined (#${id})`, restoration.returned);
+        }
+        if (restoration.expired > 0) {
+          db.prepare("INSERT INTO transactions (rfid, type, size, credits) VALUES (?, 'adjust', ?, ?)")
+            .run(request.rfid, `RFID credits expired while reward request was pending (#${id})`, -restoration.expired);
+        }
+      }
+      db.prepare(`
+        UPDATE reward_requests SET status = ?, updated_at = datetime('now'),
+          resolved_by = ?, resolution_note = ?
+        WHERE id = ?
+      `).run(nextStatus, req.admin.username, note || null, id);
+      return request;
+    })();
+    logActivity(req.admin.username, "UPDATE_REWARD_REQUEST", `Reward request #${id} changed from ${result.status} to ${nextStatus}`);
+    res.json({ success: true, status: nextStatus });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not update reward request.";
+    res.status(message === "Reward request not found." ? 404 : 409).json({ error: message });
   }
 });
 
@@ -891,6 +1220,137 @@ function listParams(req: any) {
   return { q, like, date, filter, limit: pageLimit(req) };
 }
 
+router.get("/api/admin/cards", requireAuth, (req, res) => {
+  try {
+    expireOverdueCards(db).forEach(card => publishCardStatus(card.uid));
+    const status = String(req.query.status ?? "all");
+    if (!["all", "active", "expired", "flagged"].includes(status)) {
+      return res.status(400).json({ error: "Card status must be all, active, expired, or flagged." });
+    }
+    const cards = db.prepare(`
+      SELECT rfid, TRIM(COALESCE(firstname, '') || ' ' ||
+             CASE WHEN middlename = '' THEN '' ELSE middlename || ' ' END ||
+             COALESCE(surname, '')) AS name,
+             studentId, credits, created_at, card_status AS cardStatus,
+             expires_at AS expiresAt, flagged_reason AS flaggedReason,
+             flagged_at AS flaggedAt, reactivated_at AS reactivatedAt,
+             reactivation_count AS reactivationCount
+      FROM users
+      WHERE (? = 'all' OR card_status = ?)
+      ORDER BY CASE card_status WHEN 'expired' THEN 0 WHEN 'flagged' THEN 1 ELSE 2 END,
+               expires_at, created_at DESC
+    `).all(status, status);
+    res.json({ cards, validityDays: getCardValidityDays(db) });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not load RFID cards.";
+    res.status(500).json({ error: message });
+  }
+});
+
+router.put("/api/admin/config/card-validity", requireAuth, (req: any, res) => {
+  const validityDays = Number(req.body?.validityDays);
+  if (!Number.isSafeInteger(validityDays) || validityDays < 1 || validityDays > 3650) {
+    return res.status(400).json({ error: "Card validity must be a whole number from 1 to 3,650 days." });
+  }
+  try {
+    db.prepare(`
+      INSERT INTO system_config (key, value) VALUES ('card_validity_days', ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(String(validityDays));
+    logActivity(req.admin.username, "UPDATE_CARD_VALIDITY", `Set RFID card validity to ${validityDays} days`);
+    res.json({ success: true, validityDays });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not update card validity.";
+    res.status(500).json({ error: message });
+  }
+});
+
+router.post("/api/admin/cards/:id/flag", requireAuth, (req: any, res) => {
+  const rfid = req.params.id;
+  const zeroCredits = req.body?.zeroCredits === true;
+  const card = db.prepare("SELECT credits, card_status FROM users WHERE rfid = ?").get(rfid) as
+    { credits: number; card_status: string } | undefined;
+  if (!card) return res.status(404).json({ error: "RFID card not found." });
+
+  const flaggedAt = new Date().toISOString().slice(0, 19).replace("T", " ");
+  try {
+    db.transaction(() => {
+      db.prepare(`
+        UPDATE users SET card_status = 'flagged', flagged_reason = 'admin_flagged',
+          flagged_at = ? WHERE rfid = ?
+      `).run(flaggedAt, rfid);
+      if (zeroCredits) {
+        if (card.credits > 0) {
+          db.prepare("UPDATE users SET credits = 0 WHERE rfid = ?").run(rfid);
+          db.prepare("UPDATE rfid_credit_lots SET remaining_credits = 0 WHERE rfid = ?").run(rfid);
+        }
+        db.prepare("UPDATE rfid_credit_allocations SET status = 'expired' WHERE rfid = ? AND status = 'reserved'").run(rfid);
+        if (card.credits > 0) {
+          db.prepare("INSERT INTO transactions (rfid, type, size, credits) VALUES (?, 'adjust', ?, ?)")
+            .run(rfid, `Admin flagged card and wiped ${card.credits} credits`, -card.credits);
+        }
+      }
+      db.prepare("INSERT INTO activity_logs (admin_user, action, details) VALUES (?, ?, ?)")
+        .run(req.admin.username, "FLAG_RFID_CARD", `Flagged RFID ${rfid}${zeroCredits ? `; wiped ${card.credits} credits` : "; credits preserved"}`);
+    })();
+    publishCardStatus(rfid);
+    res.json({ success: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not flag RFID card.";
+    res.status(500).json({ error: message });
+  }
+});
+
+router.post("/api/admin/cards/:id/unflag", requireAuth, (req: any, res) => {
+  const rfid = req.params.id;
+  if (req.body?.reactivationFeeCollected !== true) {
+    return res.status(400).json({ error: "Confirm that the reactivation fee was collected before reactivating this card." });
+  }
+  const card = db.prepare("SELECT card_status FROM users WHERE rfid = ?").get(rfid) as { card_status: string } | undefined;
+  if (!card) return res.status(404).json({ error: "RFID card not found." });
+  if (card.card_status === "active") return res.status(409).json({ error: "This RFID card is already active." });
+
+  const reactivatedAt = new Date();
+  const expiresAt = createCardExpiryDate(reactivatedAt, getCardValidityDays(db));
+  const nowSql = reactivatedAt.toISOString().slice(0, 19).replace("T", " ");
+  try {
+    db.transaction(() => {
+      db.prepare(`
+        UPDATE users SET card_status = 'active', expires_at = ?,
+          flagged_reason = NULL, flagged_at = NULL, reactivated_at = ?,
+          reactivation_count = reactivation_count + 1
+        WHERE rfid = ?
+      `).run(expiresAt, nowSql, rfid);
+      db.prepare("INSERT INTO activity_logs (admin_user, action, details) VALUES (?, ?, ?)")
+        .run(req.admin.username, "REACTIVATE_RFID_CARD", `Reactivated RFID ${rfid}; fee collected; expires ${expiresAt}`);
+    })();
+    publishCardStatus(rfid);
+    res.json({ success: true, expiresAt });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not reactivate RFID card.";
+    res.status(500).json({ error: message });
+  }
+});
+
+router.post("/api/admin/cards/:id/force-expire", requireAuth, (req: any, res) => {
+  const rfid = req.params.id;
+  try {
+    const event = forceExpireCard(db, rfid);
+    if (!event) {
+      const card = db.prepare("SELECT rfid, card_status FROM users WHERE rfid = ?").get(rfid) as
+        { rfid: string; card_status: string } | undefined;
+      if (!card) return res.status(404).json({ error: "RFID card not found." });
+      return res.status(409).json({ error: "This card is already expired with zero credits." });
+    }
+    logActivity(req.admin.username, "FORCE_EXPIRE_RFID_CARD", `Force-expired RFID ${rfid} for demonstration`);
+    publishCardStatus(rfid);
+    res.json({ success: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not expire RFID card.";
+    res.status(500).json({ error: message });
+  }
+});
+
 router.get("/api/admin/users", (req, res) => {
   try {
     const { q, like, filter, limit } = listParams(req);
@@ -943,6 +1403,7 @@ router.post("/api/admin/user/:rfid/credits", requireSuperAdmin, (req: any, res) 
   }
   if (!reasonInput) return res.status(400).json({ error: "A reason is required for credit adjustments." });
   const reason = reasonInput.slice(0, 80);
+  expireRfidCredits(db);
   const user = db.prepare("SELECT credits FROM users WHERE rfid = ?").get(rfid) as any;
   if (!user) return res.status(404).json({ error: "User not found." });
   if (mode === "remove" && user.credits < amount) {
@@ -953,8 +1414,14 @@ router.post("/api/admin/user/:rfid/credits", requireSuperAdmin, (req: any, res) 
   const note = `Admin ${mode === "add" ? "added" : "removed"} credits${reason ? ": " + reason : ""} (by ${req.admin.username})`;
   try {
     db.transaction(() => {
-      db.prepare("UPDATE users SET credits = credits + ? WHERE rfid = ?").run(delta, rfid);
-      db.prepare("INSERT INTO transactions (rfid, type, size, credits) VALUES (?, 'adjust', ?, ?)").run(rfid, note, delta);
+      const transaction = db.prepare("INSERT INTO transactions (rfid, type, size, credits) VALUES (?, 'adjust', ?, ?)")
+        .run(rfid, note, delta);
+      if (mode === "add") {
+        grantRfidCredits(db, rfid, amount, "admin_adjustment", `transaction:${transaction.lastInsertRowid}`);
+      } else {
+        consumeRfidCredits(db, rfid, amount, "admin_adjustment", String(transaction.lastInsertRowid));
+        db.prepare("UPDATE users SET credits = credits - ? WHERE rfid = ?").run(amount, rfid);
+      }
     })();
   } catch (err: any) {
     return res.status(500).json({ error: err.message });

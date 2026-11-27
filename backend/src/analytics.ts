@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { getSystemConfig, type SystemConfig } from "./systemConfig";
 
-export type AnalyticsRange = 7 | 30 | 90;
+export type AnalyticsRange = 1 | 7 | 14 | 30 | 90;
 
 export interface DailyAnalyticsPoint {
   date: string;
@@ -126,7 +126,7 @@ const round2 = (v: number) => Math.round((v + Number.EPSILON) * 100) / 100;
 
 export function parseAnalyticsRange(value: unknown): AnalyticsRange {
   const num = Number(value);
-  if (num === 7 || num === 30 || num === 90) return num;
+  if (num === 1 || num === 7 || num === 14 || num === 30 || num === 90) return num;
   return 30;
 }
 

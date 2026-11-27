@@ -3,6 +3,7 @@ import {
   AccountCircleIcon,
   ChatIcon,
   CheckCircleIcon,
+  CreditCardIcon,
   EditIcon,
   InfoIcon,
   KeyIcon,
@@ -16,14 +17,16 @@ import {
   XCircleIcon,
 } from "../components/KioskIcons";
 import { API } from "../config";
+import AdminRewardsPanel from "./AdminRewardsPanel";
+import AdminCardsPanel from "./AdminCardsPanel";
 
 interface Props {
   theme: "dark" | "light";
   onToggleTheme: () => void;
 }
-type Tab = "analytics" | "logs" | "users" | "transactions" | "feedback" | "admins" | "sensors";
+type Tab = "analytics" | "logs" | "users" | "cards" | "transactions" | "feedback" | "admins" | "sensors" | "rewards";
 type Role = "admin" | "super_admin";
-type AnalyticsRange = 7 | 30 | 90;
+type AnalyticsRange = 1 | 7 | 14 | 30 | 90;
 type AnalyticsView = "range" | "daily" | "yearly" | "selected";
 type ForecastMetric = "bottles" | "co2SavedG" | "confirmedPrints";
 
@@ -139,7 +142,7 @@ interface AnalyticsSummaryMetrics {
   bottlesToCoverInk: { "1.5L": number; small: number };
 }
 interface AnalyticsSummary {
-  range: "today" | "date" | "7d" | "30d" | "90d";
+  range: "today" | "date" | "1d" | "7d" | "14d" | "30d" | "90d";
   series: "hourly" | "daily" | "yearly";
   selectedDate: string | null;
   startDate: string;
@@ -161,7 +164,9 @@ interface AnalyticsSummary {
 }
 
 const ANALYTICS_RANGES: { value: AnalyticsRange; label: string }[] = [
+  { value: 1, label: "1 day" },
   { value: 7, label: "7 days" },
+  { value: 14, label: "14 days" },
   { value: 30, label: "30 days" },
   { value: 90, label: "90 days" },
 ];
@@ -472,6 +477,7 @@ const SENSOR_HINTS: Record<string, string> = {
 
 const LOG_GROUPS: Record<string, { label: string; actions: string[] }> = {
   users:    { label: "Users",               actions: ["REGISTER_USER", "EDIT_USER", "DELETE_USER", "ADJUST_CREDITS"] },
+  rewards:  { label: "Rewards",             actions: ["CREATE_REWARD_OFFER", "UPDATE_REWARD_OFFER", "UPDATE_REWARD_REQUEST", "UPDATE_REWARD_SEMESTER"] },
   admins:   { label: "Admin Accounts",      actions: ["CREATE_ADMIN", "EDIT_ADMIN", "DELETE_ADMIN"] },
   security: { label: "Password & Security", actions: ["REQUEST_PASSWORD_RESET", "RESET_PASSWORD"] },
   backup:   { label: "Backup & Restore",    actions: ["EXPORT_BACKUP", "RESTORE_BACKUP","EMAIL_BACKUP", "EMAIL_BACKUP_FAILED"] },
@@ -498,7 +504,7 @@ const formatPhTime = (dateString: string) => {
     return dateString;
   }
 };
-const ZERO_BADGES: Record<Tab, number> = { analytics: 0, logs: 0, users: 0, transactions: 0, feedback: 0, admins: 0, sensors: 0 };
+const ZERO_BADGES: Record<Tab, number> = { analytics: 0, logs: 0, users: 0, cards: 0, transactions: 0, feedback: 0, admins: 0, sensors: 0, rewards: 0 };
 
 const PAGE = 100;
 type ListKey = "logs" | "txns" | "feedback" | "users" | "admins";
@@ -1155,7 +1161,7 @@ const syncBadges = async (tk: string | null = token) => {
     const data = await r.json();
     const open = tabRef.current;
     setBadges(b => ({ ...b, ...data, [open]: 0 })); // the open tab never shows a badge
-    if (open !== "sensors" && open !== "analytics") markSeen(open, tk);
+    if (open !== "sensors" && open !== "analytics" && open !== "rewards") markSeen(open, tk);
   } catch {}
 };
 
@@ -1199,7 +1205,7 @@ const loadLists = async (tk: string | null, superAdmin: boolean) => {
 };
 
 useEffect(() => {
-  if (tab === "sensors" || tab === "analytics") return;
+  if (tab === "sensors" || tab === "analytics" || tab === "rewards") return;
   filtersRef.current = { q: debouncedQ, filter: filterValue, date: dateFilter };
   limitsRef.current = { ...FRESH_LIMITS };   // new filter: start again from 100
   setLimits({ ...limitsRef.current });
@@ -1882,6 +1888,8 @@ const adjustCredits = async (mode: "add" | "remove") => {
       <div style={tabBar}>
         {([
           ["analytics", <><RecyclingIcon size={15} /> Analytics</>],
+          ["rewards", <><StarIcon size={15} /> Offers</>],
+          ["cards", <><CreditCardIcon size={15} /> Cards</>],
           ["logs", <><PrintIcon size={15} /> Activity Logs</>],
           ["users", <><AccountCircleIcon size={15} /> Manage Users</>],
           ["transactions", <><RecyclingIcon size={15} /> Transactions</>],
@@ -1894,7 +1902,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
             setTab(t);
             setSearchQuery(""); setFilterValue("all"); setDateFilter(""); setDebouncedQ("");
             setBadges(b => (b[t] === 0 ? b : { ...b, [t]: 0 })); // clears instantly
-            if (t !== "sensors" && t !== "analytics") markSeen(t); // tells the server you've seen it
+            if (t !== "sensors" && t !== "analytics" && t !== "rewards" && t !== "cards") markSeen(t); // tells the server you've seen it
             }} style={{
             ...tabBtn,
             color: tab === t ? "var(--kiosk-accent-text)" : "var(--admin-muted)",
@@ -1931,6 +1939,9 @@ const adjustCredits = async (mode: "add" | "remove") => {
 
         {loading && tab !== "analytics" && <div style={{ color: "var(--admin-muted)", fontSize: 14 }}>Loading...</div>}
 
+        {tab === "rewards" && verified && <AdminRewardsPanel token={token ?? ""} />}
+        {tab === "cards" && verified && <AdminCardsPanel token={token ?? ""} />}
+
         {tab === "analytics" && (
           <div style={{ width: "100%", minHeight: 0, flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 16, paddingBottom: 12 }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap", flexShrink: 0 }}>
@@ -1941,27 +1952,33 @@ const adjustCredits = async (mode: "add" | "remove") => {
                     ? `${selectedAnalyticsDate} · Asia/Manila`
                     : analytics
                     ? `${analytics.startDate} to ${analytics.endDate} · Asia/Manila`
-                    : `Last ${analyticsRange} days · Asia/Manila`}
+                    : `Last ${analyticsRange} ${analyticsRange === 1 ? "day" : "days"} · Asia/Manila`}
                 </div>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                <div role="group" aria-label="Analytics range" style={{ display: "flex", border: "1px solid var(--admin-border-strong)", borderRadius: 8, overflow: "hidden" }}>
-                  {ANALYTICS_RANGES.map((option, idx) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      aria-pressed={analyticsRange === option.value}
-                      onClick={() => setAnalyticsRange(option.value)}
-                      style={{
-                        minHeight: 36, padding: "6px 12px", border: 0,
-                        borderRight: idx === ANALYTICS_RANGES.length - 1 ? 0 : "1px solid var(--admin-border-strong)",
-                        background: analyticsRange === option.value ? "var(--admin-hover)" : "var(--admin-surface)",
-                        color: analyticsRange === option.value ? "var(--kiosk-accent-text)" : "var(--admin-muted)",
-                        fontSize: 12, fontWeight: 700, cursor: "pointer",
-                      }}
-                    >{option.label}</button>
+                <select
+                  aria-label="Analytics range"
+                  value={analyticsRange}
+                  onChange={event => {
+                    const selectedRange = ANALYTICS_RANGES.find(option => option.value === Number(event.target.value));
+                    if (selectedRange) setAnalyticsRange(selectedRange.value);
+                  }}
+                  style={{
+                    ...inputStyle,
+                    width: 112,
+                    flexShrink: 0,
+                    minHeight: 36,
+                    padding: "6px 30px 6px 10px",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    color: "var(--kiosk-accent-text)",
+                    cursor: "pointer",
+                  }}
+                >
+                  {ANALYTICS_RANGES.map(option => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
                   ))}
-                </div>
+                </select>
                 <div role="group" aria-label="Chart granularity" style={{ display: "flex", border: "1px solid var(--admin-border-strong)", borderRadius: 8, overflow: "hidden" }}>
                   {ANALYTICS_VIEWS.map((option, idx) => (
                     <button
@@ -2122,7 +2139,7 @@ const adjustCredits = async (mode: "add" | "remove") => {
                   ? `Today (${analytics.endDate}) by hour`
                   : analyticsView === "yearly"
                     ? `${analytics.endDate.slice(0, 4)} by month`
-                    : `Last ${analytics.range} days (daily)`;
+                    : `Last ${analytics.range} ${analytics.range === 1 ? "day" : "days"} (daily)`;
 
               return (
                 <>

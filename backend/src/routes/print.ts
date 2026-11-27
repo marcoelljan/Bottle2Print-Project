@@ -16,6 +16,13 @@ import { printerReady } from "../sensorHealth";
 import { PDFDocument } from "pdf-lib";
 import { calculatePrintCredits, getPrintPricing } from "../printPricing";
 import { getJam } from "../jam";
+import { isRfidCardUsable } from "../cardExpiry";
+import {
+  commitRfidCreditReservation,
+  consumeRfidCredits,
+  expireRfidCredits,
+  restoreRfidCredits,
+} from "../rfidCredits";
 
 const router = Router();
 const PI_IP = process.env.PI_IP || "localhost";
@@ -111,7 +118,7 @@ function parsePageRange(range: string, totalPages: number): number[] | null {
 function mayUseCard(rfid: unknown): boolean {
   if (typeof rfid !== "string" || !rfid) return false;
   if (rfid === "GUEST") return true;   // guests spend the shared bottle-credit pool, not anyone's account
-  return isVerified(rfid);             // card users: PIN entered at the kiosk in the last 10 minutes
+  return isVerified(rfid) && isRfidCardUsable(db, rfid); // verified and active RFID card
 }
 
 function logSystem(action: string, details: string) {
@@ -128,6 +135,7 @@ const printJobs = new Map<string, {
   isGuest: boolean;
   refunded: boolean;
   logTable: "print_logs" | "guest_print_logs";
+  logId: number;
 }>();
 
 function refundPrintJob(jobId: string, reason: string): number | null {
@@ -139,7 +147,15 @@ function refundPrintJob(jobId: string, reason: string): number | null {
     if (!isGuestActive()) startGuestSession();
     addGuestCredit(job.totalCost);
   } else {
-    db.prepare("UPDATE users SET credits = credits + ? WHERE rfid = ?").run(job.totalCost, job.rfid);
+    const restored = db.transaction(() => {
+      const result = restoreRfidCredits(db, job.rfid, "print", String(job.logId));
+      db.prepare(`UPDATE ${job.logTable} SET status = 'refunded', refunded_at = datetime('now') WHERE job_id = ?`)
+        .run(jobId);
+      db.prepare("INSERT INTO transactions (rfid, type, size, credits) VALUES (?, 'adjust', ?, ?)")
+        .run(job.rfid, reason, result.returned);
+      return result.returned;
+    })();
+    return restored;
   }
   db.prepare(`UPDATE ${job.logTable} SET status = 'refunded', refunded_at = datetime('now') WHERE job_id = ?`)
     .run(jobId);
@@ -182,6 +198,16 @@ router.get("/api/print/pricing", (_req, res) => {
 });
 
 // If a queued job is still waiting after limitMs, cancel it and run onStuck
+function markPrintJobCompleted(jobId: string) {
+  const job = printJobs.get(jobId);
+  if (!job || job.refunded) return;
+  db.transaction(() => {
+    db.prepare(`UPDATE ${job.logTable} SET status = 'completed', completed_at = datetime('now') WHERE job_id = ? AND status = 'queued'`)
+      .run(jobId);
+    if (!job.isGuest) commitRfidCreditReservation(db, job.rfid, "print", String(job.logId));
+  })();
+}
+
 function watchJob(jobId: string, limitMs: number, onStuck: () => void) {
   const started = Date.now();
   let queueCheckFailureLogged = false;
@@ -196,7 +222,11 @@ function watchJob(jobId: string, limitMs: number, onStuck: () => void) {
       }
       queueCheckFailureLogged = false;
       const queued = String(out || "").split("\n").some(l => l.startsWith(jobId + " "));
-      if (!queued) { clearInterval(timer); return; }          // finished or removed
+      if (!queued) {
+        clearInterval(timer);
+        markPrintJobCompleted(jobId);
+        return;
+      }
       if (Date.now() - started > limitMs) {
         clearInterval(timer);
         exec("cancel " + jobId, () => {
@@ -216,11 +246,7 @@ router.get("/api/print/job/:jobId", (req, res) => {
     if (!queued) {
       const state = cancelledJobs.has(jobId) ? "cancelled" : "done";
       if (state === "done") {
-        const job = printJobs.get(jobId);
-        if (job && !job.refunded) {
-          db.prepare(`UPDATE ${job.isGuest ? "guest_print_logs" : "print_logs"} SET status = 'completed', completed_at = datetime('now') WHERE job_id = ? AND status = 'queued'`)
-            .run(jobId);
-        }
+        markPrintJobCompleted(jobId);
       }
       return res.json({ state });
     }
@@ -498,6 +524,7 @@ router.post("/api/print/qr-confirm/:sessionId", async (req, res) => {
       });
     }
   } else {
+    expireRfidCredits(db);
     const user = db.prepare("SELECT * FROM users WHERE rfid = ?").get(rfid) as any;
     if (!user) {
       if (filePath) fs.unlink(filePath, () => {});
@@ -574,7 +601,9 @@ router.post("/api/print/qr-confirm/:sessionId", async (req, res) => {
           INSERT INTO print_logs (session_id, rfid, status, pages, color_mode, credits_charged)
           VALUES (?, ?, 'processing', ?, ?, ?)
         `).run(sessionId, rfid, selectedPages.length, colorMode, totalCost);
-        return Number(result.lastInsertRowid);
+        const logId = Number(result.lastInsertRowid);
+        consumeRfidCredits(db, rfid, totalCost, "print", String(logId), "reserved");
+        return logId;
       });
       const result = chargeAndLog();
       if (result === null) {
@@ -594,7 +623,17 @@ router.post("/api/print/qr-confirm/:sessionId", async (req, res) => {
       logSystem("PRINT_FAILED", `${isGuest ? "Guest" : "RFID " + rfid}: ${String(stderr || error.message).slice(0, 150)}, ${totalCost} credits refunded`);
       db.prepare(`UPDATE ${logTable} SET status = 'failed' WHERE id = ?`).run(logId);
       if (isGuest) addGuestCredit(totalCost);
-      else db.prepare("UPDATE users SET credits = credits + ? WHERE rfid = ?").run(totalCost, rfid);
+      else {
+        const returned = db.transaction(() => {
+          const result = restoreRfidCredits(db, rfid, "print", String(logId));
+          db.prepare("INSERT INTO transactions (rfid, type, size, credits) VALUES (?, 'adjust', ?, ?)")
+            .run(rfid, "Print refunded: print submission failed", result.returned);
+          return result.returned;
+        })();
+        if (returned < totalCost) {
+          logSystem("PRINT_REFUND_PARTIAL", `RFID ${rfid}: ${totalCost - returned} credits had expired before failed job ${logId} was refunded`);
+        }
+      }
       releasePrintClaim();
       return res.status(500).json({ error: stderr || error.message });
     }
@@ -618,8 +657,11 @@ router.post("/api/print/qr-confirm/:sessionId", async (req, res) => {
     const jobId = (stdout.match(/request id is (\S+)/) ?? [])[1];
     db.prepare(`UPDATE ${logTable} SET status = ?, job_id = ?, completed_at = ? WHERE id = ?`)
       .run(jobId ? "queued" : "completed", jobId ?? null, jobId ? null : new Date().toISOString(), logId);
+    if (!isGuest && !jobId) {
+      commitRfidCreditReservation(db, rfid, "print", String(logId));
+    }
     if (jobId && /^[A-Za-z0-9_.-]+$/.test(jobId)) {
-      printJobs.set(jobId, { rfid, totalCost, isGuest, refunded: false, logTable });
+      printJobs.set(jobId, { rfid, totalCost, isGuest, refunded: false, logTable, logId });
       watchJob(jobId, 120000 + selectedPages.length * 20000, () => {
         cancelledJobs.add(jobId);
         const refunded = refundPrintJob(jobId, "Print refunded: the job did not finish");

@@ -6,16 +6,87 @@ import { API } from "../config";
 import { AlertTriangleIcon, CreditCardIcon, PrintIcon, RecyclingIcon } from "../components/KioskIcons";
 import KioskThemeToggle from "../components/KioskThemeToggle";
 
-interface Props { onBack: () => void; theme: "dark" | "light"; onToggleTheme: () => void; }
+interface Props {
+  onBack: () => void;
+  theme: "dark" | "light";
+  onToggleTheme: () => void;
+  rewardsFocusToken?: number;
+  onRfidSessionChange?: (active: boolean) => void;
+}
 interface User { rfid: string; name: string; studentId: string; credits: number; }
+interface RewardOffer {
+  id: number;
+  title: string;
+  description: string;
+  terms: string;
+  image: string | null;
+  pricePhp: number;
+  maxCreditsUsable: number;
+  isNew: boolean;
+  quantityAvailable: number | null;
+  maxPerUser: number;
+  startsOn: string | null;
+  endsOn: string | null;
+}
+interface RewardRedemption {
+  id: number;
+  rewardTitle: string;
+  pricePhp: number;
+  creditsApplied: number;
+  discountPhp: number;
+  amountDuePhp: number;
+  status: "pending" | "approved" | "ready" | "fulfilled" | "declined";
+  requestedAt: string;
+  resolutionNote: string | null;
+}
+interface RewardPreview {
+  pricePhp: number;
+  creditsApplied: number;
+  discountPhp: number;
+  amountDuePhp: number;
+  maxCreditsUsable: number;
+}
+interface RewardReceipt {
+  rewardTitle: string;
+  pricePhp: number;
+  creditsApplied: number;
+  discountPhp: number;
+  amountDuePhp: number;
+}
+interface UserRewards {
+  availableCredits: number;
+  creditExpirationDate: string | null;
+  creditValidityDays: number;
+  cardStatus: "active" | "expired" | "flagged";
+  cardExpiresAt: string | null;
+  creditsPerPeso: number;
+  newBadgeDays: number;
+  offers: RewardOffer[];
+  redemptions: RewardRedemption[];
+}
 
 type TransferStep = "search" | "confirm" | "pin";
 const CO2E_KG_PER_KG_PET = 1.146;
 
-export default function CheckBalanceScreen({ onBack, theme, onToggleTheme }: Props) {
+export default function CheckBalanceScreen({
+  onBack,
+  theme,
+  onToggleTheme,
+  rewardsFocusToken = 0,
+  onRfidSessionChange,
+}: Props) {
   const [user, setUser] = useState<User | null>(null);
   const [history, setHistory] = useState<any[]>([]);
   const [allTxns, setAllTxns] = useState<any[]>([]);
+  const [rewards, setRewards] = useState<UserRewards | null>(null);
+  const [rewardsLoading, setRewardsLoading] = useState(false);
+  const [rewardsBusyId, setRewardsBusyId] = useState<number | null>(null);
+  const [rewardsError, setRewardsError] = useState("");
+  const [creditsToApply, setCreditsToApply] = useState<Record<number, number>>({});
+  const [rewardPreviews, setRewardPreviews] = useState<Record<number, RewardPreview>>({});
+  const [receipt, setReceipt] = useState<RewardReceipt | null>(null);
+  const redemptionSessionIds = useRef(new Map<number, string>());
+  const rewardsSectionRef = useRef<HTMLElement | null>(null);
 
   // Transfer modal state
   const [showTransfer, setShowTransfer] = useState(false);
@@ -50,12 +121,119 @@ export default function CheckBalanceScreen({ onBack, theme, onToggleTheme }: Pro
 
   const handleIdentified = async (u: User) => {
     setUser(u);
+    onRfidSessionChange?.(true);
     try {
       const res = await fetch(`${API}/api/user/${u.rfid}/transactions`);
       const data = await res.json();
       setAllTxns(data);
       setHistory(data.slice(0, 5));
     } catch {}
+  };
+
+  useEffect(() => {
+    if (!user) {
+      setRewards(null);
+      return;
+    }
+    let active = true;
+    setRewardsLoading(true);
+    setRewardsError("");
+    fetch(`${API}/api/rewards?rfid=${encodeURIComponent(user.rfid)}`)
+      .then(async response => {
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error ?? `Could not load rewards (${response.status}).`);
+        return body as UserRewards;
+      })
+      .then(data => {
+        if (active) {
+          setRewards(data);
+          setUser(current => current ? { ...current, credits: data.availableCredits } : current);
+        }
+      })
+      .catch(error => {
+        if (active) setRewardsError(error instanceof Error ? error.message : "Could not load rewards.");
+      })
+      .finally(() => { if (active) setRewardsLoading(false); });
+    return () => { active = false; };
+  }, [user?.rfid, user?.credits]);
+
+  useEffect(() => {
+    if (!user || !rewards) return;
+    let active = true;
+    const timers = rewards.offers.map(offer => {
+      const applied = creditsToApply[offer.id] ?? 0;
+      return window.setTimeout(async () => {
+        try {
+          const response = await fetch(`${API}/api/rewards/${offer.id}/preview?rfid=${encodeURIComponent(user.rfid)}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ credits_applied: applied }),
+          });
+          const body = await response.json();
+          if (!response.ok) throw new Error(body.error ?? "Could not calculate reward discount.");
+          if (active) setRewardPreviews(current => ({ ...current, [offer.id]: body as RewardPreview }));
+        } catch (error) {
+          if (active) setRewardsError(error instanceof Error ? error.message : "Could not calculate reward discount.");
+        }
+      }, 180);
+    });
+    return () => {
+      active = false;
+      timers.forEach(window.clearTimeout);
+    };
+  }, [user?.rfid, rewards?.creditsPerPeso, rewards?.offers, rewards?.availableCredits, creditsToApply]);
+
+  useEffect(() => {
+    if (!user || rewardsFocusToken === 0) return;
+    rewardsSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [user?.rfid, rewardsFocusToken]);
+
+  useEffect(() => {
+    if (!receipt) return;
+    const timeout = window.setTimeout(() => {
+      setReceipt(null);
+      onBack();
+    }, 10_000);
+    return () => window.clearTimeout(timeout);
+  }, [receipt, onBack]);
+
+  useEffect(() => () => onRfidSessionChange?.(false), [onRfidSessionChange]);
+
+  const submitReward = async (offer: RewardOffer) => {
+    if (!user) return;
+    setRewardsBusyId(offer.id);
+    setRewardsError("");
+    try {
+      let sessionId = redemptionSessionIds.current.get(offer.id);
+      if (!sessionId) {
+        sessionId = typeof window.crypto?.randomUUID === "function"
+          ? window.crypto.randomUUID()
+          : `reward-${Array.from(window.crypto.getRandomValues(new Uint32Array(4)), value => value.toString(16)).join("")}`;
+        redemptionSessionIds.current.set(offer.id, sessionId);
+      }
+      const response = await fetch(`${API}/api/rewards/${offer.id}/redeem?rfid=${encodeURIComponent(user.rfid)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId, credits_applied: creditsToApply[offer.id] ?? 0 }),
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error ?? "Could not redeem reward.");
+      redemptionSessionIds.current.delete(offer.id);
+      setUser(current => current ? { ...current, credits: body.availableCredits } : current);
+      setReceipt({
+        rewardTitle: body.receipt.rewardTitle,
+        pricePhp: body.receipt.pricePhp,
+        creditsApplied: body.receipt.creditsApplied,
+        discountPhp: body.receipt.discountPhp,
+        amountDuePhp: body.receipt.amountDuePhp,
+      });
+      const fresh = await fetch(`${API}/api/rewards?rfid=${encodeURIComponent(user.rfid)}`).then(response => response.json());
+      setRewards(fresh as UserRewards);
+    } catch (error) {
+      setRewardsError(error instanceof Error ? error.message : "Could not submit reward request.");
+    } finally {
+      setRewardsBusyId(null);
+    }
   };
 
   // Search users as you type name/ID (Fixed with correct "?" parameter separator)
@@ -261,6 +439,129 @@ export default function CheckBalanceScreen({ onBack, theme, onToggleTheme }: Pro
                 </button>
               </div>
 
+              <section ref={rewardsSectionRef} style={{ background: "var(--kiosk-surface)", border: "1px solid var(--kiosk-border)", borderRadius: 12, padding: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+                  <div>
+                    <div style={{ fontSize: 17, fontWeight: 800, color: "var(--kiosk-text)" }}>Available Offers</div>
+                    <div style={{ fontSize: 12, color: "var(--kiosk-muted-low)", marginTop: 4 }}>
+                      Choose how many credits to apply. {rewards?.creditsPerPeso ?? 10} credits = ₱1 discount. Payment and pickup are confirmed by the organization.
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right", color: "var(--kiosk-muted-low)", fontSize: 12 }}>
+                    <div>Available: <strong style={{ color: "var(--kiosk-accent-text)" }}>{rewards?.availableCredits ?? user.credits}</strong> credits</div>
+                    {rewards?.cardStatus === "active" ? (
+                      <div style={{ marginTop: 4 }}>Expires on <strong>{rewards.cardExpiresAt ? new Date(`${rewards.cardExpiresAt.replace(" ", "T")}Z`).toLocaleDateString() : "not set"}</strong></div>
+                    ) : rewards?.cardStatus ? (
+                      <div style={{ marginTop: 4, color: rewards.cardStatus === "expired" ? "var(--kiosk-danger-text)" : "#f0a500", fontWeight: 800, textTransform: "capitalize" }}>
+                        {rewards.cardStatus} · 0 credits
+                      {rewards.cardExpiresAt && <div style={{ fontWeight: 500 }}>Expiry date: {new Date(`${rewards.cardExpiresAt.replace(" ", "T")}Z`).toLocaleDateString()}</div>}
+                    </div>
+                    ) : null}
+                  </div>
+                </div>
+                <div style={{ fontSize: 11, color: "var(--kiosk-muted-dim)", marginTop: 8, lineHeight: 1.5 }}>
+                  Redemptions are reviewed by the organization. Credits are deducted when you submit and eligible credits are returned if a request is declined.
+                  Credit expiry is not RFID card expiry.
+                  New credits expire {rewards?.creditValidityDays ?? 180} days after they are earned; your earliest current expiry is {rewards?.creditExpirationDate ?? "not available"}.
+                </div>
+                {rewardsLoading && <div style={{ color: "var(--kiosk-muted-low)", fontSize: 12, marginTop: 10 }}>Loading offers...</div>}
+                {rewardsError && <div role="alert" style={{ color: "var(--kiosk-danger-text)", fontSize: 12, marginTop: 10 }}>{rewardsError}</div>}
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 8, marginTop: 12 }}>
+                  {rewards?.offers.length ? rewards.offers.map(offer => (
+                    <article key={offer.id} style={{ border: "1px solid var(--kiosk-border)", borderRadius: 9, padding: 11 }}>
+                      {offer.image && <img src={offer.image} alt={offer.title} style={{ width: "100%", maxHeight: 140, objectFit: "cover", borderRadius: 7, marginBottom: 8 }} />}
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                        <div style={{ fontWeight: 700, color: "var(--kiosk-text)" }}>{offer.title}</div>
+                        {offer.isNew && <span style={{ height: "fit-content", borderRadius: 10, padding: "2px 7px", background: "#f0a500", color: "#171717", fontSize: 10, fontWeight: 800 }}>NEW</span>}
+                      </div>
+                      <div style={{ fontSize: 12, color: "var(--kiosk-muted-low)", marginTop: 4 }}>{offer.description || "No description provided."}</div>
+                      <div style={{ fontSize: 12, color: "var(--kiosk-accent-text)", fontWeight: 700, marginTop: 8 }}>
+                        Price ₱{offer.pricePhp.toFixed(2)} · Your balance: {rewards?.availableCredits ?? user.credits} credits
+                      </div>
+                      <div style={{ fontSize: 11, color: "var(--kiosk-muted-dim)", marginTop: 3 }}>
+                        {offer.quantityAvailable === null ? "Availability: unlimited" : `${offer.quantityAvailable} available`}
+                        {offer.endsOn ? ` · until ${offer.endsOn}` : ""}
+                      </div>
+                      {offer.terms && <div style={{ fontSize: 11, color: "var(--kiosk-muted-low)", marginTop: 6 }}>{offer.terms}</div>}
+                      <label style={{ display: "block", color: "var(--kiosk-muted-low)", fontSize: 11, marginTop: 10 }}>
+                        Credits to apply (max {offer.maxCreditsUsable})
+                        <input
+                          type="range"
+                          min={0}
+                          max={offer.maxCreditsUsable}
+                          step={1}
+                          value={Math.min(creditsToApply[offer.id] ?? 0, offer.maxCreditsUsable)}
+                          onChange={event => setCreditsToApply(current => ({ ...current, [offer.id]: Number(event.target.value) }))}
+                          style={{ display: "block", width: "100%", marginTop: 5 }}
+                        />
+                      </label>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6 }}>
+                        <input
+                          aria-label={`Credits to apply for ${offer.title}`}
+                          type="number"
+                          min={0}
+                          max={offer.maxCreditsUsable}
+                          step={1}
+                          value={Math.min(creditsToApply[offer.id] ?? 0, offer.maxCreditsUsable)}
+                          onChange={event => {
+                            const value = Number(event.target.value);
+                            setCreditsToApply(current => ({
+                              ...current,
+                              [offer.id]: Number.isSafeInteger(value) ? Math.min(offer.maxCreditsUsable, Math.max(0, value)) : 0,
+                            }));
+                          }}
+                          style={{ width: 90, padding: "6px 8px", borderRadius: 6, border: "1px solid var(--kiosk-border-strong)", background: "var(--kiosk-surface)", color: "var(--kiosk-text)" }}
+                        />
+                        <button type="button" onClick={() => setCreditsToApply(current => ({ ...current, [offer.id]: offer.maxCreditsUsable }))} style={smallButton}>Use max</button>
+                        <button type="button" onClick={() => setCreditsToApply(current => ({ ...current, [offer.id]: 0 }))} style={smallButton}>Use none</button>
+                      </div>
+                      <div style={{ marginTop: 8, padding: 8, borderRadius: 7, background: "var(--kiosk-surface-hover)", color: "var(--kiosk-muted-low)", fontSize: 11, lineHeight: 1.6 }}>
+                        <div>Price: ₱{(rewardPreviews[offer.id]?.pricePhp ?? offer.pricePhp).toFixed(2)}</div>
+                        <div>Credits applied: {creditsToApply[offer.id] ?? 0} (−₱{(rewardPreviews[offer.id]?.discountPhp ?? 0).toFixed(2)})</div>
+                        <div style={{ color: "var(--kiosk-accent-text)", fontWeight: 800 }}>
+                          Amount to pay: ₱{(rewardPreviews[offer.id]?.amountDuePhp ?? offer.pricePhp).toFixed(2)}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={rewardsBusyId !== null || !rewardPreviews[offer.id] || rewardPreviews[offer.id].creditsApplied !== (creditsToApply[offer.id] ?? 0)}
+                        onClick={() => void submitReward(offer)}
+                        style={{
+                          width: "100%", marginTop: 9, padding: "8px 10px", borderRadius: 7,
+                          border: "1px solid var(--kiosk-border-strong)", background: "var(--kiosk-surface-hover)",
+                          color: "var(--kiosk-accent-text)", fontWeight: 700, cursor: "pointer",
+                          opacity: rewardsBusyId !== null ? 0.55 : 1,
+                        }}
+                      >
+                        {rewardsBusyId === offer.id ? "Submitting..." : rewardPreviews[offer.id]?.amountDuePhp === 0
+                          ? "Redeem with credits"
+                          : `Confirm - pay ₱${(rewardPreviews[offer.id]?.amountDuePhp ?? offer.pricePhp).toFixed(2)}`}
+                      </button>
+                    </article>
+                  )) : !rewardsLoading && <div style={{ gridColumn: "1 / -1", color: "var(--kiosk-muted-low)", fontSize: 12 }}>There are no active offers right now.</div>}
+                </div>
+
+                {!!rewards?.redemptions.length && (
+                  <div style={{ marginTop: 14 }}>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: "var(--kiosk-muted-low)", marginBottom: 6 }}>YOUR REDEMPTIONS</div>
+                    <div style={{ display: "grid", gap: 6 }}>
+                      {rewards.redemptions.map(redemption => (
+                        <div key={redemption.id} style={{ borderTop: "1px solid var(--kiosk-border)", paddingTop: 7, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          <div>
+                            <strong style={{ fontSize: 12, color: "var(--kiosk-text)" }}>{redemption.rewardTitle}</strong>
+                            <span style={{ fontSize: 11, color: "var(--kiosk-muted-low)" }}>
+                              {" · "}{redemption.status} · ₱{redemption.pricePhp.toFixed(2)} · {redemption.creditsApplied} credits · −₱{redemption.discountPhp.toFixed(2)} · Pay ₱{redemption.amountDuePhp.toFixed(2)}
+                            </span>
+                            {redemption.resolutionNote && <div style={{ fontSize: 11, color: "var(--kiosk-muted-dim)" }}>{redemption.resolutionNote}</div>}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </section>
+
               {/* credit & impact info */}
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10 }}>
                 <div style={statCard}>
@@ -303,6 +604,8 @@ export default function CheckBalanceScreen({ onBack, theme, onToggleTheme }: Pro
                           {h.type === "transfer_out" && <>Transferred credits</>}
                           {h.type === "transfer_in" && <>Received credits</>}
                           {h.type === "adjust" && <>Admin adjustment</>}
+                          {h.type === "reward_request" && <>Reward request · credits reserved</>}
+                          {h.type === "reward_return" && <>Reward credits returned</>}
                         </div>
                         <div style={{ fontSize: 11, color: "var(--kiosk-muted-dim)", marginTop: 2 }}>{new Date(h.created_at).toLocaleString()}</div>
                       </div>
@@ -501,13 +804,31 @@ export default function CheckBalanceScreen({ onBack, theme, onToggleTheme }: Pro
           onCancel={() => setTransferStep("confirm")}
         />
       )}
+      {receipt && (
+        <div role="dialog" aria-modal="true" aria-labelledby="reward-receipt-title" style={{ ...overlay, zIndex: 11000 }}>
+          <div style={{ ...modal, maxWidth: 430 }}>
+            <div style={{ fontSize: 24, marginBottom: 8 }}>Redemption submitted</div>
+            <h2 id="reward-receipt-title" style={{ margin: "0 0 16px", color: "var(--kiosk-text)" }}>{receipt.rewardTitle}</h2>
+            <div style={{ display: "grid", gap: 8, textAlign: "left", color: "var(--kiosk-muted)" }}>
+              <div>Price <strong style={{ float: "right", color: "var(--kiosk-text)" }}>₱{receipt.pricePhp.toFixed(2)}</strong></div>
+              <div>Credits applied <strong style={{ float: "right", color: "var(--kiosk-text)" }}>{receipt.creditsApplied}</strong></div>
+              <div>Discount <strong style={{ float: "right", color: "var(--kiosk-success-text)" }}>−₱{receipt.discountPhp.toFixed(2)}</strong></div>
+              <div>Amount to pay <strong style={{ float: "right", color: "var(--kiosk-accent-text)" }}>₱{receipt.amountDuePhp.toFixed(2)}</strong></div>
+            </div>
+            <p style={{ color: "var(--kiosk-muted-low)", fontSize: 12, lineHeight: 1.5 }}>
+              The organization will review your request and confirm payment and pickup. Returning home in 10 seconds.
+            </p>
+            <button type="button" onClick={() => { setReceipt(null); onBack(); }} style={confirmBtn}>Back to home</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 const signedCredits = (h: any) =>
   h.type === "print" ? -Math.abs(h.credits) :
   h.type === "transfer_out" ? -Math.abs(h.credits)
-  : h.type === "deposit" || h.type === "transfer_in" || h.type === "adjust" ? h.credits
+  : h.type === "deposit" || h.type === "transfer_in" || h.type === "adjust" || h.type === "reward_return" ? h.credits
   : h.credits < 0 ? h.credits : 0;
 
 const fullScreen: React.CSSProperties = {
@@ -515,6 +836,16 @@ const fullScreen: React.CSSProperties = {
   display: "flex", flexDirection: "column", position: "relative",
   fontFamily: "'Inter', 'Segoe UI', sans-serif", overflow: "hidden",
   boxSizing: "border-box",
+};
+const smallButton: React.CSSProperties = {
+  border: "1px solid var(--kiosk-border-strong)",
+  background: "var(--kiosk-surface-hover)",
+  color: "var(--kiosk-text)",
+  borderRadius: 6,
+  padding: "6px 8px",
+  fontSize: 11,
+  fontWeight: 700,
+  cursor: "pointer",
 };
 const header: React.CSSProperties = {
   padding: "14px 24px", borderBottom: "1px solid var(--kiosk-surface-hover)",

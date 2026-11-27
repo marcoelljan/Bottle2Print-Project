@@ -7,6 +7,7 @@ import {
   RecyclingIcon,
   XCircleIcon,
   AccountCircleIcon,
+  StarIcon,
 } from "./KioskIcons";
 
 interface Props { onDismiss: () => void; }
@@ -130,6 +131,20 @@ const SLIDES: Slide[] = [
         <div style={{ padding: "12px 32px", borderRadius: 14, background: "var(--kiosk-surface)", border: "1.5px solid var(--kiosk-success-text)", textAlign: "center" }}>
           <div style={{ fontSize: 22, fontWeight: 700, color: "var(--kiosk-text-secondary)" }}>Credits added</div>
           <CreditCardIcon size={48} color="var(--kiosk-accent-text)" />
+        </div>
+      </Stage>
+    ),
+  },
+  {
+    title: "RFID users can get reward discounts",
+    text: "Register or use your RFID card to build account credits. You can use credits toward eligible Rewards & Offers and pay the remaining discounted price. Submit a request from Check Balance; the organization reviews it, and approval and availability are required. Guest sessions do not include RFID rewards.",
+    visual: (
+      <Stage>
+        <div className="tut-pop"><CreditCardIcon size={82} color="var(--kiosk-accent-text)" /></div>
+        <div className="tut-arrow">→</div>
+        <div className="tut-pop" style={{ animationDelay: "0.4s" }}>
+          <StarIcon size={82} color="var(--kiosk-success-text)" />
+          <div style={{ marginTop: 8, fontSize: 17, fontWeight: 700, color: "var(--kiosk-success-text)" }}>Credits discount offers</div>
         </div>
       </Stage>
     ),

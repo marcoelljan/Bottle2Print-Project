@@ -126,6 +126,29 @@ test("range and series return daily buckets and live resale price calculations",
   assert.equal(result.resalePricePerKg, 8);
 });
 
+test("1-day and 14-day ranges return Manila-local daily totals", () => {
+  const db = createTestDb();
+  db.prepare(`
+    INSERT INTO transactions (rfid, type, size, co2_saved_g, created_at)
+    VALUES
+      ('CARD1', 'deposit', 'XL', 56.3, '2026-11-24 03:00:00'),
+      ('CARD1', 'deposit', 'XL', 56.3, '2026-11-25 03:00:00')
+  `).run();
+  const now = new Date("2026-11-25T02:00:00Z");
+
+  const oneDay = computeAnalyticsSummary(db, { range: "1d", series: "daily", now });
+  assert.equal(oneDay.startDate, "2026-11-25");
+  assert.equal(oneDay.endDate, "2026-11-25");
+  assert.equal(oneDay.buckets.length, 1);
+  assert.equal(oneDay.totals.bottles, 1);
+
+  const twoWeeks = computeAnalyticsSummary(db, { range: "14d", series: "daily", now });
+  assert.equal(twoWeeks.startDate, "2026-11-12");
+  assert.equal(twoWeeks.endDate, "2026-11-25");
+  assert.equal(twoWeeks.buckets.length, 14);
+  assert.equal(twoWeeks.totals.bottles, 2);
+});
+
 test("selected historical date returns Manila-local hourly totals and excludes adjacent dates", () => {
   const db = createTestDb();
   db.prepare(`

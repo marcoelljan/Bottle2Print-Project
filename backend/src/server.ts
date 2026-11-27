@@ -29,6 +29,30 @@ import { clearJam, getJam, handleJamClearLine, JAM_DETECTION_ENABLED, notifyJamT
 import { CO2E_KG_PER_KG_PET } from "./forecast";
 import { EventEmitter } from "events";
 import { localOnly, isKioskRequest, directOnly } from "./localOnly";
+import { expireRfidCredits, grantRfidCredits } from "./rfidCredits";
+import {
+  expireCardIfOverdue,
+  expireOverdueCards,
+  getCardRecord,
+  isRfidCardUsable,
+} from "./cardExpiry";
+
+expireRfidCredits(db);
+expireOverdueCards(db);
+setInterval(() => {
+  try {
+    expireRfidCredits(db);
+  } catch (error) {
+    console.error("Could not expire semester RFID credits:", error);
+  }
+}, 60 * 60 * 1000).unref();
+setInterval(() => {
+  try {
+    expireOverdueCards(db).forEach(broadcastCardStatus);
+  } catch (error) {
+    console.error("Could not expire overdue RFID cards:", error);
+  }
+}, 60 * 1000).unref();
 
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 4000;
@@ -132,11 +156,24 @@ function commitPendingDeposit() {
   } catch (e) { console.error("guest deposit log failed:", e); }
   if (mine) session.credits = getGuestCredits();
 } else {
-  db.prepare(`
-    INSERT INTO transactions (rfid, type, size, height_mm, weight_g, co2_saved_g, credits)
-    VALUES (?, 'deposit', ?, ?, ?, ?, ?)
-  `).run(d.rfid, d.label, d.heightMm, d.weightG, d.co2Grams, d.credits);
-  db.prepare("UPDATE users SET credits = credits + ? WHERE rfid = ?").run(d.credits, d.rfid);
+  if (!isRfidCardUsable(db, d.rfid)) {
+    if (mine) {
+      session.step = "result";
+      session.result = "rejected";
+      session.errorMsg = "This RFID card is expired or flagged. Please contact the administrator.";
+      broadcastState();
+    }
+    return;
+  }
+  expireRfidCredits(db);
+  const recordDeposit = db.transaction(() => {
+    const result = db.prepare(`
+      INSERT INTO transactions (rfid, type, size, height_mm, weight_g, co2_saved_g, credits)
+      VALUES (?, 'deposit', ?, ?, ?, ?, ?)
+    `).run(d.rfid, d.label, d.heightMm, d.weightG, d.co2Grams, d.credits);
+    grantRfidCredits(db, d.rfid, d.credits, "deposit", `transaction:${result.lastInsertRowid}`);
+  });
+  recordDeposit();
   const updated = db.prepare("SELECT credits FROM users WHERE rfid = ?").get(d.rfid) as any;
   if (mine && updated) session.credits = updated.credits;
 }
@@ -293,10 +330,18 @@ app.post("/api/session/verify-pin", async (req, res) => {
 
   const rfid = session.rfid;
   const user = db.prepare(`
-    SELECT *, TRIM(firstname || ' ' || COALESCE(middlename, '') || ' ' || surname) AS name 
-    FROM users 
+    SELECT *, TRIM(firstname || ' ' || COALESCE(middlename, '') || ' ' || surname) AS name
+    FROM users
     WHERE rfid = ?
   `).get(rfid) as any;
+
+  const cardExpiry = expireCardIfOverdue(db, rfid);
+  if (cardExpiry) broadcastCardStatus(cardExpiry);
+  const currentCard = getCardRecord(db, rfid);
+  if (!currentCard || currentCard.card_status !== "active" || !isRfidCardUsable(db, rfid)) {
+    if (currentCard) broadcastCardBlocked(rfid, currentCard.card_status, currentCard.flagged_reason);
+    return res.status(403).json({ error: "This RFID card is expired or flagged. Please contact the administrator." });
+  }
 
   if (!user || !user.pin_hash) {
     return res.status(400).json({ error: "No PIN set for this account." });
@@ -377,6 +422,14 @@ app.post("/api/session/update-pin", async (req, res) => {
   }
 
   try {
+    const rfid = session.rfid;
+    const cardExpiry = expireCardIfOverdue(db, rfid);
+    if (cardExpiry) broadcastCardStatus(cardExpiry);
+    const card = getCardRecord(db, rfid);
+    if (!card || card.card_status !== "active" || !isRfidCardUsable(db, rfid)) {
+      if (card) broadcastCardBlocked(rfid, card.card_status, card.flagged_reason);
+      return res.status(403).json({ error: "This RFID card is expired or flagged. Please contact the administrator." });
+    }
     const newHash = await bcrypt.hash(String(pin), 10);
     db.prepare(`
       UPDATE users 
@@ -503,6 +556,16 @@ setWss(wss);
 
 function broadcastState() {
   const data = JSON.stringify({ type: "state", session: { ...session, timestamp: Date.now() } });
+  wss.clients.forEach(c => { if (c.readyState === WebSocket.OPEN) c.send(data); });
+}
+
+function broadcastCardStatus(card: { uid: string; status: string; reason: string | null; expiresAt: string | null }) {
+  const data = JSON.stringify({ type: "card_status_changed", card });
+  wss.clients.forEach(c => { if (c.readyState === WebSocket.OPEN) c.send(data); });
+}
+
+function broadcastCardBlocked(rfid: string, status: string, reason: string | null) {
+  const data = JSON.stringify({ type: "card_blocked", uid: rfid, status, reason });
   wss.clients.forEach(c => { if (c.readyState === WebSocket.OPEN) c.send(data); });
 }
 
@@ -651,11 +714,32 @@ lineBus.on("data", (raw: string) => {
     if (line.startsWith("RFID:")) {
     recordSensorActivity("rfid");
     if (isDisabled("rfid")) return;   // card reader switched off: ignore taps
+    const rfid = line.split(":")[1];
+
+    const user = db.prepare(`
+      SELECT *, TRIM(firstname || ' ' || COALESCE(middlename, '') || ' ' || surname) AS name
+      FROM users
+      WHERE rfid = ?
+    `).get(rfid) as any;
+
+    if (user) {
+      const expired = expireCardIfOverdue(db, rfid);
+      if (expired) broadcastCardStatus(expired);
+      const card = getCardRecord(db, rfid);
+      if (card && (card.card_status !== "active" || !isRfidCardUsable(db, rfid))) {
+        depositStopRequested = true;
+        rfidDepositSessionActive = false;
+        if (pendingDeposit?.rfid === rfid) takePending();
+        sendToArduino("IGNORE");
+        broadcastCardBlocked(rfid, card.card_status, card.flagged_reason);
+        return;
+      }
+    }
+
     if (kioskMode === "idle") {       // nobody is waiting for a card
       sendToArduino("IGNORE");
       return;
     }
-    const rfid = line.split(":")[1];
     const newSessionId = Date.now();
     session.rfid      = null;
     session.userName  = null;
@@ -666,12 +750,6 @@ lineBus.on("data", (raw: string) => {
     session.errorMsg  = null;
     session.timestamp = 0;
     session.sessionId = 0;
-
-    const user = db.prepare(`
-      SELECT *, TRIM(firstname || ' ' || COALESCE(middlename, '') || ' ' || surname) AS name 
-      FROM users 
-      WHERE rfid = ?
-    `).get(rfid) as any;
 
     if (kioskMode === "register") {
       const isFullyRegistered = !!(
@@ -853,6 +931,19 @@ lineBus.on("data", (raw: string) => {
       sendToArduino("REJECT");
       scheduleNextBottle(REJECT_DISPLAY_MS);
     } else {
+            if (session.rfid !== "GUEST" && !isRfidCardUsable(db, session.rfid)) {
+              const expired = expireCardIfOverdue(db, session.rfid);
+              if (expired) broadcastCardStatus(expired);
+              const card = getCardRecord(db, session.rfid);
+              if (card) broadcastCardBlocked(session.rfid, card.card_status, card.flagged_reason);
+              session.step = "result";
+              session.result = "rejected";
+              session.errorMsg = "This RFID card is expired or flagged. Please contact the administrator.";
+              broadcastState();
+              sendToArduino("REJECT");
+              scheduleNextBottle(REJECT_DISPLAY_MS);
+              return;
+            }
             setStep("loadcell", "pass", `${weightOk ? weightG + "g" : "no weight"} · ${match.label} (+${match.credits}) [${mode}]`);
       pendingDeposit = {
         rfid: session.rfid!, label: match.label, credits: match.credits,

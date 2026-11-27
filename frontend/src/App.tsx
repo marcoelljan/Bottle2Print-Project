@@ -1,15 +1,24 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import HomeScreen from "./screens/Homescreen";
 import PrintScreen from "./screens/Printscreen";
 import CheckBalanceScreen from "./screens/CheckBalanceScreen";
 import DepositScreen from "./screens/DepositScreen";
 import RegisterScreen from "./screens/RegisterScreen";
 import AdminScreen from "./screens/AdminScreen";
+import { WS_URL } from "./config";
+import "./rewardAnnouncement.css";
 
 export type Screen = "home" | "print" | "balance" | "deposit" | "register" | "admin";
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>("home");
+  const [blockedCard, setBlockedCard] = useState<{ status: "expired" | "flagged"; reason: string | null } | null>(null);
+  const [rewardAnnouncement, setRewardAnnouncement] = useState<{ rewardId: number; name: string; pricePhp: number; image: string | null } | null>(null);
+  const [announcementMessage, setAnnouncementMessage] = useState("");
+  const [balanceRfidAuthenticated, setBalanceRfidAuthenticated] = useState(false);
+  const [rewardsFocusToken, setRewardsFocusToken] = useState(0);
+  const screenRef = useRef<Screen>(screen);
+  const seenRewardAnnouncements = useRef(new Map<string, number>());
   const [tutorialOnHome, setTutorialOnHome] = useState(false);
   const [theme, setTheme] = useState<"dark" | "light">(() => {
     const savedTheme = window.localStorage.getItem("kiosk-theme");
@@ -33,6 +42,78 @@ export default function App() {
     document.getElementById("kiosk-app")?.setAttribute("data-kiosk-theme", theme);
     window.localStorage.setItem("kiosk-theme", theme);
   }, [theme]);
+
+  useEffect(() => {
+    screenRef.current = screen;
+  }, [screen]);
+
+  useEffect(() => {
+    let shouldClose = false;
+    const ws = new WebSocket(WS_URL);
+    ws.onopen = () => {
+      if (shouldClose) ws.close();
+    };
+    ws.onmessage = event => {
+      try {
+        const message = JSON.parse(event.data);
+        if (
+          message.type === "card_blocked" &&
+          (message.status === "expired" || message.status === "flagged") &&
+          screenRef.current !== "admin"
+        ) {
+          setBlockedCard({ status: message.status, reason: message.reason ?? null });
+        } else if (
+          message.type === "reward_announcement" &&
+          Number.isSafeInteger(message.reward_id) &&
+          typeof message.name === "string" &&
+          Number.isFinite(Number(message.price_php))
+        ) {
+          const rewardId = Number(message.reward_id);
+          const announcementId = typeof message.announcement_id === "string"
+            ? message.announcement_id
+            : `${rewardId}:${message.name}:${message.price_php}`;
+          const now = Date.now();
+          for (const [key, seenAt] of seenRewardAnnouncements.current) {
+            if (now - seenAt > 60_000) seenRewardAnnouncements.current.delete(key);
+          }
+          const lastSeen = seenRewardAnnouncements.current.get(announcementId);
+          if (lastSeen && now - lastSeen < 10_000) return;
+          seenRewardAnnouncements.current.set(announcementId, now);
+          setRewardAnnouncement({
+            rewardId,
+            name: message.name,
+            pricePhp: Number(message.price_php),
+            image: typeof message.image === "string" ? message.image : null,
+          });
+          setAnnouncementMessage("");
+        }
+      } catch {
+        console.error("Could not read kiosk WebSocket event.");
+      }
+    };
+    return () => {
+      if (ws.readyState === WebSocket.OPEN) ws.close();
+      else if (ws.readyState === WebSocket.CONNECTING) shouldClose = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!rewardAnnouncement && !announcementMessage) return;
+    const timeout = window.setTimeout(() => {
+      setRewardAnnouncement(null);
+      setAnnouncementMessage("");
+    }, 18_000);
+    return () => window.clearTimeout(timeout);
+  }, [rewardAnnouncement, announcementMessage]);
+
+  useEffect(() => {
+    if (!blockedCard) return;
+    const timeout = window.setTimeout(() => {
+      setBlockedCard(null);
+      setScreen("home");
+    }, 10_000);
+    return () => window.clearTimeout(timeout);
+  }, [blockedCard]);
 
   useEffect(() => {
     const root = document.getElementById("kiosk-app");
@@ -271,6 +352,16 @@ export default function App() {
   const go = (s: Screen) => setScreen(s);
   const home = () => setScreen("home");
   const toggleTheme = () => setTheme(current => current === "dark" ? "light" : "dark");
+  const handleRewardAnnouncement = () => {
+    if (screenRef.current === "balance" && balanceRfidAuthenticated) {
+      setRewardsFocusToken(current => current + 1);
+      setRewardAnnouncement(null);
+      setAnnouncementMessage("");
+      return;
+    }
+    setRewardAnnouncement(null);
+    setAnnouncementMessage("Offers are for RFID users. Tap your RFID card to check your balance and browse available offers.");
+  };
 
   return (
     <div id="kiosk-app" data-kiosk-theme={theme} style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", flex: 1, overflow: "hidden" }}>
@@ -282,7 +373,13 @@ export default function App() {
         onTutorialDismissed={() => setTutorialOnHome(false)}
       />}
       {screen === "print"    && <PrintScreen onBack={home} theme={theme} onToggleTheme={toggleTheme} />}
-      {screen === "balance"  && <CheckBalanceScreen onBack={home} theme={theme} onToggleTheme={toggleTheme} />}
+      {screen === "balance"  && <CheckBalanceScreen
+        onBack={home}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+        rewardsFocusToken={rewardsFocusToken}
+        onRfidSessionChange={setBalanceRfidAuthenticated}
+      />}
       {screen === "deposit"  && <DepositScreen
         onBack={home}
         onNavigate={go}
@@ -292,6 +389,95 @@ export default function App() {
       />}
       {screen === "register" && <RegisterScreen onBack={home} theme={theme} onToggleTheme={toggleTheme} />}
       {screen === "admin"    && <AdminScreen theme={theme} onToggleTheme={toggleTheme} />}
+      {(rewardAnnouncement || announcementMessage) && (
+        <aside
+          className={`reward-announcement${announcementMessage ? " reward-announcement--message" : ""}`}
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
+          <button
+            type="button"
+            className="reward-announcement__main"
+            onClick={handleRewardAnnouncement}
+            aria-label={announcementMessage || "A new offer is available. Tap to view available offers."}
+          >
+            {rewardAnnouncement?.image && !announcementMessage
+              ? <img className="reward-announcement__image" src={rewardAnnouncement.image} alt="" />
+              : <span className="reward-announcement__icon" aria-hidden="true">{announcementMessage ? "i" : "✦"}</span>}
+            <span className="reward-announcement__copy">
+              <span className="reward-announcement__eyebrow">{announcementMessage ? "AVAILABLE OFFERS" : "✦ NEW OFFER"}</span>
+              <span className="reward-announcement__title">{announcementMessage || "A new offer is available"}</span>
+              {!announcementMessage && <span className="reward-announcement__subtitle">Tap to browse available offers</span>}
+            </span>
+          </button>
+          <button
+            type="button"
+            className="reward-announcement__close"
+            aria-label="Dismiss reward notification"
+            onClick={() => {
+              setRewardAnnouncement(null);
+              setAnnouncementMessage("");
+            }}
+          >
+            ×
+          </button>
+          <div className="reward-announcement__timer" aria-hidden="true" />
+        </aside>
+      )}
+      {blockedCard && screen !== "admin" && (
+        <div
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="blocked-card-title"
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 10000,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 16,
+            padding: 24,
+            background: "var(--kiosk-bg, #101820)",
+            color: "var(--kiosk-text, #fff)",
+            textAlign: "center",
+            boxSizing: "border-box",
+          }}
+        >
+          <div style={{ fontSize: 64, lineHeight: 1, color: blockedCard.status === "expired" ? "#e74c3c" : "#f0a500" }}>!</div>
+          <h1 id="blocked-card-title" style={{ margin: 0, fontSize: 30 }}>
+            Your RFID card is {blockedCard.status}
+          </h1>
+          <p style={{ margin: 0, maxWidth: 520, fontSize: 17, color: "var(--kiosk-muted, #aaa)" }}>
+            Please contact the administrator to reactivate your card.
+            {blockedCard.reason === "auto_expired" ? " Its validity period has ended." : ""}
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              setBlockedCard(null);
+              setScreen("home");
+            }}
+            style={{
+              marginTop: 8,
+              minHeight: 46,
+              padding: "10px 24px",
+              borderRadius: 9,
+              border: "1px solid var(--kiosk-border-strong, #666)",
+              background: "var(--kiosk-surface-hover, #263238)",
+              color: "var(--kiosk-text, #fff)",
+              fontSize: 15,
+              fontWeight: 700,
+              cursor: "pointer",
+            }}
+          >
+            Back to home
+          </button>
+          <div style={{ fontSize: 12, color: "var(--kiosk-muted, #aaa)" }}>Returning to home in 10 seconds.</div>
+        </div>
+      )}
     </div>
   );
 }
